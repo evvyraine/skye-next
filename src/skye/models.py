@@ -5,6 +5,7 @@ from .config import ModelId, Reasoning
 
 ScopeKind = Literal["user", "chat"]
 ChatType = Literal["private", "group", "supergroup", "channel"]
+MemoryCategory = Literal["preference", "personal", "project", "instruction", "other"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,3 +34,14 @@ class RequestContext:
 class ChatSettings:
     model: ModelId
     reasoning: Reasoning
+    memory_enabled: bool = True
+
+
+@dataclass(frozen=True, slots=True)
+class Memory:
+    id: int
+    scope: Scope
+    category: MemoryCategory
+    content: str
+    created_at: str
+    updated_at: str

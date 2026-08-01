@@ -2,6 +2,9 @@
 
 A minimal, allowlisted Telegram bot built on the OpenAI Agents SDK and Telegram Rich Messages.
 
+Skye keeps OpenAI conversation state per Telegram thread and a separate, inspectable long-term
+memory per user or group. Memory can be reviewed, disabled, or deleted from `/settings`.
+
 ## Setup
 
 ```bash

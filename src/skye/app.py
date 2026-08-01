@@ -13,6 +13,7 @@ from .access import AccessService
 from .config import Settings
 from .conversations import ConversationService
 from .db import Database
+from .memory import MemoryService
 from .runtime import AgentRuntime
 from .telegram import COMMANDS, TelegramApp, UpdateMiddleware, replay_pending
 
@@ -51,13 +52,15 @@ async def run() -> None:
     bot = Bot(config.telegram_bot_token)
     dispatcher = Dispatcher()
     conversations = ConversationService(database, client)
+    memory = MemoryService(database)
     access = AccessService(database, config.skye_owner_ids)
     runtime = AgentRuntime(
         config,
         conversations,
+        memory,
         load_base_prompt(config.skye_base_prompt_path),
     )
-    telegram = TelegramApp(config, bot, database, access, conversations, runtime)
+    telegram = TelegramApp(config, bot, database, access, conversations, memory, runtime)
     dispatcher.update.outer_middleware(UpdateMiddleware(database))
     dispatcher.include_router(telegram.router)
 

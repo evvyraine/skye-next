@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -10,7 +11,7 @@ from typing import Any, Literal, cast
 import aiosqlite
 
 from .config import ModelId, Reasoning
-from .models import ChatSettings, Scope
+from .models import ChatSettings, Memory, MemoryCategory, Scope
 
 AccessEffect = Literal["allow", "ban"]
 
@@ -28,6 +29,7 @@ CREATE TABLE IF NOT EXISTS user_settings (
     user_id INTEGER PRIMARY KEY,
     model TEXT NOT NULL,
     reasoning TEXT NOT NULL,
+    memory_enabled INTEGER NOT NULL DEFAULT 1,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -35,6 +37,7 @@ CREATE TABLE IF NOT EXISTS chat_settings (
     chat_id INTEGER PRIMARY KEY,
     model TEXT NOT NULL,
     reasoning TEXT NOT NULL,
+    memory_enabled INTEGER NOT NULL DEFAULT 1,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -55,6 +58,42 @@ CREATE TABLE IF NOT EXISTS updates (
     last_error TEXT,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS memories (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    scope_kind TEXT NOT NULL CHECK (scope_kind IN ('user', 'chat')),
+    scope_id INTEGER NOT NULL,
+    category TEXT NOT NULL,
+    content TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (scope_kind, scope_id, content)
+);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
+    content,
+    category,
+    content='memories',
+    content_rowid='id',
+    tokenize='unicode61'
+);
+
+CREATE TRIGGER IF NOT EXISTS memories_ai AFTER INSERT ON memories BEGIN
+    INSERT INTO memories_fts(rowid, content, category)
+    VALUES (new.id, new.content, new.category);
+END;
+
+CREATE TRIGGER IF NOT EXISTS memories_ad AFTER DELETE ON memories BEGIN
+    INSERT INTO memories_fts(memories_fts, rowid, content, category)
+    VALUES ('delete', old.id, old.content, old.category);
+END;
+
+CREATE TRIGGER IF NOT EXISTS memories_au AFTER UPDATE ON memories BEGIN
+    INSERT INTO memories_fts(memories_fts, rowid, content, category)
+    VALUES ('delete', old.id, old.content, old.category);
+    INSERT INTO memories_fts(rowid, content, category)
+    VALUES (new.id, new.content, new.category);
+END;
 """
 
 
@@ -74,6 +113,8 @@ class Database:
         await self.connection.execute("PRAGMA foreign_keys=ON")
         await self.connection.execute("PRAGMA busy_timeout=5000")
         await self.connection.executescript(SCHEMA)
+        await self._ensure_column("user_settings", "memory_enabled", "INTEGER NOT NULL DEFAULT 1")
+        await self._ensure_column("chat_settings", "memory_enabled", "INTEGER NOT NULL DEFAULT 1")
         await self.connection.commit()
 
     async def close(self) -> None:
@@ -92,6 +133,11 @@ class Database:
             cursor = await self.conn.execute(sql, parameters)
             await self.conn.commit()
             return cursor
+
+    async def _ensure_column(self, table: str, column: str, definition: str) -> None:
+        cursor = await self.conn.execute(f"PRAGMA table_info({table})")
+        if column not in {row[1] for row in await cursor.fetchall()}:
+            await self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
     @asynccontextmanager
     async def transaction(self) -> AsyncIterator[aiosqlite.Connection]:
@@ -141,35 +187,47 @@ class Database:
     async def get_settings(self, scope: Scope) -> ChatSettings:
         table, key = self._settings_table(scope)
         cursor = await self.conn.execute(
-            f"SELECT model, reasoning FROM {table} WHERE {key} = ?",
+            f"SELECT model, reasoning, memory_enabled FROM {table} WHERE {key} = ?",
             (scope.id,),
         )
         row = await cursor.fetchone()
         if row is None:
             return ChatSettings(self.default_model, self.default_reasoning)
-        return ChatSettings(cast(ModelId, row["model"]), cast(Reasoning, row["reasoning"]))
+        return ChatSettings(
+            cast(ModelId, row["model"]),
+            cast(Reasoning, row["reasoning"]),
+            bool(row["memory_enabled"]),
+        )
 
     async def set_model(self, scope: Scope, model: ModelId) -> ChatSettings:
         current = await self.get_settings(scope)
-        result = ChatSettings(model, current.reasoning)
+        result = ChatSettings(model, current.reasoning, current.memory_enabled)
         await self._set_settings(scope, result)
         return result
 
     async def set_reasoning(self, scope: Scope, reasoning: Reasoning) -> ChatSettings:
         current = await self.get_settings(scope)
-        result = ChatSettings(current.model, reasoning)
+        result = ChatSettings(current.model, reasoning, current.memory_enabled)
+        await self._set_settings(scope, result)
+        return result
+
+    async def set_memory_enabled(self, scope: Scope, enabled: bool) -> ChatSettings:
+        current = await self.get_settings(scope)
+        result = ChatSettings(current.model, current.reasoning, enabled)
         await self._set_settings(scope, result)
         return result
 
     async def _set_settings(self, scope: Scope, settings: ChatSettings) -> None:
         table, key = self._settings_table(scope)
         await self._write(
-            f"""INSERT INTO {table} ({key}, model, reasoning) VALUES (?, ?, ?)
+            f"""INSERT INTO {table} ({key}, model, reasoning, memory_enabled)
+                VALUES (?, ?, ?, ?)
                 ON CONFLICT({key}) DO UPDATE SET
                     model = excluded.model,
                     reasoning = excluded.reasoning,
+                    memory_enabled = excluded.memory_enabled,
                     updated_at = CURRENT_TIMESTAMP""",
-            (scope.id, settings.model, settings.reasoning),
+            (scope.id, settings.model, settings.reasoning, settings.memory_enabled),
         )
 
     @staticmethod
@@ -203,6 +261,76 @@ class Database:
             (chat_id, thread_id),
         )
         return conversation_id
+
+    async def remember(
+        self, scope: Scope, content: str, category: MemoryCategory
+    ) -> Memory:
+        await self._write(
+            """INSERT INTO memories (scope_kind, scope_id, category, content)
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT(scope_kind, scope_id, content) DO UPDATE SET
+                   category = excluded.category,
+                   updated_at = CURRENT_TIMESTAMP""",
+            (scope.kind, scope.id, category, content),
+        )
+        cursor = await self.conn.execute(
+            """SELECT * FROM memories
+               WHERE scope_kind = ? AND scope_id = ? AND content = ?""",
+            (scope.kind, scope.id, content),
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            raise RuntimeError("Memory was not saved")
+        return self._memory(row)
+
+    async def memories(self, scope: Scope, limit: int = 20) -> list[Memory]:
+        cursor = await self.conn.execute(
+            """SELECT * FROM memories WHERE scope_kind = ? AND scope_id = ?
+               ORDER BY updated_at DESC, id DESC LIMIT ?""",
+            (scope.kind, scope.id, limit),
+        )
+        return [self._memory(row) for row in await cursor.fetchall()]
+
+    async def search_memories(
+        self, scope: Scope, query: str, limit: int = 8
+    ) -> list[Memory]:
+        terms = re.findall(r"\w+", query.casefold(), flags=re.UNICODE)[:12]
+        if not terms:
+            return await self.memories(scope, limit)
+        match = " OR ".join(f'"{term}"' for term in terms)
+        cursor = await self.conn.execute(
+            """SELECT m.* FROM memories_fts
+               JOIN memories AS m ON m.id = memories_fts.rowid
+               WHERE memories_fts MATCH ? AND m.scope_kind = ? AND m.scope_id = ?
+               ORDER BY bm25(memories_fts), m.updated_at DESC LIMIT ?""",
+            (match, scope.kind, scope.id, limit),
+        )
+        return [self._memory(row) for row in await cursor.fetchall()]
+
+    async def forget_memory(self, scope: Scope, memory_id: int) -> bool:
+        cursor = await self._write(
+            "DELETE FROM memories WHERE id = ? AND scope_kind = ? AND scope_id = ?",
+            (memory_id, scope.kind, scope.id),
+        )
+        return cursor.rowcount > 0
+
+    async def clear_memories(self, scope: Scope) -> int:
+        cursor = await self._write(
+            "DELETE FROM memories WHERE scope_kind = ? AND scope_id = ?",
+            (scope.kind, scope.id),
+        )
+        return cursor.rowcount
+
+    @staticmethod
+    def _memory(row: aiosqlite.Row) -> Memory:
+        return Memory(
+            id=cast(int, row["id"]),
+            scope=Scope(cast(Any, row["scope_kind"]), cast(int, row["scope_id"])),
+            category=cast(MemoryCategory, row["category"]),
+            content=cast(str, row["content"]),
+            created_at=cast(str, row["created_at"]),
+            updated_at=cast(str, row["updated_at"]),
+        )
 
     async def claim_update(self, update_id: int, payload: str) -> bool:
         async with self.transaction() as connection:

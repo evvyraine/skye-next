@@ -30,6 +30,7 @@ from .access import AccessService
 from .config import MODELS, Reasoning, Settings
 from .conversations import ConversationService
 from .db import Database
+from .memory import MemoryService
 from .models import ChatSettings, ChatType, RequestContext, Scope
 from .rich import RichMessages
 from .runtime import AgentRuntime, RunOutput
@@ -70,6 +71,7 @@ class TelegramApp:
         database: Database,
         access: AccessService,
         conversations: ConversationService,
+        memory: MemoryService,
         runtime: AgentRuntime,
     ) -> None:
         self.config = config
@@ -77,6 +79,7 @@ class TelegramApp:
         self.database = database
         self.access = access
         self.conversations = conversations
+        self.memory = memory
         self.runtime = runtime
         self.rich = RichMessages(bot)
         self.router = Router(name="skye")
@@ -112,8 +115,8 @@ class TelegramApp:
             message,
             "I can chat, search the web, work with images, "
             "and run code in an isolated container.\n\n"
-            "/settings — model and reasoning\n"
-            "/reset — new conversation\n"
+            "/settings — model, reasoning, and memory\n\n"
+            "/reset — new conversation\n\n"
             "/stop — cancel the active task"
         )
 
@@ -145,6 +148,46 @@ class TelegramApp:
             await callback.message.edit_reply_markup(reply_markup=self._model_keyboard(current))
         elif action == ["settings", "reasoning"]:
             await callback.message.edit_reply_markup(reply_markup=self._reasoning_keyboard(current))
+        elif action == ["settings", "memory"]:
+            memories = await self.database.memories(context.scope, 10)
+            await self.rich.edit(
+                callback.message,
+                self.rich.memory(memories, current.memory_enabled),
+                reply_markup=self._memory_keyboard(current, bool(memories), editable),
+            )
+        elif action == ["settings", "memory", "toggle"]:
+            if not editable:
+                await callback.answer("Only chat administrators can change this.", show_alert=True)
+                return
+            current = await self.database.set_memory_enabled(
+                context.scope, not current.memory_enabled
+            )
+            memories = await self.database.memories(context.scope, 10)
+            await self.rich.edit(
+                callback.message,
+                self.rich.memory(memories, current.memory_enabled),
+                reply_markup=self._memory_keyboard(current, bool(memories), True),
+            )
+        elif action == ["settings", "memory", "clear"]:
+            if not editable:
+                await callback.answer("Only chat administrators can change this.", show_alert=True)
+                return
+            await self.rich.edit(
+                callback.message,
+                "## Delete all memories?\n\n"
+                "This cannot be undone. Conversation history is separate.",
+                reply_markup=self._memory_clear_keyboard(),
+            )
+        elif action == ["settings", "memory", "confirm"]:
+            if not editable:
+                await callback.answer("Only chat administrators can change this.", show_alert=True)
+                return
+            await self.database.clear_memories(context.scope)
+            await self.rich.edit(
+                callback.message,
+                self.rich.memory([], current.memory_enabled),
+                reply_markup=self._memory_keyboard(current, False, True),
+            )
         elif action == ["settings", "back"]:
             await self.rich.edit(
                 callback.message,
@@ -196,8 +239,8 @@ class TelegramApp:
         if len(parts) == 1:
             await self.rich.send(
                 message,
-                "`/admin allow [id]`\n`/admin ban <id>`\n"
-                "`/admin remove <id>`\n`/admin list`\n\n"
+                "`/admin allow [id]`\n\n`/admin ban <id>`\n\n"
+                "`/admin remove <id>`\n\n`/admin list`\n\n"
                 "Run /admin allow in a group to allow the whole group."
             )
             return
@@ -205,7 +248,8 @@ class TelegramApp:
         if action == "list":
             entries = await self.database.list_access()
             text = "\n".join(
-                f"{entry['effect']} {entry['kind']} {entry['telegram_id']}" for entry in entries
+                f"- {entry['effect']} {entry['kind']} `{entry['telegram_id']}`"
+                for entry in entries
             )
             await self.rich.send(message, text or "The allowlist is empty.")
             return
@@ -386,6 +430,45 @@ class TelegramApp:
                 [
                     InlineKeyboardButton(text="Model", callback_data="settings:models"),
                     InlineKeyboardButton(text="Reasoning", callback_data="settings:reasoning"),
+                ],
+                [InlineKeyboardButton(text="Memory", callback_data="settings:memory")],
+            ]
+        )
+
+    @staticmethod
+    def _memory_keyboard(
+        settings: ChatSettings, has_memories: bool, editable: bool
+    ) -> InlineKeyboardMarkup:
+        rows: list[list[InlineKeyboardButton]] = []
+        if editable:
+            rows.append(
+                [
+                    InlineKeyboardButton(
+                        text="Turn off" if settings.memory_enabled else "Turn on",
+                        callback_data="settings:memory:toggle",
+                    )
+                ]
+            )
+            if has_memories:
+                rows.append(
+                    [
+                        InlineKeyboardButton(
+                            text="Delete all", callback_data="settings:memory:clear"
+                        )
+                    ]
+                )
+        rows.append([InlineKeyboardButton(text="‹ Back", callback_data="settings:back")])
+        return InlineKeyboardMarkup(inline_keyboard=rows)
+
+    @staticmethod
+    def _memory_clear_keyboard() -> InlineKeyboardMarkup:
+        return InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text="Delete all", callback_data="settings:memory:confirm"
+                    ),
+                    InlineKeyboardButton(text="Cancel", callback_data="settings:memory"),
                 ]
             ]
         )

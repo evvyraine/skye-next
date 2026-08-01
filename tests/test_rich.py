@@ -1,6 +1,6 @@
 from aiogram.types import InputMediaPhoto, InputRichBlockTable, InputRichBlockThinking
 
-from skye.models import ChatSettings
+from skye.models import ChatSettings, Memory, Scope
 from skye.rich import RichMessages
 
 
@@ -28,3 +28,14 @@ def test_thinking_block_is_valid_for_drafts() -> None:
     block = InputRichBlockThinking(text="Thinking…")
 
     assert block.type == "thinking"
+
+
+def test_memory_screen_uses_plain_rich_cells() -> None:
+    memory = Memory(1, Scope("user", 7), "preference", "Likes **literal** tea", "now", "now")
+
+    message = RichMessages.memory([memory], enabled=True)
+
+    assert message.blocks
+    table = message.blocks[1]
+    assert isinstance(table, InputRichBlockTable)
+    assert table.cells[1][2].text == "Likes **literal** tea"

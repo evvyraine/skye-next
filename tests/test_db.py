@@ -1,3 +1,4 @@
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -59,3 +60,60 @@ async def test_updates_are_idempotent_and_retryable(database: Database) -> None:
 
     await database.finish_update(10)
     assert not await database.claim_update(10, '{"update_id":10}')
+
+
+async def test_memory_search_and_deletion_are_scoped(database: Database) -> None:
+    private = Scope("user", 42)
+    group = Scope("chat", -100)
+    saved = await database.remember(private, "Prefers dark mode", "preference")
+    await database.remember(group, "Project codename is Aurora", "project")
+
+    assert [memory.id for memory in await database.search_memories(private, "dark mode")] == [
+        saved.id
+    ]
+    assert await database.search_memories(group, "dark mode") == []
+    assert not await database.forget_memory(group, saved.id)
+    assert await database.forget_memory(private, saved.id)
+
+
+async def test_memory_setting_is_scoped(database: Database) -> None:
+    private = Scope("user", 42)
+    group = Scope("chat", -100)
+
+    await database.set_memory_enabled(private, False)
+    await database.set_model(private, "gpt-5.6-sol")
+    await database.set_reasoning(private, "high")
+
+    assert not (await database.get_settings(private)).memory_enabled
+    assert (await database.get_settings(group)).memory_enabled
+
+
+async def test_existing_settings_tables_are_migrated(tmp_path: Path) -> None:
+    path = tmp_path / "old.db"
+    connection = sqlite3.connect(path)
+    connection.executescript(
+        """
+        CREATE TABLE user_settings (
+            user_id INTEGER PRIMARY KEY,
+            model TEXT NOT NULL,
+            reasoning TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE chat_settings (
+            chat_id INTEGER PRIMARY KEY,
+            model TEXT NOT NULL,
+            reasoning TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        INSERT INTO user_settings (user_id, model, reasoning)
+        VALUES (42, 'gpt-5.6-luna', 'medium');
+        """
+    )
+    connection.close()
+
+    database = Database(path, "gpt-5.6-luna", "medium")
+    await database.open()
+    try:
+        assert (await database.get_settings(Scope("user", 42))).memory_enabled
+    finally:
+        await database.close()

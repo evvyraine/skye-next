@@ -15,6 +15,7 @@ from agents import (
     ModelSettings,
     Runner,
     ShellTool,
+    Tool,
     WebSearchTool,
 )
 from agents.items import TResponseInputItem
@@ -24,6 +25,7 @@ from openai.types.responses.response_text_delta_event import ResponseTextDeltaEv
 
 from .config import Settings
 from .conversations import ConversationService
+from .memory import MemoryService
 from .models import ChatSettings, RequestContext
 
 TextCallback = Callable[[str], Awaitable[None]]
@@ -40,10 +42,12 @@ class AgentRuntime:
         self,
         config: Settings,
         conversations: ConversationService,
+        memory: MemoryService,
         base_prompt: str,
     ) -> None:
         self.config = config
         self.conversations = conversations
+        self.memory = memory
         self.base_prompt = base_prompt.strip()
         self._locks: defaultdict[tuple[int, int], asyncio.Lock] = defaultdict(asyncio.Lock)
         self._active: dict[tuple[int, int], RunResultStreaming] = {}
@@ -58,7 +62,10 @@ class AgentRuntime:
         key = context.chat_id, context.thread_id
         async with self._locks[key]:
             conversation_id = await self.conversations.get_or_create(*key)
-            agent = self._agent(context, settings)
+            memory_context = ""
+            if settings.memory_enabled:
+                memory_context = await self.memory.context(context.scope, self._query(user_input))
+            agent = self._agent(context, settings, memory_context)
             result = Runner.run_streamed(
                 agent,
                 user_input,
@@ -88,12 +95,22 @@ class AgentRuntime:
         result.cancel()
         return True
 
-    def _agent(self, context: RequestContext, settings: ChatSettings) -> Agent[None]:
+    def _agent(
+        self, context: RequestContext, settings: ChatSettings, memory_context: str = ""
+    ) -> Agent[None]:
         instructions = self.base_prompt
         if context.chat_type != "private":
             instructions += (
                 "\n\nYou are speaking in a Telegram group. Address the current sender when useful, "
                 "and never reveal information from private conversations."
+            )
+        if settings.memory_enabled and memory_context:
+            instructions += f"\n\n{memory_context}"
+        if settings.memory_enabled:
+            instructions += (
+                "\n\nUse remember only for durable information explicitly stated or explicitly "
+                "requested by the user. Never save secrets, transient requests, or inferred "
+                "sensitive traits. Use recall when needed and forget when asked."
             )
 
         image_tool = ImageGenerationTool(
@@ -122,6 +139,13 @@ class AgentRuntime:
             str(context.user_id).encode(),
             hashlib.sha256,
         ).hexdigest()[:32]
+        tools: list[Tool] = [
+            WebSearchTool(search_context_size="medium"),
+            image_tool,
+            shell_tool,
+        ]
+        if settings.memory_enabled:
+            tools.extend(self.memory.tools(context.scope))
         return Agent(
             name="Skye",
             instructions=instructions,
@@ -132,12 +156,19 @@ class AgentRuntime:
                 store=True,
                 extra_body={"safety_identifier": safety_id},
             ),
-            tools=[
-                WebSearchTool(search_context_size="medium"),
-                image_tool,
-                shell_tool,
-            ],
+            tools=tools,
         )
+
+    @staticmethod
+    def _query(user_input: str | list[TResponseInputItem]) -> str:
+        if isinstance(user_input, str):
+            return user_input
+        texts: list[str] = []
+        for item in user_input:
+            for content in cast(Any, item).get("content", []):
+                if content.get("type") == "input_text":
+                    texts.append(content.get("text", ""))
+        return " ".join(texts)
 
     @staticmethod
     def _images(result: RunResultStreaming) -> tuple[bytes, ...]:

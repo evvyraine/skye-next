@@ -7,9 +7,11 @@ from aiogram.types import (
     BufferedInputFile,
     InlineKeyboardMarkup,
     InputMediaPhoto,
+    InputRichBlockParagraph,
     InputRichBlockSectionHeading,
     InputRichBlockTable,
     InputRichBlockThinking,
+    InputRichBlockUnion,
     InputRichMessage,
     InputRichMessageMedia,
     Message,
@@ -17,7 +19,7 @@ from aiogram.types import (
 )
 
 from .config import MODELS
-from .models import ChatSettings
+from .models import ChatSettings, Memory
 
 
 class RichMessages:
@@ -83,12 +85,39 @@ class RichMessages:
                         [cell("Option", header=True), cell("Selected", header=True)],
                         [cell("Model"), cell(MODELS[settings.model])],
                         [cell("Reasoning"), cell(settings.reasoning.title())],
+                        [cell("Memory"), cell("On" if settings.memory_enabled else "Off")],
                     ],
                     is_bordered=True,
                     is_striped=True,
                 ),
             ]
         )
+
+    @staticmethod
+    def memory(memories: list[Memory], enabled: bool) -> InputRichMessage:
+        heading = f"Memory · {'On' if enabled else 'Off'}"
+        blocks: list[InputRichBlockUnion] = [
+            InputRichBlockSectionHeading(text=heading, size=2)
+        ]
+        if not memories:
+            blocks.append(InputRichBlockParagraph(text="No memories saved yet."))
+            return InputRichMessage(blocks=blocks)
+
+        def cell(text: str, *, header: bool = False) -> RichBlockTableCell:
+            return RichBlockTableCell(
+                text=text,
+                is_header=header or None,
+                align="left",
+                valign="top",
+            )
+
+        rows = [[cell("ID", header=True), cell("Kind", header=True), cell("Memory", header=True)]]
+        rows.extend(
+            [cell(str(memory.id)), cell(memory.category.title()), cell(memory.content)]
+            for memory in memories
+        )
+        blocks.append(InputRichBlockTable(cells=rows, is_bordered=True, is_striped=True))
+        return InputRichMessage(blocks=blocks)
 
     @staticmethod
     def output(markdown: str, images: Sequence[bytes] = ()) -> InputRichMessage:

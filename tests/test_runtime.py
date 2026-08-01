@@ -1,9 +1,10 @@
 import base64
 from typing import Any, cast
 
-from agents import ImageGenerationTool, ShellTool, WebSearchTool
+from agents import FunctionTool, ImageGenerationTool, ShellTool, WebSearchTool
 
 from skye.config import Settings
+from skye.memory import MemoryService
 from skye.models import ChatSettings, RequestContext
 from skye.runtime import AgentRuntime
 
@@ -18,7 +19,8 @@ def config() -> Settings:
 
 
 def test_agent_uses_only_hosted_capabilities() -> None:
-    runtime = AgentRuntime(config(), cast(Any, None), "You are Skye.")
+    memory = MemoryService(cast(Any, None))
+    runtime = AgentRuntime(config(), cast(Any, None), memory, "You are Skye.")
     agent = runtime._agent(
         RequestContext(1, "private", 1),
         ChatSettings("gpt-5.6-luna", "medium"),
@@ -28,13 +30,34 @@ def test_agent_uses_only_hosted_capabilities() -> None:
         WebSearchTool,
         ImageGenerationTool,
         ShellTool,
+        FunctionTool,
+        FunctionTool,
+        FunctionTool,
     ]
-    shell = cast(ShellTool, agent.tools[-1])
+    assert [cast(FunctionTool, tool).name for tool in agent.tools[-3:]] == [
+        "remember",
+        "recall",
+        "forget",
+    ]
+    shell = cast(ShellTool, agent.tools[2])
     assert shell.executor is None
     assert shell.environment == {
         "type": "container_auto",
         "network_policy": {"type": "disabled"},
     }
+
+
+def test_disabled_memory_is_not_injected_or_exposed() -> None:
+    memory = MemoryService(cast(Any, None))
+    runtime = AgentRuntime(config(), cast(Any, None), memory, "You are Skye.")
+    agent = runtime._agent(
+        RequestContext(1, "private", 1),
+        ChatSettings("gpt-5.6-luna", "medium", memory_enabled=False),
+        "secret memory",
+    )
+
+    assert len(agent.tools) == 3
+    assert "secret memory" not in cast(str, agent.instructions)
 
 
 def test_generated_images_are_extracted() -> None:
