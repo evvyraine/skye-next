@@ -1,0 +1,52 @@
+[project]
+name = "skye-next"
+version = "0.1.0"
+description = "A calm, minimal OpenAI agent for Telegram"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "aiogram>=3.22.0",
+    "aiosqlite>=0.21.0",
+    "openai>=2.52.0",
+    "openai-agents>=0.19.2",
+    "pydantic-settings>=2.10.0",
+    "structlog>=25.4.0",
+]
+
+[project.scripts]
+skye = "skye.__main__:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/skye"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"BASE_PROMPT.md" = "skye/BASE_PROMPT.md"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py314"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.mypy]
+python_version = "3.14"
+strict = true
+packages = ["skye"]
+
+[dependency-groups]
+dev = [
+    "hatchling>=1.27.0",
+    "mypy>=1.17.0",
+    "pytest>=8.4.0",
+    "pytest-asyncio>=1.1.0",
+    "ruff>=0.12.0",
+]
