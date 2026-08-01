@@ -4,10 +4,17 @@ from unittest.mock import AsyncMock
 import pytest
 from aiogram.types import Chat, Message, User, VideoNote
 
+from skye.group_context import GroupHistory
 from skye.telegram import TelegramApp
 
 
-def group_message(text: str, reply: Message | None = None) -> Message:
+def group_message(
+    text: str,
+    reply: Message | None = None,
+    *,
+    message_thread_id: int | None = None,
+    is_topic_message: bool | None = None,
+) -> Message:
     return Message(
         message_id=1,
         date=0,
@@ -15,6 +22,8 @@ def group_message(text: str, reply: Message | None = None) -> Message:
         from_user=User(id=42, is_bot=False, first_name="Alice"),
         text=text,
         reply_to_message=reply,
+        message_thread_id=message_thread_id,
+        is_topic_message=is_topic_message,
     )
 
 
@@ -98,3 +107,47 @@ async def test_private_video_note_is_processed_as_attachment() -> None:
             "content": [{"type": "input_text", "text": "[video note]"}],
         }
     ]
+
+
+async def test_group_reply_always_includes_recent_context() -> None:
+    app = telegram_app()
+    app.groups = SimpleNamespace(
+        text=lambda item: item.text or "",
+        sender=lambda item: (item.from_user.id, item.from_user.first_name, item.from_user.username),
+        history=AsyncMock(return_value=GroupHistory("#1 · Alice: First message", ())),
+    )
+    skye_message = Message(
+        message_id=2,
+        date=0,
+        chat=Chat(id=-100, type="supergroup", title="Skye Lab"),
+        from_user=User(id=777, is_bot=True, first_name="Skye", username="skye_example_bot"),
+        text="Previous answer",
+    )
+    incoming = group_message(
+        "Current reply", reply=skye_message, message_thread_id=skye_message.message_id
+    )
+    context = app._context(incoming)
+    assert context is not None
+    assert context.thread_id == 0
+
+    result = await app._input(incoming, context)
+
+    assert isinstance(result, str)
+    assert "<recent_group_context>\n#1 · Alice: First message\n</recent_group_context>" in result
+    assert "Replying to Skye (@skye_example_bot) [id 777] #2: Previous answer" in result
+
+
+async def test_group_context_block_is_present_when_history_is_empty() -> None:
+    app = telegram_app()
+    app.groups = SimpleNamespace(
+        text=lambda item: item.text or "",
+        history=AsyncMock(return_value=GroupHistory("", ())),
+    )
+    incoming = group_message("Skye, hello")
+    context = app._context(incoming)
+    assert context is not None
+
+    result = await app._input(incoming, context)
+
+    assert isinstance(result, str)
+    assert "<recent_group_context>\n\n</recent_group_context>" in result

@@ -20,6 +20,7 @@ from aiogram.types import (
 
 from .config import MODELS
 from .models import ChatSettings, InstalledAgent, Memory
+from .telegram_threads import api_thread_id
 
 
 class RichMessages:
@@ -36,7 +37,7 @@ class RichMessages:
     ) -> Message:
         return await self.bot.send_rich_message(
             chat_id=target.chat.id,
-            message_thread_id=target.message_thread_id,
+            message_thread_id=api_thread_id(target),
             rich_message=self._content(content),
             reply_markup=reply_markup,
         )
@@ -62,7 +63,7 @@ class RichMessages:
         )
         await self.bot.send_rich_message_draft(
             chat_id=target.chat.id,
-            message_thread_id=target.message_thread_id,
+            message_thread_id=api_thread_id(target),
             draft_id=target.message_id,
             rich_message=content,
         )

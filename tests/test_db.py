@@ -1,3 +1,4 @@
+import json
 import sqlite3
 from pathlib import Path
 
@@ -5,7 +6,7 @@ import pytest
 
 from skye.access import AccessService
 from skye.db import Database
-from skye.models import RequestContext, Scope
+from skye.models import GroupMessage, RequestContext, Scope
 
 
 @pytest.fixture
@@ -60,6 +61,79 @@ async def test_updates_are_idempotent_and_retryable(database: Database) -> None:
 
     await database.finish_update(10)
     assert not await database.claim_update(10, '{"update_id":10}')
+
+
+async def test_reply_thread_migration_preserves_real_topics(database: Database) -> None:
+    fake_thread = GroupMessage(
+        -100,
+        10,
+        11,
+        1,
+        "Alice",
+        "alice",
+        "Reply in the main chat",
+        None,
+        None,
+        10,
+        "Skye",
+        "skye_bot",
+        "Previous answer",
+        1,
+    )
+    real_topic = GroupMessage(
+        -100,
+        20,
+        21,
+        1,
+        "Alice",
+        "alice",
+        "Reply in a forum topic",
+        None,
+        None,
+        20,
+        "Skye",
+        "skye_bot",
+        "Topic answer",
+        1,
+    )
+    await database.save_group_message(fake_thread)
+    await database.save_group_message(real_topic)
+    await database.claim_update(
+        11,
+        json.dumps(
+            {
+                "update_id": 11,
+                "message": {
+                    "message_id": 11,
+                    "chat": {"id": -100, "type": "supergroup"},
+                    "message_thread_id": 10,
+                },
+            }
+        ),
+    )
+    await database.claim_update(
+        21,
+        json.dumps(
+            {
+                "update_id": 21,
+                "message": {
+                    "message_id": 21,
+                    "chat": {"id": -100, "type": "supergroup"},
+                    "message_thread_id": 20,
+                    "is_topic_message": True,
+                },
+            }
+        ),
+    )
+
+    await database.close()
+    await database.open()
+
+    normalized = await database.group_messages(-100, 0, before=12, limit=10)
+    topic_messages = await database.group_messages(-100, 20, before=22, limit=10)
+
+    assert [message.message_id for message in normalized] == [fake_thread.message_id]
+    assert [message.message_id for message in topic_messages] == [real_topic.message_id]
 
 
 async def test_memory_search_and_deletion_are_scoped(database: Database) -> None:

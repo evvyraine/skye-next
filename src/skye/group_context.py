@@ -13,6 +13,7 @@ from aiogram.types import Message, User
 from .config import Settings
 from .db import Database
 from .models import GroupMessage, Scope
+from .telegram_threads import thread_id
 
 log = structlog.get_logger()
 
@@ -34,13 +35,14 @@ class GroupContextService:
             return
         if await self.database.access_effect(Scope("chat", message.chat.id)) != "allow":
             return
+        context_thread_id = thread_id(message)
         sender_id, sender_name, sender_username = self.sender(message)
         reply = message.reply_to_message
         media_kind, media_file_id = self._media(message)
         await self.database.save_group_message(
             GroupMessage(
                 chat_id=message.chat.id,
-                thread_id=message.message_thread_id or 0,
+                thread_id=context_thread_id,
                 message_id=message.message_id,
                 sender_id=sender_id,
                 sender_name=sender_name,
@@ -57,15 +59,15 @@ class GroupContextService:
         )
         await self.database.prune_group_messages(
             message.chat.id,
-            message.message_thread_id or 0,
+            context_thread_id,
             self.config.skye_group_context_messages + 1,
         )
 
     async def history(self, message: Message) -> GroupHistory:
-        thread_id = message.message_thread_id or 0
+        context_thread_id = thread_id(message)
         messages = await self.database.group_messages(
             message.chat.id,
-            thread_id,
+            context_thread_id,
             before=message.message_id,
             limit=self.config.skye_group_context_messages,
         )

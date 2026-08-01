@@ -39,6 +39,7 @@ from .memory import MemoryService
 from .models import AgentCapability, ChatSettings, ChatType, InstalledAgent, RequestContext, Scope
 from .rich import RichMessages
 from .runtime import AgentRuntime, RunOutput
+from .telegram_threads import thread_id
 
 log = structlog.get_logger()
 REASONING: tuple[Reasoning, ...] = ("none", "low", "medium", "high", "xhigh", "max")
@@ -723,11 +724,7 @@ class TelegramApp:
                 )
             history = await self.groups.history(message)
             group_context = (
-                "<recent_group_context>\n"
-                f"{history.transcript}\n"
-                "</recent_group_context>\n\n"
-                if history.transcript
-                else ""
+                f"<recent_group_context>\n{history.transcript}\n</recent_group_context>\n\n"
             )
             text = (
                 f"{group_context}<current_message>\n"
@@ -813,7 +810,7 @@ class TelegramApp:
             chat_id=message.chat.id,
             chat_type=cast(ChatType, message.chat.type),
             user_id=sender.id,
-            thread_id=message.message_thread_id or 0,
+            thread_id=thread_id(message),
             username=sender.username,
             display_name=name or sender.username or "User",
         )

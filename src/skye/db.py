@@ -189,6 +189,7 @@ class Database:
         await self._ensure_column("chat_settings", "memory_enabled", "INTEGER NOT NULL DEFAULT 1")
         await self._ensure_column("user_settings", "active_agent_id", "TEXT")
         await self._ensure_column("chat_settings", "active_agent_id", "TEXT")
+        await self._normalize_group_message_threads()
         await self.connection.commit()
 
     async def close(self) -> None:
@@ -212,6 +213,29 @@ class Database:
         cursor = await self.conn.execute(f"PRAGMA table_info({table})")
         if column not in {row[1] for row in await cursor.fetchall()}:
             await self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+    async def _normalize_group_message_threads(self) -> None:
+        await self.conn.execute(
+            """UPDATE group_messages AS message
+               SET thread_id = 0
+               WHERE thread_id != 0
+                 AND EXISTS (
+                     SELECT 1 FROM updates
+                     WHERE COALESCE(
+                               json_extract(payload, '$.message.chat.id'),
+                               json_extract(payload, '$.edited_message.chat.id')
+                           ) = message.chat_id
+                       AND COALESCE(
+                               json_extract(payload, '$.message.message_id'),
+                               json_extract(payload, '$.edited_message.message_id')
+                           ) = message.message_id
+                       AND COALESCE(
+                               json_extract(payload, '$.message.is_topic_message'),
+                               json_extract(payload, '$.edited_message.is_topic_message'),
+                               0
+                           ) = 0
+                 )"""
+        )
 
     @asynccontextmanager
     async def transaction(self) -> AsyncIterator[aiosqlite.Connection]:
