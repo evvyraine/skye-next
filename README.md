@@ -5,6 +5,11 @@ A minimal, allowlisted Telegram bot built on the OpenAI Agents SDK and Telegram 
 Skye keeps OpenAI conversation state per Telegram thread and a separate, inspectable long-term
 memory per user or group. Memory can be reviewed, disabled, or deleted from `/settings`.
 
+Custom agents are declarative, versioned profiles managed through `/agents`. One profile can lead
+the chat while the other installed profiles remain available to Skye as specialists. Shared links
+always install the exact published version, so later edits by the author never change an imported
+agent silently. Group agent changes require a Telegram chat administrator.
+
 For full group context, disable **Group Privacy** for the bot in `@BotFather` and re-add it to
 existing groups, or make it a group administrator. Skye retains the latest 200 messages per group
 topic and includes new passive context, participant identities, reply links, and recent images.

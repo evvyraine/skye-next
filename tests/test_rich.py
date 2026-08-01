@@ -22,6 +22,7 @@ def test_settings_use_a_native_rich_table() -> None:
     assert isinstance(table, InputRichBlockTable)
     assert table.cells[1][1].text == "Sol"
     assert table.cells[2][1].text == "High"
+    assert table.cells[3][1].text == "Skye"
 
 
 def test_thinking_block_is_valid_for_drafts() -> None:

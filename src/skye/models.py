@@ -6,6 +6,8 @@ from .config import ModelId, Reasoning
 ScopeKind = Literal["user", "chat"]
 ChatType = Literal["private", "group", "supergroup", "channel"]
 MemoryCategory = Literal["preference", "personal", "project", "instruction", "other"]
+AgentVisibility = Literal["private", "unlisted", "public"]
+AgentCapability = Literal["web", "image", "shell"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,6 +37,41 @@ class ChatSettings:
     model: ModelId
     reasoning: Reasoning
     memory_enabled: bool = True
+    active_agent_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class AgentProfile:
+    id: str
+    owner_id: int
+    visibility: AgentVisibility
+    current_version: int
+    created_at: str
+    updated_at: str
+
+
+@dataclass(frozen=True, slots=True)
+class AgentVersion:
+    agent_id: str
+    version: int
+    name: str
+    description: str
+    instructions: str
+    model: ModelId | None
+    capabilities: tuple[AgentCapability, ...]
+    checksum: str
+    share_token: str | None
+    created_at: str
+
+
+@dataclass(frozen=True, slots=True)
+class InstalledAgent:
+    scope: Scope
+    profile: AgentProfile
+    version: AgentVersion
+    enabled: bool
+    installed_by: int
+    installed_at: str
 
 
 @dataclass(frozen=True, slots=True)

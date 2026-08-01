@@ -11,7 +11,18 @@ from typing import Any, Literal, cast
 import aiosqlite
 
 from .config import ModelId, Reasoning
-from .models import ChatSettings, GroupMessage, Memory, MemoryCategory, Scope
+from .models import (
+    AgentCapability,
+    AgentProfile,
+    AgentVersion,
+    AgentVisibility,
+    ChatSettings,
+    GroupMessage,
+    InstalledAgent,
+    Memory,
+    MemoryCategory,
+    Scope,
+)
 
 AccessEffect = Literal["allow", "ban"]
 
@@ -30,6 +41,7 @@ CREATE TABLE IF NOT EXISTS user_settings (
     model TEXT NOT NULL,
     reasoning TEXT NOT NULL,
     memory_enabled INTEGER NOT NULL DEFAULT 1,
+    active_agent_id TEXT,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -38,6 +50,7 @@ CREATE TABLE IF NOT EXISTS chat_settings (
     model TEXT NOT NULL,
     reasoning TEXT NOT NULL,
     memory_enabled INTEGER NOT NULL DEFAULT 1,
+    active_agent_id TEXT,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -70,6 +83,44 @@ CREATE TABLE IF NOT EXISTS memories (
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE (scope_kind, scope_id, content)
 );
+
+CREATE TABLE IF NOT EXISTS agents (
+    id TEXT PRIMARY KEY,
+    owner_id INTEGER NOT NULL,
+    visibility TEXT NOT NULL CHECK (visibility IN ('private', 'unlisted', 'public')),
+    current_version INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS agent_versions (
+    agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    version INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL,
+    instructions TEXT NOT NULL,
+    model TEXT,
+    capabilities TEXT NOT NULL,
+    checksum TEXT NOT NULL,
+    share_token TEXT UNIQUE,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (agent_id, version)
+);
+
+CREATE TABLE IF NOT EXISTS agent_installs (
+    scope_kind TEXT NOT NULL CHECK (scope_kind IN ('user', 'chat')),
+    scope_id INTEGER NOT NULL,
+    agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    version INTEGER NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    installed_by INTEGER NOT NULL,
+    installed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (scope_kind, scope_id, agent_id),
+    FOREIGN KEY (agent_id, version) REFERENCES agent_versions(agent_id, version)
+);
+
+CREATE INDEX IF NOT EXISTS agent_installs_scope
+ON agent_installs(scope_kind, scope_id, enabled, installed_at);
 
 CREATE TABLE IF NOT EXISTS group_messages (
     chat_id INTEGER NOT NULL,
@@ -137,6 +188,8 @@ class Database:
         await self.connection.executescript(SCHEMA)
         await self._ensure_column("user_settings", "memory_enabled", "INTEGER NOT NULL DEFAULT 1")
         await self._ensure_column("chat_settings", "memory_enabled", "INTEGER NOT NULL DEFAULT 1")
+        await self._ensure_column("user_settings", "active_agent_id", "TEXT")
+        await self._ensure_column("chat_settings", "active_agent_id", "TEXT")
         await self._ensure_column(
             "conversations", "last_group_message_id", "INTEGER NOT NULL DEFAULT 0"
         )
@@ -212,7 +265,8 @@ class Database:
     async def get_settings(self, scope: Scope) -> ChatSettings:
         table, key = self._settings_table(scope)
         cursor = await self.conn.execute(
-            f"SELECT model, reasoning, memory_enabled FROM {table} WHERE {key} = ?",
+            f"""SELECT model, reasoning, memory_enabled, active_agent_id
+                FROM {table} WHERE {key} = ?""",
             (scope.id,),
         )
         row = await cursor.fetchone()
@@ -222,37 +276,55 @@ class Database:
             cast(ModelId, row["model"]),
             cast(Reasoning, row["reasoning"]),
             bool(row["memory_enabled"]),
+            cast(str | None, row["active_agent_id"]),
         )
 
     async def set_model(self, scope: Scope, model: ModelId) -> ChatSettings:
         current = await self.get_settings(scope)
-        result = ChatSettings(model, current.reasoning, current.memory_enabled)
+        result = ChatSettings(
+            model, current.reasoning, current.memory_enabled, current.active_agent_id
+        )
         await self._set_settings(scope, result)
         return result
 
     async def set_reasoning(self, scope: Scope, reasoning: Reasoning) -> ChatSettings:
         current = await self.get_settings(scope)
-        result = ChatSettings(current.model, reasoning, current.memory_enabled)
+        result = ChatSettings(
+            current.model, reasoning, current.memory_enabled, current.active_agent_id
+        )
         await self._set_settings(scope, result)
         return result
 
     async def set_memory_enabled(self, scope: Scope, enabled: bool) -> ChatSettings:
         current = await self.get_settings(scope)
-        result = ChatSettings(current.model, current.reasoning, enabled)
+        result = ChatSettings(current.model, current.reasoning, enabled, current.active_agent_id)
+        await self._set_settings(scope, result)
+        return result
+
+    async def set_active_agent(self, scope: Scope, agent_id: str | None) -> ChatSettings:
+        current = await self.get_settings(scope)
+        result = ChatSettings(current.model, current.reasoning, current.memory_enabled, agent_id)
         await self._set_settings(scope, result)
         return result
 
     async def _set_settings(self, scope: Scope, settings: ChatSettings) -> None:
         table, key = self._settings_table(scope)
         await self._write(
-            f"""INSERT INTO {table} ({key}, model, reasoning, memory_enabled)
-                VALUES (?, ?, ?, ?)
+            f"""INSERT INTO {table} ({key}, model, reasoning, memory_enabled, active_agent_id)
+                VALUES (?, ?, ?, ?, ?)
                 ON CONFLICT({key}) DO UPDATE SET
                     model = excluded.model,
                     reasoning = excluded.reasoning,
                     memory_enabled = excluded.memory_enabled,
+                    active_agent_id = excluded.active_agent_id,
                     updated_at = CURRENT_TIMESTAMP""",
-            (scope.id, settings.model, settings.reasoning, settings.memory_enabled),
+            (
+                scope.id,
+                settings.model,
+                settings.reasoning,
+                settings.memory_enabled,
+                settings.active_agent_id,
+            ),
         )
 
     @staticmethod
@@ -260,6 +332,307 @@ class Database:
         if scope.kind == "user":
             return "user_settings", "user_id"
         return "chat_settings", "chat_id"
+
+    async def create_agent(
+        self,
+        *,
+        agent_id: str,
+        owner_id: int,
+        scope: Scope,
+        name: str,
+        description: str,
+        instructions: str,
+        model: ModelId | None,
+        capabilities: tuple[AgentCapability, ...],
+        checksum: str,
+    ) -> InstalledAgent:
+        async with self.transaction() as connection:
+            await connection.execute(
+                """INSERT INTO agents (id, owner_id, visibility, current_version)
+                   VALUES (?, ?, 'private', 1)""",
+                (agent_id, owner_id),
+            )
+            await connection.execute(
+                """INSERT INTO agent_versions (
+                       agent_id, version, name, description, instructions, model,
+                       capabilities, checksum
+                   ) VALUES (?, 1, ?, ?, ?, ?, ?, ?)""",
+                (
+                    agent_id,
+                    name,
+                    description,
+                    instructions,
+                    model,
+                    json.dumps(capabilities, separators=(",", ":")),
+                    checksum,
+                ),
+            )
+            await connection.execute(
+                """INSERT INTO agent_installs (
+                       scope_kind, scope_id, agent_id, version, installed_by
+                   ) VALUES (?, ?, ?, 1, ?)""",
+                (scope.kind, scope.id, agent_id, owner_id),
+            )
+            if scope != Scope("user", owner_id):
+                await connection.execute(
+                    """INSERT INTO agent_installs (
+                           scope_kind, scope_id, agent_id, version, installed_by
+                       ) VALUES ('user', ?, ?, 1, ?)""",
+                    (owner_id, agent_id, owner_id),
+                )
+        installed = await self.installed_agent(scope, agent_id)
+        if installed is None:
+            raise RuntimeError("Agent was not created")
+        return installed
+
+    async def create_agent_version(
+        self,
+        *,
+        agent_id: str,
+        owner_id: int,
+        scope: Scope,
+        name: str,
+        description: str,
+        instructions: str,
+        model: ModelId | None,
+        capabilities: tuple[AgentCapability, ...],
+        checksum: str,
+    ) -> InstalledAgent:
+        async with self.transaction() as connection:
+            cursor = await connection.execute(
+                "SELECT owner_id, current_version FROM agents WHERE id = ?", (agent_id,)
+            )
+            row = await cursor.fetchone()
+            if row is None:
+                raise LookupError("Agent not found.")
+            if row["owner_id"] != owner_id:
+                raise PermissionError("Only the agent owner can edit it.")
+            version = cast(int, row["current_version"]) + 1
+            await connection.execute(
+                """INSERT INTO agent_versions (
+                       agent_id, version, name, description, instructions, model,
+                       capabilities, checksum
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    agent_id,
+                    version,
+                    name,
+                    description,
+                    instructions,
+                    model,
+                    json.dumps(capabilities, separators=(",", ":")),
+                    checksum,
+                ),
+            )
+            await connection.execute(
+                """UPDATE agents SET current_version = ?, updated_at = CURRENT_TIMESTAMP
+                   WHERE id = ?""",
+                (version, agent_id),
+            )
+            await connection.execute(
+                """INSERT INTO agent_installs (
+                       scope_kind, scope_id, agent_id, version, installed_by
+                   ) VALUES (?, ?, ?, ?, ?)
+                   ON CONFLICT(scope_kind, scope_id, agent_id) DO UPDATE SET
+                       version = excluded.version,
+                       enabled = 1,
+                       installed_by = excluded.installed_by,
+                       installed_at = CURRENT_TIMESTAMP""",
+                (scope.kind, scope.id, agent_id, version, owner_id),
+            )
+            if scope != Scope("user", owner_id):
+                await connection.execute(
+                    """UPDATE agent_installs SET version = ?, enabled = 1,
+                           installed_at = CURRENT_TIMESTAMP
+                       WHERE scope_kind = 'user' AND scope_id = ? AND agent_id = ?""",
+                    (version, owner_id, agent_id),
+                )
+        installed = await self.installed_agent(scope, agent_id)
+        if installed is None:
+            raise RuntimeError("Agent version was not saved")
+        return installed
+
+    async def agent_profile(self, agent_id: str) -> AgentProfile | None:
+        cursor = await self.conn.execute("SELECT * FROM agents WHERE id = ?", (agent_id,))
+        row = await cursor.fetchone()
+        return self._agent_profile(row) if row else None
+
+    async def agent_version(self, agent_id: str, version: int) -> AgentVersion | None:
+        cursor = await self.conn.execute(
+            "SELECT * FROM agent_versions WHERE agent_id = ? AND version = ?",
+            (agent_id, version),
+        )
+        row = await cursor.fetchone()
+        return self._agent_version(row) if row else None
+
+    async def installed_agent(self, scope: Scope, agent_id: str) -> InstalledAgent | None:
+        cursor = await self.conn.execute(
+            """SELECT
+                   i.scope_kind, i.scope_id, i.enabled, i.installed_by, i.installed_at,
+                   a.id, a.owner_id, a.visibility, a.current_version, a.created_at,
+                   a.updated_at, v.version, v.name, v.description, v.instructions,
+                   v.model, v.capabilities, v.checksum, v.share_token,
+                   v.created_at AS version_created_at
+               FROM agent_installs AS i
+               JOIN agents AS a ON a.id = i.agent_id
+               JOIN agent_versions AS v ON v.agent_id = i.agent_id AND v.version = i.version
+               WHERE i.scope_kind = ? AND i.scope_id = ? AND i.agent_id = ?""",
+            (scope.kind, scope.id, agent_id),
+        )
+        row = await cursor.fetchone()
+        return self._installed_agent(row) if row else None
+
+    async def installed_agents(
+        self, scope: Scope, *, enabled_only: bool = False
+    ) -> list[InstalledAgent]:
+        enabled = " AND i.enabled = 1" if enabled_only else ""
+        cursor = await self.conn.execute(
+            """SELECT
+                   i.scope_kind, i.scope_id, i.enabled, i.installed_by, i.installed_at,
+                   a.id, a.owner_id, a.visibility, a.current_version, a.created_at,
+                   a.updated_at, v.version, v.name, v.description, v.instructions,
+                   v.model, v.capabilities, v.checksum, v.share_token,
+                   v.created_at AS version_created_at
+               FROM agent_installs AS i
+               JOIN agents AS a ON a.id = i.agent_id
+               JOIN agent_versions AS v ON v.agent_id = i.agent_id AND v.version = i.version
+               WHERE i.scope_kind = ? AND i.scope_id = ?"""
+            + enabled
+            + " ORDER BY lower(v.name), i.installed_at",
+            (scope.kind, scope.id),
+        )
+        return [self._installed_agent(row) for row in await cursor.fetchall()]
+
+    async def share_agent_version(
+        self, agent_id: str, owner_id: int, version: int, token: str
+    ) -> str:
+        async with self.transaction() as connection:
+            cursor = await connection.execute(
+                """SELECT a.owner_id, v.share_token
+                   FROM agents AS a JOIN agent_versions AS v ON v.agent_id = a.id
+                   WHERE a.id = ? AND v.version = ?""",
+                (agent_id, version),
+            )
+            row = await cursor.fetchone()
+            if row is None:
+                raise LookupError("Agent version not found.")
+            if row["owner_id"] != owner_id:
+                raise PermissionError("Only the agent owner can share it.")
+            existing = cast(str | None, row["share_token"])
+            if existing:
+                return existing
+            await connection.execute(
+                "UPDATE agent_versions SET share_token = ? WHERE agent_id = ? AND version = ?",
+                (token, agent_id, version),
+            )
+            await connection.execute(
+                """UPDATE agents SET visibility = 'unlisted', updated_at = CURRENT_TIMESTAMP
+                   WHERE id = ? AND visibility = 'private'""",
+                (agent_id,),
+            )
+        return token
+
+    async def shared_agent(self, token: str) -> tuple[AgentProfile, AgentVersion] | None:
+        cursor = await self.conn.execute(
+            """SELECT
+                   a.id, a.owner_id, a.visibility, a.current_version, a.created_at,
+                   a.updated_at, v.version, v.name, v.description, v.instructions,
+                   v.model, v.capabilities, v.checksum, v.share_token,
+                   v.created_at AS version_created_at
+               FROM agent_versions AS v JOIN agents AS a ON a.id = v.agent_id
+               WHERE v.share_token = ? AND a.visibility IN ('unlisted', 'public')""",
+            (token,),
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            return None
+        return self._agent_profile(row), self._joined_agent_version(row)
+
+    async def install_agent(
+        self, scope: Scope, agent_id: str, version: int, installed_by: int
+    ) -> InstalledAgent:
+        await self._write(
+            """INSERT INTO agent_installs (
+                   scope_kind, scope_id, agent_id, version, installed_by
+               ) VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(scope_kind, scope_id, agent_id) DO UPDATE SET
+                   version = excluded.version,
+                   enabled = 1,
+                   installed_by = excluded.installed_by,
+                   installed_at = CURRENT_TIMESTAMP""",
+            (scope.kind, scope.id, agent_id, version, installed_by),
+        )
+        installed = await self.installed_agent(scope, agent_id)
+        if installed is None:
+            raise RuntimeError("Agent was not installed")
+        return installed
+
+    async def remove_agent_install(self, scope: Scope, agent_id: str) -> bool:
+        async with self.transaction() as connection:
+            cursor = await connection.execute(
+                """DELETE FROM agent_installs
+                   WHERE scope_kind = ? AND scope_id = ? AND agent_id = ?""",
+                (scope.kind, scope.id, agent_id),
+            )
+            table, key = self._settings_table(scope)
+            await connection.execute(
+                f"""UPDATE {table} SET active_agent_id = NULL, updated_at = CURRENT_TIMESTAMP
+                    WHERE {key} = ? AND active_agent_id = ?""",
+                (scope.id, agent_id),
+            )
+        return cursor.rowcount > 0
+
+    @staticmethod
+    def _agent_profile(row: aiosqlite.Row) -> AgentProfile:
+        return AgentProfile(
+            id=cast(str, row["id"]),
+            owner_id=cast(int, row["owner_id"]),
+            visibility=cast(AgentVisibility, row["visibility"]),
+            current_version=cast(int, row["current_version"]),
+            created_at=cast(str, row["created_at"]),
+            updated_at=cast(str, row["updated_at"]),
+        )
+
+    @staticmethod
+    def _agent_version(row: aiosqlite.Row) -> AgentVersion:
+        return AgentVersion(
+            agent_id=cast(str, row["agent_id"]),
+            version=cast(int, row["version"]),
+            name=cast(str, row["name"]),
+            description=cast(str, row["description"]),
+            instructions=cast(str, row["instructions"]),
+            model=cast(ModelId | None, row["model"]),
+            capabilities=tuple(cast(list[AgentCapability], json.loads(row["capabilities"]))),
+            checksum=cast(str, row["checksum"]),
+            share_token=cast(str | None, row["share_token"]),
+            created_at=cast(str, row["created_at"]),
+        )
+
+    @classmethod
+    def _joined_agent_version(cls, row: aiosqlite.Row) -> AgentVersion:
+        return AgentVersion(
+            agent_id=cast(str, row["id"]),
+            version=cast(int, row["version"]),
+            name=cast(str, row["name"]),
+            description=cast(str, row["description"]),
+            instructions=cast(str, row["instructions"]),
+            model=cast(ModelId | None, row["model"]),
+            capabilities=tuple(cast(list[AgentCapability], json.loads(row["capabilities"]))),
+            checksum=cast(str, row["checksum"]),
+            share_token=cast(str | None, row["share_token"]),
+            created_at=cast(str, row["version_created_at"]),
+        )
+
+    @classmethod
+    def _installed_agent(cls, row: aiosqlite.Row) -> InstalledAgent:
+        return InstalledAgent(
+            scope=Scope(cast(Any, row["scope_kind"]), cast(int, row["scope_id"])),
+            profile=cls._agent_profile(row),
+            version=cls._joined_agent_version(row),
+            enabled=bool(row["enabled"]),
+            installed_by=cast(int, row["installed_by"]),
+            installed_at=cast(str, row["installed_at"]),
+        )
 
     async def conversation_id(self, chat_id: int, thread_id: int) -> str | None:
         cursor = await self.conn.execute(

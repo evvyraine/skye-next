@@ -13,6 +13,7 @@ from .access import AccessService
 from .attachments import AttachmentService
 from .config import Settings
 from .conversations import ConversationService
+from .custom_agents import CustomAgentService
 from .db import Database
 from .group_context import GroupContextService
 from .memory import MemoryService
@@ -55,6 +56,7 @@ async def run() -> None:
     dispatcher = Dispatcher()
     conversations = ConversationService(database, client)
     memory = MemoryService(database)
+    custom_agents = CustomAgentService(database)
     groups = GroupContextService(config, database, bot)
     attachments = AttachmentService(config, bot, client)
     access = AccessService(database, config.skye_owner_ids)
@@ -63,9 +65,19 @@ async def run() -> None:
         conversations,
         memory,
         load_base_prompt(config.skye_base_prompt_path),
+        custom_agents,
     )
     telegram = TelegramApp(
-        config, bot, database, access, conversations, memory, groups, attachments, runtime
+        config,
+        bot,
+        database,
+        access,
+        conversations,
+        memory,
+        custom_agents,
+        groups,
+        attachments,
+        runtime,
     )
     dispatcher.update.outer_middleware(UpdateMiddleware(database, groups))
     dispatcher.include_router(telegram.router)

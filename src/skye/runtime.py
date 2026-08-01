@@ -25,8 +25,9 @@ from openai.types.responses.response_text_delta_event import ResponseTextDeltaEv
 
 from .config import Settings
 from .conversations import ConversationService
+from .custom_agents import AGENT_CAPABILITIES, AgentComposition, CustomAgentService
 from .memory import MemoryService
-from .models import ChatSettings, RequestContext
+from .models import AgentCapability, ChatSettings, InstalledAgent, RequestContext
 
 TextCallback = Callable[[str], Awaitable[None]]
 
@@ -44,10 +45,12 @@ class AgentRuntime:
         conversations: ConversationService,
         memory: MemoryService,
         base_prompt: str,
+        custom_agents: CustomAgentService | None = None,
     ) -> None:
         self.config = config
         self.conversations = conversations
         self.memory = memory
+        self.custom_agents = custom_agents
         self.base_prompt = base_prompt.strip()
         self._locks: defaultdict[tuple[int, int], asyncio.Lock] = defaultdict(asyncio.Lock)
         self._active: dict[tuple[int, int], RunResultStreaming] = {}
@@ -65,7 +68,12 @@ class AgentRuntime:
             memory_context = ""
             if settings.memory_enabled:
                 memory_context = await self.memory.context(context.scope, self._query(user_input))
-            agent = self._agent(context, settings, memory_context)
+            composition = AgentComposition(None, ())
+            if self.custom_agents is not None:
+                composition = await self.custom_agents.composition(
+                    context.scope, settings.active_agent_id
+                )
+            agent = self._agent(context, settings, memory_context, composition)
             result = Runner.run_streamed(
                 agent,
                 user_input,
@@ -96,9 +104,47 @@ class AgentRuntime:
         return True
 
     def _agent(
-        self, context: RequestContext, settings: ChatSettings, memory_context: str = ""
+        self,
+        context: RequestContext,
+        settings: ChatSettings,
+        memory_context: str = "",
+        composition: AgentComposition | None = None,
     ) -> Agent[None]:
-        instructions = self.base_prompt
+        composition = composition or AgentComposition(None, ())
+        active = composition.active
+        instructions = self._instructions(context, settings, memory_context, active)
+        tools = self._hosted_tools(
+            active.version.capabilities if active else AGENT_CAPABILITIES
+        )
+        if settings.memory_enabled:
+            tools.extend(self.memory.tools(context.scope))
+        tools.extend(
+            self._specialist(item, context, settings, memory_context).as_tool(
+                tool_name=f"agent_{item.profile.id}",
+                tool_description=(
+                    f"Ask the {item.version.name} specialist for help when the task benefits "
+                    f"from this expertise: {item.version.description}"
+                ),
+                max_turns=self.config.skye_max_turns,
+            )
+            for item in composition.specialists
+        )
+        return Agent(
+            name=active.version.name if active else "Skye",
+            instructions=instructions,
+            model=active.version.model or settings.model if active else settings.model,
+            model_settings=self._model_settings(context, settings),
+            tools=tools,
+        )
+
+    def _instructions(
+        self,
+        context: RequestContext,
+        settings: ChatSettings,
+        memory_context: str,
+        active: InstalledAgent | None,
+    ) -> str:
+        instructions = active.version.instructions if active else self.base_prompt
         if context.chat_type != "private":
             instructions += (
                 "\n\nYou are speaking in a Telegram group. Address the current sender when useful, "
@@ -114,51 +160,72 @@ class AgentRuntime:
                 "requested by the user. Never save secrets, transient requests, or inferred "
                 "sensitive traits. Use recall when needed and forget when asked."
             )
+        return instructions
 
-        image_tool = ImageGenerationTool(
-            tool_config={
-                "type": "image_generation",
-                "model": "gpt-image-2",
-                "size": "auto",
-                "quality": "auto",
-                "output_format": "png",
-                "background": "auto",
-                "moderation": "auto",
-                "partial_images": 1,
-            }
-        )
-        shell_tool = ShellTool(
-            environment=cast(
-                Any,
-                {
-                    "type": "container_auto",
-                    "network_policy": {"type": "disabled"},
-                },
+    @staticmethod
+    def _hosted_tools(capabilities: tuple[AgentCapability, ...]) -> list[Tool]:
+        tools: list[Tool] = []
+        if "web" in capabilities:
+            tools.append(WebSearchTool(search_context_size="medium"))
+        if "image" in capabilities:
+            tools.append(
+                ImageGenerationTool(
+                    tool_config={
+                        "type": "image_generation",
+                        "model": "gpt-image-2",
+                        "size": "auto",
+                        "quality": "auto",
+                        "output_format": "png",
+                        "background": "auto",
+                        "moderation": "auto",
+                        "partial_images": 1,
+                    }
+                )
             )
+        if "shell" in capabilities:
+            tools.append(
+                ShellTool(
+                    environment=cast(
+                        Any,
+                        {
+                            "type": "container_auto",
+                            "network_policy": {"type": "disabled"},
+                        },
+                    )
+                )
+            )
+        return tools
+
+    def _specialist(
+        self,
+        installed: InstalledAgent,
+        context: RequestContext,
+        settings: ChatSettings,
+        memory_context: str,
+    ) -> Agent[None]:
+        instructions = self._instructions(context, settings, memory_context, installed)
+        tools = self._hosted_tools(installed.version.capabilities)
+        return Agent(
+            name=installed.version.name,
+            instructions=instructions,
+            model=installed.version.model or settings.model,
+            model_settings=self._model_settings(context, settings),
+            tools=tools,
         )
+
+    def _model_settings(
+        self, context: RequestContext, settings: ChatSettings
+    ) -> ModelSettings:
         safety_id = hmac.new(
             self.config.telegram_bot_token.encode(),
             str(context.user_id).encode(),
             hashlib.sha256,
         ).hexdigest()[:32]
-        tools: list[Tool] = [
-            WebSearchTool(search_context_size="medium"),
-            image_tool,
-            shell_tool,
-        ]
-        if settings.memory_enabled:
-            tools.extend(self.memory.tools(context.scope))
-        return Agent(
-            name="Skye",
-            instructions=instructions,
-            model=settings.model,
-            model_settings=ModelSettings(
-                reasoning={"effort": settings.reasoning},
-                verbosity="low",
-                store=True,
-                extra_body={"safety_identifier": safety_id},
-            ),
-            tools=tools,
+        return ModelSettings(
+            reasoning={"effort": settings.reasoning},
+            verbosity="low",
+            store=True,
+            extra_body={"safety_identifier": safety_id},
         )
 
     @staticmethod

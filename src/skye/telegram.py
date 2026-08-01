@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import re
 import time
@@ -12,7 +13,9 @@ import structlog
 from agents.items import TResponseInputItem
 from aiogram import BaseMiddleware, Bot, Dispatcher, F, Router
 from aiogram.exceptions import TelegramBadRequest
-from aiogram.filters import Command
+from aiogram.filters import Command, StateFilter
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (
     BotCommand,
     CallbackQuery,
@@ -29,16 +32,24 @@ from .access import AccessService
 from .attachments import AttachmentService
 from .config import MODELS, Reasoning, Settings
 from .conversations import ConversationService
+from .custom_agents import AGENT_CAPABILITIES, CustomAgentService
 from .db import Database
 from .group_context import GroupContextService
 from .memory import MemoryService
-from .models import ChatSettings, ChatType, RequestContext, Scope
+from .models import AgentCapability, ChatSettings, ChatType, InstalledAgent, RequestContext, Scope
 from .rich import RichMessages
 from .runtime import AgentRuntime, RunOutput
 
 log = structlog.get_logger()
 REASONING: tuple[Reasoning, ...] = ("none", "low", "medium", "high", "xhigh", "max")
 BOT_NAME = re.compile(r"(?<!\w)(?:skye|скай)(?!\w)", re.IGNORECASE)
+
+
+class AgentWizard(StatesGroup):
+    name = State()
+    description = State()
+    instructions = State()
+    preview = State()
 
 
 class UpdateMiddleware(BaseMiddleware):
@@ -78,6 +89,7 @@ class TelegramApp:
         access: AccessService,
         conversations: ConversationService,
         memory: MemoryService,
+        custom_agents: CustomAgentService,
         groups: GroupContextService,
         attachments: AttachmentService,
         runtime: AgentRuntime,
@@ -88,6 +100,7 @@ class TelegramApp:
         self.access = access
         self.conversations = conversations
         self.memory = memory
+        self.custom_agents = custom_agents
         self.groups = groups
         self.attachments = attachments
         self.runtime = runtime
@@ -99,10 +112,21 @@ class TelegramApp:
         self.router.message.register(self.start, Command("start"))
         self.router.message.register(self.help, Command("help"))
         self.router.message.register(self.settings, Command("settings"))
+        self.router.message.register(self.agents, Command("agents"))
         self.router.message.register(self.reset, Command("reset"))
         self.router.message.register(self.stop, Command("stop"))
         self.router.message.register(self.admin, Command("admin"))
         self.router.callback_query.register(self.settings_callback, F.data.startswith("settings:"))
+        self.router.callback_query.register(self.agents_callback, F.data.startswith("agents:"))
+        self.router.message.register(
+            self.agent_wizard,
+            StateFilter(
+                AgentWizard.name,
+                AgentWizard.description,
+                AgentWizard.instructions,
+                AgentWizard.preview,
+            ),
+        )
         self.router.message.register(self.chat)
 
     async def start(self, message: Message) -> None:
@@ -110,6 +134,26 @@ class TelegramApp:
         if context is None:
             return
         if await self.access.allowed(context):
+            parts = (message.text or "").split(maxsplit=1)
+            if len(parts) == 2 and parts[1].startswith("agent_"):
+                if not await self._can_edit(context):
+                    await self.rich.send(
+                        message, "Only chat administrators can install an agent here."
+                    )
+                    return
+                try:
+                    installed = await self.custom_agents.import_shared(
+                        context.scope, parts[1], context.user_id
+                    )
+                except (LookupError, ValueError) as error:
+                    await self.rich.send(message, str(error))
+                    return
+                await self.rich.send(
+                    message,
+                    f"Installed **{installed.version.name}** v{installed.version.version}. "
+                    "Use /agents to select or inspect it.",
+                )
+                return
             await self.rich.send(
                 message,
                 "Hi. I'm Skye. Send a message, image, or task — "
@@ -125,7 +169,8 @@ class TelegramApp:
             message,
             "I can chat, search the web, work with images, "
             "and run code in an isolated container.\n\n"
-            "/settings — model, reasoning, and memory\n\n"
+            "/settings — model, reasoning, agent, and memory\n\n"
+            "/agents — create, install, select, and share agents\n\n"
             "/reset — new conversation\n\n"
             "/stop — cancel the active task"
         )
@@ -136,9 +181,12 @@ class TelegramApp:
             return
         current = await self.database.get_settings(context.scope)
         editable = await self._can_edit(context)
+        agent_name = await self.custom_agents.active_name(
+            context.scope, current.active_agent_id
+        )
         await self.rich.send(
             message,
-            self.rich.settings(current),
+            self.rich.settings(current, agent_name),
             reply_markup=self._settings_keyboard(editable),
         )
 
@@ -153,11 +201,23 @@ class TelegramApp:
         editable = await self._can_edit(context)
         action = callback.data.split(":")
         current = await self.database.get_settings(context.scope)
+        agent_name = await self.custom_agents.active_name(
+            context.scope, current.active_agent_id
+        )
 
         if action == ["settings", "models"]:
             await callback.message.edit_reply_markup(reply_markup=self._model_keyboard(current))
         elif action == ["settings", "reasoning"]:
             await callback.message.edit_reply_markup(reply_markup=self._reasoning_keyboard(current))
+        elif action == ["settings", "agents"]:
+            installed = await self.custom_agents.list(context.scope)
+            await self.rich.edit(
+                callback.message,
+                self.rich.agents(installed, current.active_agent_id),
+                reply_markup=self._agent_selection_keyboard(
+                    installed, current.active_agent_id, editable, settings_back=True
+                ),
+            )
         elif action == ["settings", "memory"]:
             memories = await self.database.memories(context.scope, 10)
             await self.rich.edit(
@@ -201,7 +261,7 @@ class TelegramApp:
         elif action == ["settings", "back"]:
             await self.rich.edit(
                 callback.message,
-                self.rich.settings(current),
+                self.rich.settings(current, agent_name),
                 reply_markup=self._settings_keyboard(editable),
             )
         elif len(action) == 3 and action[:2] == ["settings", "model"]:
@@ -211,7 +271,7 @@ class TelegramApp:
             current = await self.database.set_model(context.scope, action[2])
             await self.rich.edit(
                 callback.message,
-                self.rich.settings(current),
+                self.rich.settings(current, agent_name),
                 reply_markup=self._settings_keyboard(True),
             )
         elif len(action) == 3 and action[:2] == ["settings", "reason"]:
@@ -221,10 +281,321 @@ class TelegramApp:
             current = await self.database.set_reasoning(context.scope, action[2])
             await self.rich.edit(
                 callback.message,
-                self.rich.settings(current),
+                self.rich.settings(current, agent_name),
+                reply_markup=self._settings_keyboard(True),
+            )
+        elif len(action) == 3 and action[:2] == ["settings", "agent"]:
+            if not editable:
+                await callback.answer("Only chat administrators can change this.", show_alert=True)
+                return
+            agent_id = None if action[2] == "skye" else action[2]
+            try:
+                await self.custom_agents.select(context.scope, agent_id)
+            except (LookupError, ValueError) as error:
+                await callback.answer(str(error), show_alert=True)
+                return
+            current = await self.database.get_settings(context.scope)
+            agent_name = await self.custom_agents.active_name(
+                context.scope, current.active_agent_id
+            )
+            await self.rich.edit(
+                callback.message,
+                self.rich.settings(current, agent_name),
                 reply_markup=self._settings_keyboard(True),
             )
         await callback.answer()
+
+    async def agents(self, message: Message, state: FSMContext) -> None:
+        context = self._context(message)
+        if context is None or not await self._require_access(message, context):
+            return
+        await state.clear()
+        editable = await self._can_edit(context)
+        parts = (message.text or "").split(maxsplit=2)
+        if len(parts) >= 2 and parts[1].lower() == "import":
+            if not editable:
+                await self.rich.send(
+                    message, "Only chat administrators can install an agent here."
+                )
+                return
+            if len(parts) != 3:
+                await self.rich.send(message, "Use `/agents import <share link or token>`.")
+                return
+            try:
+                installed = await self.custom_agents.import_shared(
+                    context.scope, parts[2], context.user_id
+                )
+            except (LookupError, ValueError) as error:
+                await self.rich.send(message, str(error))
+                return
+            await self.rich.send(
+                message,
+                f"Installed **{installed.version.name}** v{installed.version.version}.",
+            )
+        await self._send_agents(message, context, editable)
+
+    async def agents_callback(self, callback: CallbackQuery, state: FSMContext) -> None:
+        if not callback.message or not isinstance(callback.message, Message) or not callback.data:
+            await callback.answer()
+            return
+        context = self._context(callback.message, callback.from_user)
+        if context is None or not await self.access.allowed(context):
+            await callback.answer("Access denied", show_alert=True)
+            return
+        editable = await self._can_edit(context)
+        action = callback.data.split(":")
+        try:
+            if action == ["agents", "list"]:
+                await state.clear()
+                await self._edit_agents(callback.message, context, editable)
+            elif action == ["agents", "add"]:
+                if not editable:
+                    raise PermissionError("Only chat administrators can add agents here.")
+                await state.set_state(AgentWizard.name)
+                await state.set_data(
+                    {"scope_kind": context.scope.kind, "scope_id": context.scope.id}
+                )
+                await self.rich.send(callback.message, "Send the agent name (up to 64 characters).")
+            elif action == ["agents", "save"]:
+                await self._save_agent(callback.message, context, state, editable)
+            elif action == ["agents", "cancel"]:
+                await state.clear()
+                await self._edit_agents(callback.message, context, editable)
+            elif len(action) == 3 and action[:2] == ["agents", "open"]:
+                installed = await self.custom_agents.require_installed(context.scope, action[2])
+                await self._show_agent(callback.message, context, installed, editable)
+            elif len(action) == 3 and action[:2] == ["agents", "select"]:
+                if not editable:
+                    raise PermissionError("Only chat administrators can select an agent here.")
+                agent_id = None if action[2] == "skye" else action[2]
+                await self.custom_agents.select(context.scope, agent_id)
+                await self._edit_agents(callback.message, context, editable)
+            elif len(action) == 3 and action[:2] == ["agents", "edit"]:
+                installed = await self.custom_agents.require_installed(context.scope, action[2])
+                if installed.profile.owner_id != context.user_id:
+                    raise PermissionError("Only the agent owner can edit it.")
+                await state.set_state(AgentWizard.name)
+                await state.set_data(
+                    {
+                        "scope_kind": context.scope.kind,
+                        "scope_id": context.scope.id,
+                        "agent_id": installed.profile.id,
+                        "name": installed.version.name,
+                        "description": installed.version.description,
+                        "instructions": installed.version.instructions,
+                        "model": installed.version.model,
+                        "capabilities": list(installed.version.capabilities),
+                    }
+                )
+                await self.rich.send(
+                    callback.message,
+                    f"Send a new name, or `.` to keep “{installed.version.name}”.",
+                )
+            elif len(action) == 3 and action[:2] == ["agents", "share"]:
+                token = await self.custom_agents.share(context.scope, action[2], context.user_id)
+                username = (await self.bot.me()).username
+                if not username:
+                    raise RuntimeError("The bot needs a username to create a share link.")
+                await self.rich.send(
+                    callback.message,
+                    "Immutable share link for this version:\n\n"
+                    f"[Install this agent](https://t.me/{username}?start=agent_{token})",
+                )
+            elif len(action) == 3 and action[:2] == ["agents", "remove"]:
+                if not editable:
+                    raise PermissionError("Only chat administrators can remove agents here.")
+                await self.custom_agents.remove(context.scope, action[2])
+                await self._edit_agents(callback.message, context, editable)
+            elif len(action) == 3 and action[:2] == ["agents", "model"]:
+                installed = await self.custom_agents.require_installed(context.scope, action[2])
+                if installed.profile.owner_id != context.user_id:
+                    raise PermissionError("Only the agent owner can edit it.")
+                installed = await self.custom_agents.reconfigure(
+                    agent_id=installed.profile.id,
+                    owner_id=context.user_id,
+                    scope=context.scope,
+                    model=self.custom_agents.next_model(installed.version.model),
+                )
+                await self._show_agent(callback.message, context, installed, editable)
+            elif len(action) == 4 and action[:2] == ["agents", "cap"]:
+                installed = await self.custom_agents.require_installed(context.scope, action[2])
+                capability = cast(AgentCapability, action[3])
+                if capability not in AGENT_CAPABILITIES:
+                    raise ValueError("Unknown capability.")
+                if installed.profile.owner_id != context.user_id:
+                    raise PermissionError("Only the agent owner can edit it.")
+                selected = set(installed.version.capabilities)
+                selected.symmetric_difference_update({capability})
+                capabilities = tuple(item for item in AGENT_CAPABILITIES if item in selected)
+                installed = await self.custom_agents.reconfigure(
+                    agent_id=installed.profile.id,
+                    owner_id=context.user_id,
+                    scope=context.scope,
+                    capabilities=capabilities,
+                    keep_model=True,
+                )
+                await self._show_agent(callback.message, context, installed, editable)
+        except (LookupError, PermissionError, ValueError) as error:
+            await callback.answer(str(error), show_alert=True)
+            return
+        await callback.answer()
+
+    async def agent_wizard(self, message: Message, state: FSMContext) -> None:
+        context = self._context(message)
+        if context is None or not await self._require_access(message, context):
+            await state.clear()
+            return
+        data = await state.get_data()
+        if (data.get("scope_kind"), data.get("scope_id")) != (
+            context.scope.kind,
+            context.scope.id,
+        ) or not await self._can_edit(context):
+            await state.clear()
+            await self.rich.send(message, "This agent draft cannot be edited in this chat.")
+            return
+        current = await state.get_state()
+        if current == AgentWizard.preview.state:
+            await self.rich.send(message, "Use Save or Cancel below the preview.")
+            return
+        try:
+            value = await self._agent_wizard_value(message, current)
+        except ValueError as error:
+            await self.rich.send(message, str(error))
+            return
+        keep = value == "." and "agent_id" in data
+        if current == AgentWizard.name.state:
+            if not keep and not 1 <= len(" ".join(value.split())) <= 64:
+                await self.rich.send(message, "Agent name must be 1–64 characters.")
+                return
+            if not keep:
+                await state.update_data(name=value)
+            await state.set_state(AgentWizard.description)
+            suffix = (
+                f", or `.` to keep “{data['description']}”" if "agent_id" in data else ""
+            )
+            await self.rich.send(
+                message, f"What is this agent good at? Send 1–240 characters{suffix}."
+            )
+        elif current == AgentWizard.description.state:
+            if not keep and not 1 <= len(" ".join(value.split())) <= 240:
+                await self.rich.send(message, "Description must be 1–240 characters.")
+                return
+            if not keep:
+                await state.update_data(description=value)
+            await state.set_state(AgentWizard.instructions)
+            suffix = ", or `.` to keep the current instructions" if "agent_id" in data else ""
+            await self.rich.send(
+                message,
+                "Send the agent instructions as text or a Markdown file" + suffix + ".",
+            )
+        elif current == AgentWizard.instructions.state:
+            if not keep and not 1 <= len(value.strip()) <= 12_000:
+                await self.rich.send(message, "Instructions must be 1–12,000 characters.")
+                return
+            if not keep:
+                await state.update_data(instructions=value)
+            await state.set_state(AgentWizard.preview)
+            preview = await state.get_data()
+            await self.rich.send(
+                message,
+                self.rich.agent_preview(
+                    cast(str, preview["name"]),
+                    cast(str, preview["description"]),
+                    cast(str, preview["instructions"]),
+                ),
+                reply_markup=self._agent_preview_keyboard(),
+            )
+
+    async def _save_agent(
+        self, message: Message, context: RequestContext, state: FSMContext, editable: bool
+    ) -> None:
+        if not editable or await state.get_state() != AgentWizard.preview.state:
+            raise PermissionError("This agent draft is no longer active.")
+        data = await state.get_data()
+        if (data.get("scope_kind"), data.get("scope_id")) != (
+            context.scope.kind,
+            context.scope.id,
+        ):
+            raise PermissionError("This agent draft belongs to another chat.")
+        if "agent_id" in data:
+            await self.custom_agents.edit(
+                agent_id=cast(str, data["agent_id"]),
+                owner_id=context.user_id,
+                scope=context.scope,
+                name=cast(str, data["name"]),
+                description=cast(str, data["description"]),
+                instructions=cast(str, data["instructions"]),
+                model=cast(Any, data.get("model")),
+                capabilities=tuple(cast(list[AgentCapability], data["capabilities"])),
+            )
+        else:
+            await self.custom_agents.create(
+                owner_id=context.user_id,
+                scope=context.scope,
+                name=cast(str, data["name"]),
+                description=cast(str, data["description"]),
+                instructions=cast(str, data["instructions"]),
+            )
+        await state.clear()
+        await self._edit_agents(message, context, editable)
+
+    async def _agent_wizard_value(self, message: Message, state: str | None) -> str:
+        if message.text:
+            return message.text.strip()
+        if state == AgentWizard.instructions.state and message.document:
+            filename = message.document.file_name or ""
+            if not filename.lower().endswith((".md", ".txt")):
+                raise ValueError("Upload a Markdown or text file.")
+            if message.document.file_size and message.document.file_size > 100_000:
+                raise ValueError("The instructions file must be at most 100 KB.")
+            destination = io.BytesIO()
+            await self.bot.download(message.document, destination=destination)
+            try:
+                return destination.getvalue().decode("utf-8").strip()
+            except UnicodeDecodeError:
+                raise ValueError("The instructions file must be UTF-8.") from None
+        raise ValueError("Send text for this step.")
+
+    async def _send_agents(
+        self, message: Message, context: RequestContext, editable: bool
+    ) -> None:
+        settings = await self.database.get_settings(context.scope)
+        installed = await self.custom_agents.list(context.scope)
+        await self.rich.send(
+            message,
+            self.rich.agents(installed, settings.active_agent_id),
+            reply_markup=self._agents_keyboard(installed, settings.active_agent_id, editable),
+        )
+
+    async def _edit_agents(
+        self, message: Message, context: RequestContext, editable: bool
+    ) -> None:
+        settings = await self.database.get_settings(context.scope)
+        installed = await self.custom_agents.list(context.scope)
+        await self.rich.edit(
+            message,
+            self.rich.agents(installed, settings.active_agent_id),
+            reply_markup=self._agents_keyboard(installed, settings.active_agent_id, editable),
+        )
+
+    async def _show_agent(
+        self,
+        message: Message,
+        context: RequestContext,
+        installed: InstalledAgent,
+        editable: bool,
+    ) -> None:
+        settings = await self.database.get_settings(context.scope)
+        await self.rich.edit(
+            message,
+            self.rich.agent(installed, settings.active_agent_id == installed.profile.id),
+            reply_markup=self._agent_keyboard(
+                installed,
+                settings.active_agent_id == installed.profile.id,
+                editable,
+                installed.profile.owner_id == context.user_id,
+            ),
+        )
 
     async def reset(self, message: Message) -> None:
         context = self._context(message)
@@ -463,7 +834,127 @@ class TelegramApp:
                     InlineKeyboardButton(text="Model", callback_data="settings:models"),
                     InlineKeyboardButton(text="Reasoning", callback_data="settings:reasoning"),
                 ],
-                [InlineKeyboardButton(text="Memory", callback_data="settings:memory")],
+                [
+                    InlineKeyboardButton(text="Agent", callback_data="settings:agents"),
+                    InlineKeyboardButton(text="Memory", callback_data="settings:memory"),
+                ],
+            ]
+        )
+
+    @staticmethod
+    def _agents_keyboard(
+        agents: list[InstalledAgent], active_agent_id: str | None, editable: bool
+    ) -> InlineKeyboardMarkup | None:
+        rows = [
+            [
+                InlineKeyboardButton(
+                    text=("✓ " if item.profile.id == active_agent_id else "")
+                    + item.version.name,
+                    callback_data=f"agents:open:{item.profile.id}",
+                )
+            ]
+            for item in agents
+        ]
+        if editable:
+            if active_agent_id is not None:
+                rows.append(
+                    [InlineKeyboardButton(text="Use Skye", callback_data="agents:select:skye")]
+                )
+            rows.append([InlineKeyboardButton(text="Add agent", callback_data="agents:add")])
+        return InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
+
+    @staticmethod
+    def _agent_selection_keyboard(
+        agents: list[InstalledAgent],
+        active_agent_id: str | None,
+        editable: bool,
+        *,
+        settings_back: bool,
+    ) -> InlineKeyboardMarkup:
+        rows: list[list[InlineKeyboardButton]] = []
+        if editable:
+            rows.append(
+                [
+                    InlineKeyboardButton(
+                        text=("✓ " if active_agent_id is None else "") + "Skye",
+                        callback_data="settings:agent:skye",
+                    )
+                ]
+            )
+            rows.extend(
+                [
+                    InlineKeyboardButton(
+                        text=("✓ " if item.profile.id == active_agent_id else "")
+                        + item.version.name,
+                        callback_data=f"settings:agent:{item.profile.id}",
+                    )
+                ]
+                for item in agents
+            )
+        if settings_back:
+            rows.append([InlineKeyboardButton(text="‹ Back", callback_data="settings:back")])
+        return InlineKeyboardMarkup(inline_keyboard=rows)
+
+    @staticmethod
+    def _agent_keyboard(
+        installed: InstalledAgent, active: bool, editable: bool, owner: bool
+    ) -> InlineKeyboardMarkup:
+        agent_id = installed.profile.id
+        rows: list[list[InlineKeyboardButton]] = []
+        if editable and not active:
+            rows.append(
+                [
+                    InlineKeyboardButton(
+                        text="Make active", callback_data=f"agents:select:{agent_id}"
+                    )
+                ]
+            )
+        if owner:
+            model = MODELS[installed.version.model] if installed.version.model else "Chat default"
+            rows.extend(
+                [
+                    [
+                        InlineKeyboardButton(
+                            text="Edit", callback_data=f"agents:edit:{agent_id}"
+                        ),
+                        InlineKeyboardButton(
+                            text="Share", callback_data=f"agents:share:{agent_id}"
+                        ),
+                    ],
+                    [
+                        InlineKeyboardButton(
+                            text=f"Model: {model}", callback_data=f"agents:model:{agent_id}"
+                        )
+                    ],
+                    [
+                        InlineKeyboardButton(
+                            text=("✓ " if capability in installed.version.capabilities else "")
+                            + capability.title(),
+                            callback_data=f"agents:cap:{agent_id}:{capability}",
+                        )
+                        for capability in AGENT_CAPABILITIES
+                    ],
+                ]
+            )
+        if editable:
+            rows.append(
+                [
+                    InlineKeyboardButton(
+                        text="Remove from chat", callback_data=f"agents:remove:{agent_id}"
+                    )
+                ]
+            )
+        rows.append([InlineKeyboardButton(text="‹ Back", callback_data="agents:list")])
+        return InlineKeyboardMarkup(inline_keyboard=rows)
+
+    @staticmethod
+    def _agent_preview_keyboard() -> InlineKeyboardMarkup:
+        return InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(text="Save", callback_data="agents:save"),
+                    InlineKeyboardButton(text="Cancel", callback_data="agents:cancel"),
+                ]
             ]
         )
 
@@ -561,7 +1052,8 @@ async def replay_pending(dispatcher: Dispatcher, bot: Bot, database: Database) -
 COMMANDS = [
     BotCommand(command="start", description="Start Skye"),
     BotCommand(command="help", description="Show capabilities"),
-    BotCommand(command="settings", description="Model and reasoning"),
+    BotCommand(command="settings", description="Model, agent, and memory"),
+    BotCommand(command="agents", description="Create and manage agents"),
     BotCommand(command="reset", description="Start a new conversation"),
     BotCommand(command="stop", description="Stop the active task"),
     BotCommand(command="admin", description="Manage access (owner)"),

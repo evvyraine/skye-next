@@ -19,7 +19,7 @@ from aiogram.types import (
 )
 
 from .config import MODELS
-from .models import ChatSettings, Memory
+from .models import ChatSettings, InstalledAgent, Memory
 
 
 class RichMessages:
@@ -68,7 +68,7 @@ class RichMessages:
         )
 
     @staticmethod
-    def settings(settings: ChatSettings) -> InputRichMessage:
+    def settings(settings: ChatSettings, agent_name: str = "Skye") -> InputRichMessage:
         def cell(text: str, *, header: bool = False) -> RichBlockTableCell:
             return RichBlockTableCell(
                 text=text,
@@ -85,11 +85,91 @@ class RichMessages:
                         [cell("Option", header=True), cell("Selected", header=True)],
                         [cell("Model"), cell(MODELS[settings.model])],
                         [cell("Reasoning"), cell(settings.reasoning.title())],
+                        [cell("Agent"), cell(agent_name)],
                         [cell("Memory"), cell("On" if settings.memory_enabled else "Off")],
                     ],
                     is_bordered=True,
                     is_striped=True,
                 ),
+            ]
+        )
+
+    @staticmethod
+    def agents(
+        agents: Sequence[InstalledAgent], active_agent_id: str | None
+    ) -> InputRichMessage:
+        blocks: list[InputRichBlockUnion] = [
+            InputRichBlockSectionHeading(text="Agents", size=2),
+            InputRichBlockParagraph(
+                text=(
+                    "Skye is active. Installed agents remain available as specialists."
+                    if active_agent_id is None
+                    else "The selected agent leads this chat; the others remain specialists."
+                )
+            ),
+        ]
+        if not agents:
+            blocks.append(InputRichBlockParagraph(text="No custom agents installed yet."))
+            return InputRichMessage(blocks=blocks)
+
+        def cell(text: str, *, header: bool = False) -> RichBlockTableCell:
+            return RichBlockTableCell(
+                text=text,
+                is_header=header or None,
+                align="left",
+                valign="top",
+            )
+
+        rows = [
+            [cell("Agent", header=True), cell("Version", header=True), cell("Role", header=True)]
+        ]
+        rows.extend(
+            [
+                cell(item.version.name),
+                cell(str(item.version.version)),
+                cell("Active" if item.profile.id == active_agent_id else "Specialist"),
+            ]
+            for item in agents
+        )
+        blocks.append(InputRichBlockTable(cells=rows, is_bordered=True, is_striped=True))
+        return InputRichMessage(blocks=blocks)
+
+    @staticmethod
+    def agent(installed: InstalledAgent, active: bool) -> InputRichMessage:
+        version = installed.version
+
+        def cell(text: str) -> RichBlockTableCell:
+            return RichBlockTableCell(text=text, align="left", valign="top")
+
+        model = MODELS[version.model] if version.model else "Chat default"
+        capabilities = ", ".join(item.title() for item in version.capabilities) or "None"
+        return InputRichMessage(
+            blocks=[
+                InputRichBlockSectionHeading(text=version.name, size=2),
+                InputRichBlockParagraph(text=version.description),
+                InputRichBlockTable(
+                    cells=[
+                        [cell("Role"), cell("Active" if active else "Specialist")],
+                        [cell("Version"), cell(str(version.version))],
+                        [cell("Model"), cell(model)],
+                        [cell("Capabilities"), cell(capabilities)],
+                    ],
+                    is_bordered=True,
+                    is_striped=True,
+                ),
+                InputRichBlockSectionHeading(text="Instructions", size=3),
+                InputRichBlockParagraph(text=version.instructions[:4000]),
+            ]
+        )
+
+    @staticmethod
+    def agent_preview(name: str, description: str, instructions: str) -> InputRichMessage:
+        return InputRichMessage(
+            blocks=[
+                InputRichBlockSectionHeading(text=f"Preview · {name}", size=2),
+                InputRichBlockParagraph(text=description),
+                InputRichBlockSectionHeading(text="Instructions", size=3),
+                InputRichBlockParagraph(text=instructions[:4000]),
             ]
         )
 
