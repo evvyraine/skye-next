@@ -1,0 +1,19 @@
+services:
+  skye:
+    build:
+      context: .
+    image: skye-next:local
+    env_file:
+      - .env
+    environment:
+      SKYE_DATABASE_PATH: /data/skye.db
+    volumes:
+      - skye-data:/data
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 30s
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  skye-data:
