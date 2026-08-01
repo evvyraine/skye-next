@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import time
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
@@ -37,6 +38,7 @@ from .runtime import AgentRuntime, RunOutput
 
 log = structlog.get_logger()
 REASONING: tuple[Reasoning, ...] = ("none", "low", "medium", "high", "xhigh", "max")
+BOT_NAME = re.compile(r"(?<!\w)(?:skye|скай)(?!\w)", re.IGNORECASE)
 
 
 class UpdateMiddleware(BaseMiddleware):
@@ -281,9 +283,11 @@ class TelegramApp:
 
     async def chat(self, message: Message) -> None:
         context = self._context(message)
-        if context is None or not await self._require_access(message, context):
+        if context is None:
             return
         if context.chat_type != "private" and not await self._directed_at_bot(message):
+            return
+        if not await self._require_access(message, context):
             return
         try:
             user_input = await self._input(message, context)
@@ -416,7 +420,9 @@ class TelegramApp:
             return True
         username = (await self.bot.me()).username
         text = message.text or message.caption or ""
-        return bool(username and f"@{username.lower()}" in text.lower())
+        return bool(username and f"@{username.lower()}" in text.lower()) or bool(
+            BOT_NAME.search(text)
+        )
 
     @staticmethod
     def _context(message: Message, user: User | None = None) -> RequestContext | None:
