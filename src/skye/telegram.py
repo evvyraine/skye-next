@@ -687,7 +687,6 @@ class TelegramApp:
 
         try:
             output = await self.runtime.run(context, current, user_input, on_text)
-            await self.groups.advance(context, message.message_id)
             await self._deliver(message, placeholder, output)
         except TimeoutError:
             await self._finish(message, placeholder, "This took too long, so I stopped it.")
@@ -705,7 +704,7 @@ class TelegramApp:
     async def _input(
         self, message: Message, context: RequestContext
     ) -> str | list[TResponseInputItem]:
-        text = message.text or message.caption or self.groups.describe(message)
+        text = self.groups.text(message)
         if context.chat_type != "private":
             identity = context.display_name
             if context.username:
@@ -718,7 +717,7 @@ class TelegramApp:
                 reply_identity = reply_name + (f" (@{reply_username})" if reply_username else "")
                 if reply_id is not None:
                     reply_identity += f" [id {reply_id}]"
-                excerpt = reply.text or reply.caption or self.groups.describe(reply)
+                excerpt = self.groups.text(reply)
                 reply_context = (
                     f"\nReplying to {reply_identity} #{reply.message_id}: {excerpt[:500]}"
                 )
@@ -739,7 +738,16 @@ class TelegramApp:
             history = None
         history_images = history.images if history else ()
         has_attachments = any(
-            (source and (source.photo or source.voice or source.audio or source.document))
+            (
+                source
+                and (
+                    source.photo
+                    or source.voice
+                    or source.audio
+                    or source.video_note
+                    or source.document
+                )
+            )
             for source in (message, message.reply_to_message)
         )
         if not has_attachments and not history_images:

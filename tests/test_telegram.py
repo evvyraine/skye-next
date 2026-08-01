@@ -1,7 +1,8 @@
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from aiogram.types import Chat, Message, User
+from aiogram.types import Chat, Message, User, VideoNote
 
 from skye.telegram import TelegramApp
 
@@ -66,3 +67,34 @@ async def test_undirected_group_message_does_not_check_access() -> None:
     await app.chat(group_message("ordinary group message"))
 
     app._require_access.assert_not_awaited()
+
+
+async def test_private_video_note_is_processed_as_attachment() -> None:
+    app = telegram_app()
+    app.groups = SimpleNamespace(text=lambda _: "[video note]")
+    app.attachments = SimpleNamespace(add=AsyncMock())
+    incoming = Message(
+        message_id=2,
+        date=0,
+        chat=Chat(id=42, type="private", first_name="Alice"),
+        from_user=User(id=42, is_bot=False, first_name="Alice"),
+        video_note=VideoNote(
+            file_id="video-note",
+            file_unique_id="unique-video-note",
+            length=240,
+            duration=12,
+            file_size=11,
+        ),
+    )
+    context = app._context(incoming)
+    assert context is not None
+
+    result = await app._input(incoming, context)
+
+    app.attachments.add.assert_awaited_once()
+    assert result == [
+        {
+            "role": "user",
+            "content": [{"type": "input_text", "text": "[video note]"}],
+        }
+    ]

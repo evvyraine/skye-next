@@ -123,6 +123,6 @@ async def test_existing_settings_tables_are_migrated(tmp_path: Path) -> None:
     await database.open()
     try:
         assert (await database.get_settings(Scope("user", 42))).memory_enabled
-        assert await database.group_context_cursor(-100, 0) == 0
+        assert await database.conversation_id(-100, 0) is None
     finally:
         await database.close()

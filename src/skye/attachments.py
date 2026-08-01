@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from aiogram import Bot
-from aiogram.types import Audio, Document, Message, PhotoSize, Voice
+from aiogram.types import Audio, Document, Message, PhotoSize, VideoNote, Voice
 from openai import AsyncOpenAI
 
 from .config import Settings
@@ -34,6 +34,8 @@ class AttachmentService:
                 await self._audio(source.voice, label, content, seen)
             if source.audio:
                 await self._audio(source.audio, label, content, seen)
+            if source.video_note:
+                await self._audio(source.video_note, label, content, seen)
             if source.document:
                 await self._document(source.document, label, content, seen)
 
@@ -60,7 +62,7 @@ class AttachmentService:
 
     async def _audio(
         self,
-        audio: Voice | Audio,
+        audio: Voice | Audio | VideoNote,
         label: str,
         content: list[dict[str, Any]],
         seen: set[str],
@@ -68,9 +70,14 @@ class AttachmentService:
         if not self._new(audio.file_unique_id, seen):
             return
         filename = getattr(audio, "file_name", None) or (
-            "voice.ogg" if isinstance(audio, Voice) else "audio.mp3"
+            "voice.ogg"
+            if isinstance(audio, Voice)
+            else "video-note.mp4"
+            if isinstance(audio, VideoNote)
+            else "audio.mp3"
         )
-        data = await self._download(audio, audio.file_size, "audio")
+        kind = "video message" if isinstance(audio, VideoNote) else "audio"
+        data = await self._download(audio, audio.file_size, kind)
         transcript = await self.client.audio.transcriptions.create(
             model=self.config.skye_transcription_model,
             file=(filename, data),
@@ -79,7 +86,7 @@ class AttachmentService:
         content.append(
             {
                 "type": "input_text",
-                "text": f"{label} audio transcript ({filename}):\n{transcript.text}",
+                "text": f"{label} {kind} transcript ({filename}):\n{transcript.text}",
             }
         )
 

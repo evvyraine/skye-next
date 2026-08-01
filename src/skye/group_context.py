@@ -4,6 +4,7 @@ import base64
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from io import BytesIO
+from typing import Any
 
 import structlog
 from aiogram import Bot
@@ -11,7 +12,7 @@ from aiogram.types import Message, User
 
 from .config import Settings
 from .db import Database
-from .models import GroupMessage, RequestContext, Scope
+from .models import GroupMessage, Scope
 
 log = structlog.get_logger()
 
@@ -44,29 +45,27 @@ class GroupContextService:
                 sender_id=sender_id,
                 sender_name=sender_name,
                 sender_username=sender_username,
-                text=message.text or message.caption or self.describe(message),
+                text=self.text(message),
                 media_kind=media_kind,
                 media_file_id=media_file_id,
                 reply_to_message_id=reply.message_id if reply else None,
                 reply_sender_name=self.sender(reply)[1] if reply else None,
                 reply_sender_username=self.sender(reply)[2] if reply else None,
-                reply_excerpt=(reply.text or reply.caption or "")[:300] if reply else None,
+                reply_excerpt=self.text(reply)[:300] if reply else None,
                 sent_at=int(message.date.timestamp()),
             )
         )
         await self.database.prune_group_messages(
             message.chat.id,
             message.message_thread_id or 0,
-            self.config.skye_group_context_messages,
+            self.config.skye_group_context_messages + 1,
         )
 
     async def history(self, message: Message) -> GroupHistory:
         thread_id = message.message_thread_id or 0
-        cursor = await self.database.group_context_cursor(message.chat.id, thread_id)
         messages = await self.database.group_messages(
             message.chat.id,
             thread_id,
-            after=cursor,
             before=message.message_id,
             limit=self.config.skye_group_context_messages,
         )
@@ -93,12 +92,6 @@ class GroupContextService:
             except Exception as error:
                 log.warning("group_context_image_failed", error=type(error).__name__)
         return GroupHistory(transcript, tuple(images))
-
-    async def advance(self, context: RequestContext, message_id: int) -> None:
-        if context.chat_type != "private":
-            await self.database.advance_group_context(
-                context.chat_id, context.thread_id, message_id
-            )
 
     @staticmethod
     def sender(message: Message) -> tuple[int | None, str, str | None]:
@@ -155,6 +148,33 @@ class GroupContextService:
             return f"[sticker: {message.sticker.emoji or 'no emoji'}]"
         return f"[{kind.replace('_', ' ') if kind else 'service message'}]"
 
+    @classmethod
+    def text(cls, message: Message) -> str:
+        return (
+            message.text
+            or message.caption
+            or cls._rich_text(message.rich_message)
+            or cls.describe(message)
+        )
+
+    @classmethod
+    def _rich_text(cls, value: Any) -> str:
+        if isinstance(value, str):
+            return value
+        if isinstance(value, list):
+            return "\n".join(filter(None, (cls._rich_text(item) for item in value)))
+        if hasattr(value, "model_dump"):
+            value = value.model_dump(exclude_none=True)
+        if not isinstance(value, dict):
+            return ""
+        content_keys = {"text", "caption", "summary", "credit", "label", "blocks", "items", "cells"}
+        return "\n".join(
+            filter(
+                None,
+                (cls._rich_text(item) for key, item in value.items() if key in content_keys),
+            )
+        )
+
     @staticmethod
     def _line(message: GroupMessage) -> str:
         username = f" (@{message.sender_username})" if message.sender_username else ""
@@ -168,7 +188,7 @@ class GroupContextService:
             )
             reply = f" replying to {target}{target_username} #{message.reply_to_message_id}"
             if message.reply_excerpt:
-                reply += f' “{message.reply_excerpt}”'
+                reply += f" “{message.reply_excerpt}”"
         media = f" [{message.media_kind}]" if message.media_kind else ""
         return (
             f"#{message.message_id} · {sent_at} · "

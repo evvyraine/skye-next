@@ -3,12 +3,12 @@ from pathlib import Path
 from typing import Any, cast
 
 import pytest
-from aiogram.types import Chat, Message, PhotoSize, User
+from aiogram.types import Chat, Message, PhotoSize, RichBlockParagraph, RichMessage, User
 
 from skye.config import Settings
 from skye.db import Database
 from skye.group_context import GroupContextService
-from skye.models import RequestContext, Scope
+from skye.models import Scope
 
 
 def config() -> Settings:
@@ -78,9 +78,45 @@ async def test_passive_history_keeps_people_replies_and_images(group_context: An
     assert history.images[0][0] == 11
     assert history.images[0][1].startswith("data:image/jpeg;base64,")
 
-    await database.save_conversation(-100, 0, "conv")
-    await service.advance(RequestContext(-100, "supergroup", 1), current.message_id)
-    assert await service.history(message(13, bob, "Anything new?")) == type(history)("", ())
+    repeated_history = await service.history(message(13, bob, "Anything new?"))
+    assert "Launch is Friday" in repeated_history.transcript
+    assert "Looks good" in repeated_history.transcript
+
+
+async def test_history_always_contains_latest_200_messages(group_context: Any) -> None:
+    _, service = group_context
+    alice = User(id=1, is_bot=False, first_name="Alice", username="alice")
+
+    for message_id in range(1, 203):
+        await service.capture(message(message_id, alice, f"Message {message_id}"))
+
+    history = await service.history(message(202, alice, "Skye, summarize"))
+    lines = history.transcript.splitlines()
+
+    assert len(lines) == 200
+    assert "#2 " in lines[0]
+    assert "Message 2" in lines[0]
+    assert "#201 " in lines[-1]
+    assert "Message 201" in lines[-1]
+
+
+async def test_rich_message_text_is_kept_in_reply_context(group_context: Any) -> None:
+    _, service = group_context
+    alice = User(id=1, is_bot=False, first_name="Alice", username="alice")
+    skye = User(id=2, is_bot=True, first_name="Skye", username="skye_bot")
+    previous = Message(
+        message_id=20,
+        date=datetime.now(UTC),
+        chat=Chat(id=-100, type="supergroup", title="Skye Lab"),
+        from_user=skye,
+        rich_message=RichMessage(blocks=[RichBlockParagraph(text="The launch plan is ready.")]),
+    )
+
+    await service.capture(message(21, alice, "What about timing?", reply=previous))
+    history = await service.history(message(22, alice, "Skye, recap"))
+
+    assert "replying to Skye (@skye_bot) #20 “The launch plan is ready.”" in history.transcript
+    assert "[service message]" not in history.transcript
 
 
 async def test_private_messages_are_never_added_to_group_history(group_context: Any) -> None:
@@ -95,4 +131,4 @@ async def test_private_messages_are_never_added_to_group_history(group_context: 
 
     await service.capture(private)
 
-    assert await database.group_messages(-100, 0, after=0, before=100, limit=200) == []
+    assert await database.group_messages(-100, 0, before=100, limit=200) == []

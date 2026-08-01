@@ -58,7 +58,6 @@ CREATE TABLE IF NOT EXISTS conversations (
     chat_id INTEGER NOT NULL,
     thread_id INTEGER NOT NULL DEFAULT 0,
     openai_conversation_id TEXT NOT NULL,
-    last_group_message_id INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (chat_id, thread_id)
@@ -190,9 +189,6 @@ class Database:
         await self._ensure_column("chat_settings", "memory_enabled", "INTEGER NOT NULL DEFAULT 1")
         await self._ensure_column("user_settings", "active_agent_id", "TEXT")
         await self._ensure_column("chat_settings", "active_agent_id", "TEXT")
-        await self._ensure_column(
-            "conversations", "last_group_message_id", "INTEGER NOT NULL DEFAULT 0"
-        )
         await self.connection.commit()
 
     async def close(self) -> None:
@@ -660,24 +656,6 @@ class Database:
         )
         return conversation_id
 
-    async def group_context_cursor(self, chat_id: int, thread_id: int) -> int:
-        cursor = await self.conn.execute(
-            """SELECT last_group_message_id FROM conversations
-               WHERE chat_id = ? AND thread_id = ?""",
-            (chat_id, thread_id),
-        )
-        row = await cursor.fetchone()
-        return cast(int, row["last_group_message_id"]) if row else 0
-
-    async def advance_group_context(self, chat_id: int, thread_id: int, message_id: int) -> None:
-        await self._write(
-            """UPDATE conversations
-               SET last_group_message_id = MAX(last_group_message_id, ?),
-                   updated_at = CURRENT_TIMESTAMP
-               WHERE chat_id = ? AND thread_id = ?""",
-            (message_id, chat_id, thread_id),
-        )
-
     async def save_group_message(self, message: GroupMessage) -> None:
         await self._write(
             """INSERT INTO group_messages (
@@ -732,15 +710,14 @@ class Database:
         chat_id: int,
         thread_id: int,
         *,
-        after: int,
         before: int,
         limit: int,
     ) -> list[GroupMessage]:
         cursor = await self.conn.execute(
             """SELECT * FROM group_messages
-               WHERE chat_id = ? AND thread_id = ? AND message_id > ? AND message_id < ?
+               WHERE chat_id = ? AND thread_id = ? AND message_id < ?
                ORDER BY message_id DESC LIMIT ?""",
-            (chat_id, thread_id, after, before, limit),
+            (chat_id, thread_id, before, limit),
         )
         rows = list(await cursor.fetchall())
         return [self._group_message(row) for row in reversed(rows)]

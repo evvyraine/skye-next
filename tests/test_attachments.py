@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
-from aiogram.types import Chat, Document, Message, Voice
+from aiogram.types import Chat, Document, Message, VideoNote, Voice
 from openai import AsyncOpenAI
 
 from skye.attachments import AttachmentService
@@ -66,6 +66,50 @@ async def test_transcribes_direct_voice() -> None:
     ]
     assert transcriptions.calls[0]["model"] == "gpt-transcribe"
     assert transcriptions.calls[0]["file"] == ("voice.ogg", b"audio")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reply", [False, True])
+async def test_transcribes_video_note(reply: bool) -> None:
+    video_note = VideoNote(
+        file_id="video-note",
+        file_unique_id="unique-video-note",
+        length=240,
+        duration=12,
+        file_size=11,
+    )
+    transcriptions = Transcriptions()
+    client = SimpleNamespace(audio=SimpleNamespace(transcriptions=transcriptions))
+    service = AttachmentService(
+        settings(),
+        cast(Any, FakeBot({"video-note": b"video-audio"})),
+        cast(AsyncOpenAI, client),
+    )
+    content: list[dict[str, Any]] = []
+    target = (
+        message(reply_to_message=message(video_note=video_note))
+        if reply
+        else message(video_note=video_note)
+    )
+
+    await service.add(target, content)
+
+    label = "Replied-to" if reply else "Attached"
+    assert content == [
+        {
+            "type": "input_text",
+            "text": (
+                f"{label} video message transcript (video-note.mp4):\nHello from the voice note."
+            ),
+        }
+    ]
+    assert transcriptions.calls == [
+        {
+            "model": "gpt-transcribe",
+            "file": ("video-note.mp4", b"video-audio"),
+            "response_format": "json",
+        }
+    ]
 
 
 @pytest.mark.asyncio

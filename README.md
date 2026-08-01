@@ -12,12 +12,14 @@ agent silently. Group agent changes require a Telegram chat administrator.
 
 For full group context, disable **Group Privacy** for the bot in `@BotFather` and re-add it to
 existing groups, or make it a group administrator. Skye retains the latest 200 messages per group
-topic and includes new passive context, participant identities, reply links, and recent images.
+topic and includes that rolling window with every addressed request, together with participant
+identities, reply links, rich-message text, and recent images.
 
-Photos are sent to model vision. Voice notes and audio are transcribed with `gpt-transcribe`;
-PDFs, Office documents, spreadsheets, Markdown, and code are passed as native OpenAI file inputs.
-This works both for media sent directly to Skye and for the message a user replies to. Captions stay
-part of the request, and PDF inputs include both extracted text and page visuals.
+Photos are sent to model vision. Voice notes, video messages, and audio are transcribed with
+`gpt-transcribe`; only the resulting text from video messages is added to the model context. PDFs,
+Office documents, spreadsheets, Markdown, and code are passed as native OpenAI file inputs. This
+works both for media sent directly to Skye and for the message a user replies to. Captions stay part
+of the request, and PDF inputs include both extracted text and page visuals.
 
 ## Setup
 
