@@ -45,3 +45,21 @@ class Memory:
     content: str
     created_at: str
     updated_at: str
+
+
+@dataclass(frozen=True, slots=True)
+class GroupMessage:
+    chat_id: int
+    thread_id: int
+    message_id: int
+    sender_id: int | None
+    sender_name: str
+    sender_username: str | None
+    text: str
+    media_kind: str | None
+    media_file_id: str | None
+    reply_to_message_id: int | None
+    reply_sender_name: str | None
+    reply_sender_username: str | None
+    reply_excerpt: str | None
+    sent_at: int

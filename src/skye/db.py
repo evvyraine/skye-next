@@ -11,7 +11,7 @@ from typing import Any, Literal, cast
 import aiosqlite
 
 from .config import ModelId, Reasoning
-from .models import ChatSettings, Memory, MemoryCategory, Scope
+from .models import ChatSettings, GroupMessage, Memory, MemoryCategory, Scope
 
 AccessEffect = Literal["allow", "ban"]
 
@@ -45,6 +45,7 @@ CREATE TABLE IF NOT EXISTS conversations (
     chat_id INTEGER NOT NULL,
     thread_id INTEGER NOT NULL DEFAULT 0,
     openai_conversation_id TEXT NOT NULL,
+    last_group_message_id INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (chat_id, thread_id)
@@ -69,6 +70,27 @@ CREATE TABLE IF NOT EXISTS memories (
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE (scope_kind, scope_id, content)
 );
+
+CREATE TABLE IF NOT EXISTS group_messages (
+    chat_id INTEGER NOT NULL,
+    thread_id INTEGER NOT NULL DEFAULT 0,
+    message_id INTEGER NOT NULL,
+    sender_id INTEGER,
+    sender_name TEXT NOT NULL,
+    sender_username TEXT,
+    text TEXT NOT NULL DEFAULT '',
+    media_kind TEXT,
+    media_file_id TEXT,
+    reply_to_message_id INTEGER,
+    reply_sender_name TEXT,
+    reply_sender_username TEXT,
+    reply_excerpt TEXT,
+    sent_at INTEGER NOT NULL,
+    PRIMARY KEY (chat_id, message_id)
+);
+
+CREATE INDEX IF NOT EXISTS group_messages_context
+ON group_messages(chat_id, thread_id, message_id DESC);
 
 CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
     content,
@@ -115,6 +137,9 @@ class Database:
         await self.connection.executescript(SCHEMA)
         await self._ensure_column("user_settings", "memory_enabled", "INTEGER NOT NULL DEFAULT 1")
         await self._ensure_column("chat_settings", "memory_enabled", "INTEGER NOT NULL DEFAULT 1")
+        await self._ensure_column(
+            "conversations", "last_group_message_id", "INTEGER NOT NULL DEFAULT 0"
+        )
         await self.connection.commit()
 
     async def close(self) -> None:
@@ -261,6 +286,110 @@ class Database:
             (chat_id, thread_id),
         )
         return conversation_id
+
+    async def group_context_cursor(self, chat_id: int, thread_id: int) -> int:
+        cursor = await self.conn.execute(
+            """SELECT last_group_message_id FROM conversations
+               WHERE chat_id = ? AND thread_id = ?""",
+            (chat_id, thread_id),
+        )
+        row = await cursor.fetchone()
+        return cast(int, row["last_group_message_id"]) if row else 0
+
+    async def advance_group_context(self, chat_id: int, thread_id: int, message_id: int) -> None:
+        await self._write(
+            """UPDATE conversations
+               SET last_group_message_id = MAX(last_group_message_id, ?),
+                   updated_at = CURRENT_TIMESTAMP
+               WHERE chat_id = ? AND thread_id = ?""",
+            (message_id, chat_id, thread_id),
+        )
+
+    async def save_group_message(self, message: GroupMessage) -> None:
+        await self._write(
+            """INSERT INTO group_messages (
+                   chat_id, thread_id, message_id, sender_id, sender_name, sender_username,
+                   text, media_kind, media_file_id, reply_to_message_id, reply_sender_name,
+                   reply_sender_username, reply_excerpt, sent_at
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(chat_id, message_id) DO UPDATE SET
+                   thread_id = excluded.thread_id,
+                   sender_id = excluded.sender_id,
+                   sender_name = excluded.sender_name,
+                   sender_username = excluded.sender_username,
+                   text = excluded.text,
+                   media_kind = excluded.media_kind,
+                   media_file_id = excluded.media_file_id,
+                   reply_to_message_id = excluded.reply_to_message_id,
+                   reply_sender_name = excluded.reply_sender_name,
+                   reply_sender_username = excluded.reply_sender_username,
+                   reply_excerpt = excluded.reply_excerpt,
+                   sent_at = excluded.sent_at""",
+            (
+                message.chat_id,
+                message.thread_id,
+                message.message_id,
+                message.sender_id,
+                message.sender_name,
+                message.sender_username,
+                message.text,
+                message.media_kind,
+                message.media_file_id,
+                message.reply_to_message_id,
+                message.reply_sender_name,
+                message.reply_sender_username,
+                message.reply_excerpt,
+                message.sent_at,
+            ),
+        )
+
+    async def prune_group_messages(self, chat_id: int, thread_id: int, keep: int) -> None:
+        await self._write(
+            """DELETE FROM group_messages
+               WHERE chat_id = ? AND thread_id = ? AND message_id NOT IN (
+                   SELECT message_id FROM group_messages
+                   WHERE chat_id = ? AND thread_id = ?
+                   ORDER BY message_id DESC LIMIT ?
+               )""",
+            (chat_id, thread_id, chat_id, thread_id, keep),
+        )
+
+    async def group_messages(
+        self,
+        chat_id: int,
+        thread_id: int,
+        *,
+        after: int,
+        before: int,
+        limit: int,
+    ) -> list[GroupMessage]:
+        cursor = await self.conn.execute(
+            """SELECT * FROM group_messages
+               WHERE chat_id = ? AND thread_id = ? AND message_id > ? AND message_id < ?
+               ORDER BY message_id DESC LIMIT ?""",
+            (chat_id, thread_id, after, before, limit),
+        )
+        rows = list(await cursor.fetchall())
+        return [self._group_message(row) for row in reversed(rows)]
+
+    @staticmethod
+    def _group_message(row: aiosqlite.Row) -> GroupMessage:
+        return GroupMessage(
+            chat_id=cast(int, row["chat_id"]),
+            thread_id=cast(int, row["thread_id"]),
+            message_id=cast(int, row["message_id"]),
+            sender_id=cast(int | None, row["sender_id"]),
+            sender_name=cast(str, row["sender_name"]),
+            sender_username=cast(str | None, row["sender_username"]),
+            text=cast(str, row["text"]),
+            media_kind=cast(str | None, row["media_kind"]),
+            media_file_id=cast(str | None, row["media_file_id"]),
+            reply_to_message_id=cast(int | None, row["reply_to_message_id"]),
+            reply_sender_name=cast(str | None, row["reply_sender_name"]),
+            reply_sender_username=cast(str | None, row["reply_sender_username"]),
+            reply_excerpt=cast(str | None, row["reply_excerpt"]),
+            sent_at=cast(int, row["sent_at"]),
+        )
 
     async def remember(
         self, scope: Scope, content: str, category: MemoryCategory

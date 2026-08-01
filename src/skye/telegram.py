@@ -30,6 +30,7 @@ from .access import AccessService
 from .config import MODELS, Reasoning, Settings
 from .conversations import ConversationService
 from .db import Database
+from .group_context import GroupContextService
 from .memory import MemoryService
 from .models import ChatSettings, ChatType, RequestContext, Scope
 from .rich import RichMessages
@@ -40,8 +41,9 @@ REASONING: tuple[Reasoning, ...] = ("none", "low", "medium", "high", "xhigh", "m
 
 
 class UpdateMiddleware(BaseMiddleware):
-    def __init__(self, database: Database) -> None:
+    def __init__(self, database: Database, groups: GroupContextService) -> None:
         self.database = database
+        self.groups = groups
 
     async def __call__(
         self,
@@ -55,6 +57,9 @@ class UpdateMiddleware(BaseMiddleware):
         if not await self.database.claim_update(event.update_id, payload):
             return None
         try:
+            incoming = event.message or event.edited_message
+            if incoming:
+                await self.groups.capture(incoming)
             result = await handler(event, data)
         except Exception as error:
             await self.database.finish_update(event.update_id, type(error).__name__)
@@ -72,6 +77,7 @@ class TelegramApp:
         access: AccessService,
         conversations: ConversationService,
         memory: MemoryService,
+        groups: GroupContextService,
         runtime: AgentRuntime,
     ) -> None:
         self.config = config
@@ -80,6 +86,7 @@ class TelegramApp:
         self.access = access
         self.conversations = conversations
         self.memory = memory
+        self.groups = groups
         self.runtime = runtime
         self.rich = RichMessages(bot)
         self.router = Router(name="skye")
@@ -93,7 +100,7 @@ class TelegramApp:
         self.router.message.register(self.stop, Command("stop"))
         self.router.message.register(self.admin, Command("admin"))
         self.router.callback_query.register(self.settings_callback, F.data.startswith("settings:"))
-        self.router.message.register(self.chat, F.text | F.photo)
+        self.router.message.register(self.chat)
 
     async def start(self, message: Message) -> None:
         context = self._context(message)
@@ -304,6 +311,7 @@ class TelegramApp:
 
         try:
             output = await self.runtime.run(context, current, user_input, on_text)
+            await self.groups.advance(context, message.message_id)
             await self._deliver(message, placeholder, output)
         except TimeoutError:
             await self._finish(message, placeholder, "This took too long, so I stopped it.")
@@ -321,14 +329,44 @@ class TelegramApp:
     async def _input(
         self, message: Message, context: RequestContext
     ) -> str | list[TResponseInputItem]:
-        text = message.text or message.caption or "Describe this image."
+        text = message.text or message.caption or self.groups.describe(message)
         if context.chat_type != "private":
-            text = f"[{context.display_name}] {text}"
+            identity = context.display_name
+            if context.username:
+                identity += f" (@{context.username})"
+            identity += f" [id {context.user_id}]"
+            reply = message.reply_to_message
+            reply_context = ""
+            if reply:
+                reply_id, reply_name, reply_username = self.groups.sender(reply)
+                reply_identity = reply_name + (f" (@{reply_username})" if reply_username else "")
+                if reply_id is not None:
+                    reply_identity += f" [id {reply_id}]"
+                excerpt = reply.text or reply.caption or self.groups.describe(reply)
+                reply_context = (
+                    f"\nReplying to {reply_identity} #{reply.message_id}: {excerpt[:500]}"
+                )
+            history = await self.groups.history(message)
+            group_context = (
+                "<recent_group_context>\n"
+                f"{history.transcript}\n"
+                "</recent_group_context>\n\n"
+                if history.transcript
+                else ""
+            )
+            text = (
+                f"{group_context}<current_message>\n"
+                f"{identity}: {text}{reply_context}\n"
+                "</current_message>"
+            )
+        else:
+            history = None
         photos = list(message.photo or [])[-1:]
         reply = message.reply_to_message
         if reply and reply.photo:
             photos.extend(list(reply.photo)[-1:])
-        if not photos:
+        history_images = history.images if history else ()
+        if not photos and not history_images:
             return text
 
         content: list[dict[str, str]] = [{"type": "input_text", "text": text}]
@@ -349,6 +387,9 @@ class TelegramApp:
                     "detail": "auto",
                 }
             )
+        for message_id, image_url in history_images:
+            content.append({"type": "input_text", "text": f"Image from message #{message_id}:"})
+            content.append({"type": "input_image", "image_url": image_url, "detail": "auto"})
         return cast(list[TResponseInputItem], [{"role": "user", "content": content}])
 
     async def _deliver(
