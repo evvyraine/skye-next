@@ -1,12 +1,10 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 import json
 import time
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
-from io import BytesIO
 from typing import Any, cast
 
 import structlog
@@ -27,6 +25,7 @@ from aiogram.types import (
 )
 
 from .access import AccessService
+from .attachments import AttachmentService
 from .config import MODELS, Reasoning, Settings
 from .conversations import ConversationService
 from .db import Database
@@ -78,6 +77,7 @@ class TelegramApp:
         conversations: ConversationService,
         memory: MemoryService,
         groups: GroupContextService,
+        attachments: AttachmentService,
         runtime: AgentRuntime,
     ) -> None:
         self.config = config
@@ -87,6 +87,7 @@ class TelegramApp:
         self.conversations = conversations
         self.memory = memory
         self.groups = groups
+        self.attachments = attachments
         self.runtime = runtime
         self.rich = RichMessages(bot)
         self.router = Router(name="skye")
@@ -361,32 +362,16 @@ class TelegramApp:
             )
         else:
             history = None
-        photos = list(message.photo or [])[-1:]
-        reply = message.reply_to_message
-        if reply and reply.photo:
-            photos.extend(list(reply.photo)[-1:])
         history_images = history.images if history else ()
-        if not photos and not history_images:
+        has_attachments = any(
+            (source and (source.photo or source.voice or source.audio or source.document))
+            for source in (message, message.reply_to_message)
+        )
+        if not has_attachments and not history_images:
             return text
 
-        content: list[dict[str, str]] = [{"type": "input_text", "text": text}]
-        seen: set[str] = set()
-        for photo in photos:
-            if photo.file_unique_id in seen:
-                continue
-            seen.add(photo.file_unique_id)
-            if photo.file_size and photo.file_size > self.config.skye_max_attachment_bytes:
-                raise ValueError("That image is too large.")
-            destination = BytesIO()
-            await self.bot.download(photo, destination=destination)
-            encoded = base64.b64encode(destination.getvalue()).decode()
-            content.append(
-                {
-                    "type": "input_image",
-                    "image_url": f"data:image/jpeg;base64,{encoded}",
-                    "detail": "auto",
-                }
-            )
+        content: list[dict[str, Any]] = [{"type": "input_text", "text": text}]
+        await self.attachments.add(message, content)
         for message_id, image_url in history_images:
             content.append({"type": "input_text", "text": f"Image from message #{message_id}:"})
             content.append({"type": "input_image", "image_url": image_url, "detail": "auto"})

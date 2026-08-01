@@ -10,6 +10,7 @@ from openai import AsyncOpenAI
 from pydantic import ValidationError
 
 from .access import AccessService
+from .attachments import AttachmentService
 from .config import Settings
 from .conversations import ConversationService
 from .db import Database
@@ -55,6 +56,7 @@ async def run() -> None:
     conversations = ConversationService(database, client)
     memory = MemoryService(database)
     groups = GroupContextService(config, database, bot)
+    attachments = AttachmentService(config, bot, client)
     access = AccessService(database, config.skye_owner_ids)
     runtime = AgentRuntime(
         config,
@@ -62,7 +64,9 @@ async def run() -> None:
         memory,
         load_base_prompt(config.skye_base_prompt_path),
     )
-    telegram = TelegramApp(config, bot, database, access, conversations, memory, groups, runtime)
+    telegram = TelegramApp(
+        config, bot, database, access, conversations, memory, groups, attachments, runtime
+    )
     dispatcher.update.outer_middleware(UpdateMiddleware(database, groups))
     dispatcher.include_router(telegram.router)
 

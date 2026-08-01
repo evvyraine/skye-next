@@ -9,6 +9,11 @@ For full group context, disable **Group Privacy** for the bot in `@BotFather` an
 existing groups, or make it a group administrator. Skye retains the latest 200 messages per group
 topic and includes new passive context, participant identities, reply links, and recent images.
 
+Photos are sent to model vision. Voice notes and audio are transcribed with `gpt-transcribe`;
+PDFs, Office documents, spreadsheets, Markdown, and code are passed as native OpenAI file inputs.
+This works both for media sent directly to Skye and for the message a user replies to. Captions stay
+part of the request, and PDF inputs include both extracted text and page visuals.
+
 ## Setup
 
 ```bash
