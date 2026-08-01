@@ -1,6 +1,6 @@
 # Skye Next
 
-A minimal, allowlisted Telegram bot built on the OpenAI Agents SDK.
+A minimal, allowlisted Telegram bot built on the OpenAI Agents SDK and Telegram Rich Messages.
 
 ## Setup
 

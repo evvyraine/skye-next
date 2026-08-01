@@ -5,7 +5,7 @@ description = "A calm, minimal OpenAI agent for Telegram"
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
-    "aiogram>=3.22.0",
+    "aiogram>=3.30.0",
     "aiosqlite>=0.21.0",
     "openai>=2.52.0",
     "openai-agents>=0.19.2",

@@ -16,10 +16,10 @@ from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command
 from aiogram.types import (
     BotCommand,
-    BufferedInputFile,
     CallbackQuery,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
+    InputRichMessage,
     Message,
     TelegramObject,
     Update,
@@ -31,6 +31,7 @@ from .config import MODELS, Reasoning, Settings
 from .conversations import ConversationService
 from .db import Database
 from .models import ChatSettings, ChatType, RequestContext, Scope
+from .rich import RichMessages
 from .runtime import AgentRuntime, RunOutput
 
 log = structlog.get_logger()
@@ -77,6 +78,7 @@ class TelegramApp:
         self.access = access
         self.conversations = conversations
         self.runtime = runtime
+        self.rich = RichMessages(bot)
         self.router = Router(name="skye")
         self._register()
 
@@ -95,15 +97,19 @@ class TelegramApp:
         if context is None:
             return
         if await self.access.allowed(context):
-            await message.answer(
+            await self.rich.send(
+                message,
                 "Hi. I'm Skye. Send a message, image, or task — "
                 "I'll use the right tools when needed."
             )
         else:
-            await message.answer("This chat is not allowlisted yet. Ask the bot owner for access.")
+            await self.rich.send(
+                message, "This chat is not allowlisted yet. Ask the bot owner for access."
+            )
 
     async def help(self, message: Message) -> None:
-        await message.answer(
+        await self.rich.send(
+            message,
             "I can chat, search the web, work with images, "
             "and run code in an isolated container.\n\n"
             "/settings — model and reasoning\n"
@@ -117,8 +123,10 @@ class TelegramApp:
             return
         current = await self.database.get_settings(context.scope)
         editable = await self._can_edit(context)
-        await message.answer(
-            self._settings_text(current), reply_markup=self._settings_keyboard(editable)
+        await self.rich.send(
+            message,
+            self.rich.settings(current),
+            reply_markup=self._settings_keyboard(editable),
         )
 
     async def settings_callback(self, callback: CallbackQuery) -> None:
@@ -138,24 +146,30 @@ class TelegramApp:
         elif action == ["settings", "reasoning"]:
             await callback.message.edit_reply_markup(reply_markup=self._reasoning_keyboard(current))
         elif action == ["settings", "back"]:
-            await callback.message.edit_text(
-                self._settings_text(current), reply_markup=self._settings_keyboard(editable)
+            await self.rich.edit(
+                callback.message,
+                self.rich.settings(current),
+                reply_markup=self._settings_keyboard(editable),
             )
         elif len(action) == 3 and action[:2] == ["settings", "model"]:
             if not editable or action[2] not in MODELS:
                 await callback.answer("Only chat administrators can change this.", show_alert=True)
                 return
             current = await self.database.set_model(context.scope, action[2])
-            await callback.message.edit_text(
-                self._settings_text(current), reply_markup=self._settings_keyboard(True)
+            await self.rich.edit(
+                callback.message,
+                self.rich.settings(current),
+                reply_markup=self._settings_keyboard(True),
             )
         elif len(action) == 3 and action[:2] == ["settings", "reason"]:
             if not editable or action[2] not in REASONING:
                 await callback.answer("Only chat administrators can change this.", show_alert=True)
                 return
             current = await self.database.set_reasoning(context.scope, action[2])
-            await callback.message.edit_text(
-                self._settings_text(current), reply_markup=self._settings_keyboard(True)
+            await self.rich.edit(
+                callback.message,
+                self.rich.settings(current),
+                reply_markup=self._settings_keyboard(True),
             )
         await callback.answer()
 
@@ -164,24 +178,26 @@ class TelegramApp:
         if context is None or not await self._require_access(message, context):
             return
         await self.conversations.reset(context.chat_id, context.thread_id)
-        await message.answer("Conversation reset. Long-term memory was not changed.")
+        await self.rich.send(message, "Conversation reset. Long-term memory was not changed.")
 
     async def stop(self, message: Message) -> None:
         context = self._context(message)
         if context is None or not await self._require_access(message, context):
             return
         stopped = self.runtime.stop(context.chat_id, context.thread_id)
-        await message.answer("Stopping…" if stopped else "Nothing is running here.")
+        await self.rich.send(message, "Stopping…" if stopped else "Nothing is running here.")
 
     async def admin(self, message: Message) -> None:
         context = self._context(message)
         if context is None or not self.access.is_owner(context.user_id):
-            await message.answer("This command is only available to the bot owner.")
+            await self.rich.send(message, "This command is only available to the bot owner.")
             return
         parts = (message.text or "").split()
         if len(parts) == 1:
-            await message.answer(
-                "/admin allow [id]\n/admin ban <id>\n/admin remove <id>\n/admin list\n\n"
+            await self.rich.send(
+                message,
+                "`/admin allow [id]`\n`/admin ban <id>`\n"
+                "`/admin remove <id>`\n`/admin list`\n\n"
                 "Run /admin allow in a group to allow the whole group."
             )
             return
@@ -191,22 +207,25 @@ class TelegramApp:
             text = "\n".join(
                 f"{entry['effect']} {entry['kind']} {entry['telegram_id']}" for entry in entries
             )
-            await message.answer(text or "The allowlist is empty.")
+            await self.rich.send(message, text or "The allowlist is empty.")
             return
         target = self._admin_target(message, parts[2] if len(parts) > 2 else None)
         if target is None:
-            await message.answer(
+            await self.rich.send(
+                message,
                 "Provide a numeric id, reply to a user, or run this inside a group."
             )
             return
         if action in {"allow", "ban"}:
             await self.database.set_access(target, cast(Any, action), context.user_id)
-            await message.answer(f"{action.title()}ed {target.kind} {target.id}.")
+            await self.rich.send(message, f"{action.title()}ed {target.kind} {target.id}.")
         elif action == "remove":
             removed = await self.database.remove_access(target)
-            await message.answer("Access entry removed." if removed else "No matching entry.")
+            await self.rich.send(
+                message, "Access entry removed." if removed else "No matching entry."
+            )
         else:
-            await message.answer("Unknown admin action.")
+            await self.rich.send(message, "Unknown admin action.")
 
     async def chat(self, message: Message) -> None:
         context = self._context(message)
@@ -217,10 +236,14 @@ class TelegramApp:
         try:
             user_input = await self._input(message, context)
         except ValueError as error:
-            await message.answer(str(error))
+            await self.rich.send(message, str(error))
             return
         current = await self.database.get_settings(context.scope)
-        draft = await message.answer("Thinking…")
+        placeholder: Message | None = None
+        if context.chat_type == "private":
+            await self.rich.draft(message)
+        else:
+            placeholder = await self.rich.send(message, "Thinking…")
         last_edit = 0.0
 
         async def on_text(text: str) -> None:
@@ -230,15 +253,18 @@ class TelegramApp:
                 return
             last_edit = now
             with suppress(TelegramBadRequest):
-                await draft.edit_text(text[:4096] or "Thinking…")
+                if context.chat_type == "private":
+                    await self.rich.draft(message, text[:32000])
+                elif placeholder:
+                    await self.rich.edit(placeholder, text[:32000] or "Thinking…")
 
         try:
             output = await self.runtime.run(context, current, user_input, on_text)
-            await self._deliver(draft, output)
+            await self._deliver(message, placeholder, output)
         except TimeoutError:
-            await draft.edit_text("This took too long, so I stopped it. Please try again.")
+            await self._finish(message, placeholder, "This took too long, so I stopped it.")
         except asyncio.CancelledError:
-            await draft.edit_text("Stopped.")
+            await self._finish(message, placeholder, "Stopped.")
         except Exception as error:
             log.exception(
                 "agent_run_failed",
@@ -246,7 +272,7 @@ class TelegramApp:
                 thread_id=context.thread_id,
                 error=type(error).__name__,
             )
-            await draft.edit_text("Something went wrong. Please try again.")
+            await self._finish(message, placeholder, "Something went wrong. Please try again.")
 
     async def _input(
         self, message: Message, context: RequestContext
@@ -281,24 +307,28 @@ class TelegramApp:
             )
         return cast(list[TResponseInputItem], [{"role": "user", "content": content}])
 
-    async def _deliver(self, draft: Message, output: RunOutput) -> None:
+    async def _deliver(
+        self, target: Message, placeholder: Message | None, output: RunOutput
+    ) -> None:
         chunks = self._chunks(output.text)
-        if chunks:
-            with suppress(TelegramBadRequest):
-                await draft.edit_text(chunks[0])
-            for chunk in chunks[1:]:
-                await draft.answer(chunk)
-        elif output.images:
-            await draft.delete()
+        chunks = chunks or [""]
+        first = self.rich.output(chunks[0], output.images)
+        await self._finish(target, placeholder, first)
+        for chunk in chunks[1:]:
+            await self.rich.send(target, self.rich.output(chunk))
+
+    async def _finish(
+        self, target: Message, placeholder: Message | None, content: str | InputRichMessage
+    ) -> None:
+        if placeholder:
+            await self.rich.edit(placeholder, content)
         else:
-            await draft.edit_text("Done.")
-        for index, image in enumerate(output.images, start=1):
-            await draft.answer_photo(BufferedInputFile(image, filename=f"skye-{index}.png"))
+            await self.rich.send(target, content)
 
     async def _require_access(self, message: Message, context: RequestContext) -> bool:
         if await self.access.allowed(context):
             return True
-        await message.answer("This chat is not allowlisted.")
+        await self.rich.send(message, "This chat is not allowlisted.")
         return False
 
     async def _can_edit(self, context: RequestContext) -> bool:
@@ -348,14 +378,6 @@ class TelegramApp:
         return None
 
     @staticmethod
-    def _settings_text(settings: ChatSettings) -> str:
-        return (
-            "Settings\n\n"
-            f"Model        {MODELS[settings.model]}\n"
-            f"Reasoning    {settings.reasoning.title()}"
-        )
-
-    @staticmethod
     def _settings_keyboard(editable: bool) -> InlineKeyboardMarkup | None:
         if not editable:
             return None
@@ -397,7 +419,7 @@ class TelegramApp:
         return InlineKeyboardMarkup(inline_keyboard=rows)
 
     @staticmethod
-    def _chunks(text: str, limit: int = 4096) -> list[str]:
+    def _chunks(text: str, limit: int = 32000) -> list[str]:
         text = text.strip()
         if not text:
             return []
