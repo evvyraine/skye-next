@@ -1,6 +1,6 @@
 from aiogram.types import Chat, Message
 
-from skye.telegram_threads import api_thread_id, thread_id
+from skye.telegram_threads import api_thread_id, reply_parameters, thread_id
 
 
 def message(*, raw_thread_id: int | None, is_topic: bool | None) -> Message:
@@ -25,3 +25,12 @@ def test_real_forum_topic_id_is_preserved() -> None:
 
     assert thread_id(topic_message) == 19
     assert api_thread_id(topic_message) == 19
+
+
+def test_reply_parameters_attach_to_the_triggering_message() -> None:
+    incoming = message(raw_thread_id=None, is_topic=None)
+
+    params = reply_parameters(incoming)
+
+    assert params.message_id == incoming.message_id
+    assert params.allow_sending_without_reply is True

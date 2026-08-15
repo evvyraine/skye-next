@@ -217,6 +217,10 @@ In groups the bot responds only when mentioned, replied to, invoked by command,
 or addressed inside a dedicated bot topic. This prevents accidental spending
 and noise without introducing quotas.
 
+Every visible bot message is sent as a Telegram reply to the triggering request,
+so the conversation thread stays attached. Forum topic ids are used only for
+real topics, never for reply-only thread ids.
+
 ## Access model
 
 Access is deny-by-default.

@@ -1,8 +1,15 @@
+from unittest.mock import AsyncMock
+
 from aiogram.types import (
+    Chat,
     InputMediaPhoto,
     InputRichBlockParagraph,
     InputRichBlockTable,
     InputRichBlockThinking,
+    InputRichMessage,
+    Message,
+    ReplyParameters,
+    User,
 )
 
 from skye.models import (
@@ -132,3 +139,62 @@ def test_memory_screen_uses_plain_rich_cells() -> None:
     table = message.blocks[1]
     assert isinstance(table, InputRichBlockTable)
     assert table.cells[1][2].text == "Likes **literal** tea"
+
+
+async def test_send_replies_to_the_triggering_message() -> None:
+    bot = AsyncMock()
+    incoming = Message(
+        message_id=17,
+        date=0,
+        chat=Chat(id=42, type="private", first_name="Alice"),
+        from_user=User(id=42, is_bot=False, first_name="Alice"),
+        text="Hello",
+    )
+
+    await RichMessages(bot).send(incoming, "Hi.")
+
+    kwargs = bot.send_rich_message.await_args.kwargs
+    assert kwargs["chat_id"] == 42
+    assert kwargs["message_thread_id"] is None
+    assert kwargs["rich_message"] == InputRichMessage(markdown="Hi.")
+    assert kwargs["reply_parameters"] == ReplyParameters(
+        message_id=17,
+        allow_sending_without_reply=True,
+    )
+
+
+async def test_send_keeps_forum_topic_and_still_replies() -> None:
+    bot = AsyncMock()
+    incoming = Message(
+        message_id=20,
+        date=0,
+        chat=Chat(id=-100, type="supergroup", title="Skye Lab"),
+        from_user=User(id=42, is_bot=False, first_name="Alice"),
+        text="Hello",
+        message_thread_id=9,
+        is_topic_message=True,
+    )
+
+    await RichMessages(bot).send(incoming, "Hi.")
+
+    kwargs = bot.send_rich_message.await_args.kwargs
+    assert kwargs["message_thread_id"] == 9
+    assert kwargs["reply_parameters"].message_id == 20
+
+
+async def test_send_ignores_reply_only_thread_id_but_still_replies() -> None:
+    bot = AsyncMock()
+    incoming = Message(
+        message_id=21,
+        date=0,
+        chat=Chat(id=-100, type="supergroup", title="Skye Lab"),
+        from_user=User(id=42, is_bot=False, first_name="Alice"),
+        text="Hello",
+        message_thread_id=19,
+    )
+
+    await RichMessages(bot).send(incoming, "Hi.")
+
+    kwargs = bot.send_rich_message.await_args.kwargs
+    assert kwargs["message_thread_id"] is None
+    assert kwargs["reply_parameters"].message_id == 21
