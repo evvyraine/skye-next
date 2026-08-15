@@ -5,9 +5,9 @@ import io
 import json
 import re
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from contextlib import suppress
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 import structlog
 from agents.items import TResponseInputItem
@@ -36,7 +36,17 @@ from .custom_agents import AGENT_CAPABILITIES, CustomAgentService
 from .db import Database
 from .group_context import GroupContextService
 from .memory import MemoryService
-from .models import AgentCapability, ChatSettings, ChatType, InstalledAgent, RequestContext, Scope
+from .models import (
+    AccessEffect,
+    AccessEntry,
+    AgentCapability,
+    ChatSettings,
+    ChatType,
+    InstalledAgent,
+    RequestContext,
+    Scope,
+    ScopeKind,
+)
 from .rich import RichMessages
 from .runtime import AgentRuntime, RunOutput
 from .telegram_threads import thread_id
@@ -44,6 +54,7 @@ from .telegram_threads import thread_id
 log = structlog.get_logger()
 REASONING: tuple[Reasoning, ...] = ("none", "low", "medium", "high", "xhigh", "max")
 BOT_NAME = re.compile(r"(?<!\w)(?:skye|скай)(?!\w)", re.IGNORECASE)
+AdminAction = Literal["allow", "ban", "remove"]
 
 
 class AgentWizard(StatesGroup):
@@ -51,6 +62,10 @@ class AgentWizard(StatesGroup):
     description = State()
     instructions = State()
     preview = State()
+
+
+class AdminPrompt(StatesGroup):
+    target = State()
 
 
 class UpdateMiddleware(BaseMiddleware):
@@ -119,6 +134,7 @@ class TelegramApp:
         self.router.message.register(self.admin, Command("admin"))
         self.router.callback_query.register(self.settings_callback, F.data.startswith("settings:"))
         self.router.callback_query.register(self.agents_callback, F.data.startswith("agents:"))
+        self.router.callback_query.register(self.admin_callback, F.data.startswith("admin:"))
         self.router.message.register(
             self.agent_wizard,
             StateFilter(
@@ -128,6 +144,7 @@ class TelegramApp:
                 AgentWizard.preview,
             ),
         )
+        self.router.message.register(self.admin_prompt, StateFilter(AdminPrompt.target))
         self.router.message.register(self.chat)
 
     async def start(self, message: Message) -> None:
@@ -612,46 +629,160 @@ class TelegramApp:
         stopped = self.runtime.stop(context.chat_id, context.thread_id)
         await self.rich.send(message, "Stopping…" if stopped else "Nothing is running here.")
 
-    async def admin(self, message: Message) -> None:
+    async def admin(self, message: Message, state: FSMContext) -> None:
         context = self._context(message)
         if context is None or not self.access.is_owner(context.user_id):
             await self.rich.send(message, "This command is only available to the bot owner.")
             return
-        parts = (message.text or "").split()
-        if len(parts) == 1:
-            await self.rich.send(
-                message,
-                "`/admin allow [id]`\n\n`/admin ban <id>`\n\n"
-                "`/admin remove <id>`\n\n`/admin list`\n\n"
-                "Run /admin allow in a group to allow the whole group."
-            )
+        await state.clear()
+        await self._show_admin(
+            message, context, reply_user=self._admin_reply_user(message), edit=False
+        )
+
+    async def admin_callback(self, callback: CallbackQuery, state: FSMContext) -> None:
+        if not callback.message or not isinstance(callback.message, Message) or not callback.data:
+            await callback.answer()
             return
-        action = parts[1].lower()
-        if action == "list":
-            entries = await self.database.list_access()
-            text = "\n".join(
-                f"- {entry['effect']} {entry['kind']} `{entry['telegram_id']}`"
-                for entry in entries
-            )
-            await self.rich.send(message, text or "The allowlist is empty.")
+        context = self._context(callback.message, callback.from_user)
+        if context is None or not self.access.is_owner(context.user_id):
+            await callback.answer("This is only available to the bot owner.", show_alert=True)
             return
-        target = self._admin_target(message, parts[2] if len(parts) > 2 else None)
+        action = callback.data.split(":")
+        try:
+            if action == ["admin", "home"]:
+                await state.clear()
+                await self._show_admin(callback.message, context)
+            elif action == ["admin", "cancel"]:
+                await state.clear()
+                await self._show_admin(callback.message, context, notice="Cancelled.")
+            elif action == ["admin", "allow_group"]:
+                if context.chat_type not in {"group", "supergroup"}:
+                    raise ValueError("Allow this group only works inside a group.")
+                notice = await self._apply_admin(
+                    context.user_id, "allow", Scope("chat", context.chat_id)
+                )
+                await self._show_admin(callback.message, context, notice=notice)
+            elif action == ["admin", "remove_group"]:
+                if context.chat_type not in {"group", "supergroup"}:
+                    raise ValueError("Remove this group only works inside a group.")
+                notice = await self._apply_admin(
+                    context.user_id, "remove", Scope("chat", context.chat_id)
+                )
+                await self._show_admin(callback.message, context, notice=notice)
+            elif len(action) == 3 and action[:2] == ["admin", "ask"]:
+                prompt_action = action[2]
+                if prompt_action not in {"allow", "ban", "remove"}:
+                    raise ValueError("Unknown admin action.")
+                await state.set_state(AdminPrompt.target)
+                await state.set_data({"action": prompt_action})
+                await self.rich.edit(
+                    callback.message,
+                    self._admin_prompt_text(prompt_action),
+                    reply_markup=self._admin_cancel_keyboard(),
+                )
+            elif len(action) == 4 and action[:2] == ["admin", "open"]:
+                target = self._admin_scope(action[2], action[3])
+                await self._show_admin_entry(callback.message, context, target)
+            elif len(action) == 5 and action[:2] == ["admin", "set"]:
+                target = self._admin_scope(action[3], action[4])
+                notice = await self._apply_admin(
+                    context.user_id, self._admin_effect(action[2]), target
+                )
+                await self._show_admin(callback.message, context, notice=notice)
+            elif len(action) == 4 and action[:2] == ["admin", "rm"]:
+                target = self._admin_scope(action[2], action[3])
+                notice = await self._apply_admin(context.user_id, "remove", target)
+                await self._show_admin(callback.message, context, notice=notice)
+            else:
+                raise ValueError("Unknown admin action.")
+        except (PermissionError, ValueError) as error:
+            await callback.answer(str(error), show_alert=True)
+            return
+        await callback.answer()
+
+    async def admin_prompt(self, message: Message, state: FSMContext) -> None:
+        context = self._context(message)
+        if context is None or not self.access.is_owner(context.user_id):
+            await state.clear()
+            return
+        data = await state.get_data()
+        action = data.get("action")
+        if action not in {"allow", "ban", "remove"}:
+            await state.clear()
+            await self.rich.send(message, "That admin action is no longer active.")
+            return
+        target = self._admin_input_target(message)
         if target is None:
             await self.rich.send(
                 message,
-                "Provide a numeric id, reply to a user, or run this inside a group."
+                "Reply with a numeric Telegram id, or reply to that user. "
+                "Negative ids are groups.",
             )
             return
-        if action in {"allow", "ban"}:
-            await self.database.set_access(target, cast(Any, action), context.user_id)
-            await self.rich.send(message, f"{action.title()}ed {target.kind} {target.id}.")
-        elif action == "remove":
-            removed = await self.database.remove_access(target)
-            await self.rich.send(
-                message, "Access entry removed." if removed else "No matching entry."
+        await state.clear()
+        try:
+            notice = await self._apply_admin(context.user_id, cast(AdminAction, action), target)
+        except (PermissionError, ValueError) as error:
+            await self.rich.send(message, str(error))
+            return
+        await self._show_admin(message, context, notice=notice, edit=False)
+
+    async def _show_admin(
+        self,
+        message: Message,
+        context: RequestContext,
+        *,
+        notice: str | None = None,
+        reply_user: User | None = None,
+        edit: bool = True,
+    ) -> None:
+        entries = await self.database.list_access()
+        group_effect: AccessEffect | None = None
+        in_group = context.chat_type in {"group", "supergroup"}
+        if in_group:
+            group_scope = Scope("chat", context.chat_id)
+            group_effect = next(
+                (entry.effect for entry in entries if entry.scope == group_scope),
+                None,
             )
+        content = self.rich.access(
+            entries, notice=notice, group_effect=group_effect, in_group=in_group
+        )
+        markup = self._admin_home_keyboard(context, entries, reply_user, group_effect)
+        if edit:
+            await self.rich.edit(message, content, reply_markup=markup)
         else:
-            await self.rich.send(message, "Unknown admin action.")
+            await self.rich.send(message, content, reply_markup=markup)
+
+    async def _show_admin_entry(
+        self, message: Message, context: RequestContext, target: Scope
+    ) -> None:
+        entries = await self.database.list_access()
+        entry = next((item for item in entries if item.scope == target), None)
+        if entry is None:
+            await self._show_admin(message, context, notice="No matching entry.")
+            return
+        await self.rich.edit(
+            message,
+            self.rich.access([entry], notice=f"{entry.scope.kind} `{entry.scope.id}`"),
+            reply_markup=self._admin_entry_keyboard(entry),
+        )
+
+    async def _apply_admin(self, actor_id: int, action: AdminAction, target: Scope) -> str:
+        if (
+            target.kind == "user"
+            and self.access.is_owner(target.id)
+            and action in {"ban", "remove"}
+        ):
+            raise PermissionError("The owner cannot be banned or removed.")
+        label = f"{target.kind} `{target.id}`"
+        if action == "allow" or action == "ban":
+            await self.database.set_access(target, action, actor_id)
+            return f"{action.title()}ed {label}."
+        if action == "remove":
+            removed = await self.database.remove_access(target)
+            return f"Removed {label}." if removed else "No matching entry."
+        raise ValueError("Unknown admin action.")
 
     async def chat(self, message: Message) -> None:
         context = self._context(message)
@@ -816,18 +947,147 @@ class TelegramApp:
         )
 
     @staticmethod
-    def _admin_target(message: Message, raw_id: str | None) -> Scope | None:
-        if message.reply_to_message and message.reply_to_message.from_user:
-            return Scope("user", message.reply_to_message.from_user.id)
-        if raw_id:
-            try:
-                telegram_id = int(raw_id)
-            except ValueError:
-                return None
-            return Scope("chat" if telegram_id < 0 else "user", telegram_id)
-        if message.chat.type in {"group", "supergroup"}:
-            return Scope("chat", message.chat.id)
+    def _admin_reply_user(message: Message) -> User | None:
+        reply = message.reply_to_message
+        if reply and reply.from_user and not reply.from_user.is_bot:
+            return reply.from_user
         return None
+
+    @classmethod
+    def _admin_input_target(cls, message: Message) -> Scope | None:
+        reply_user = cls._admin_reply_user(message)
+        if reply_user is not None:
+            return Scope("user", reply_user.id)
+        return cls._admin_scope_from_text(message.text)
+
+    @staticmethod
+    def _admin_scope_from_text(raw_id: str | None) -> Scope | None:
+        if raw_id is None:
+            return None
+        try:
+            telegram_id = int(raw_id.strip())
+        except ValueError:
+            return None
+        return Scope("chat" if telegram_id < 0 else "user", telegram_id)
+
+    @staticmethod
+    def _admin_effect(raw: str) -> AccessEffect:
+        if raw == "allow":
+            return "allow"
+        if raw == "ban":
+            return "ban"
+        raise ValueError("Unknown admin action.")
+
+    @staticmethod
+    def _admin_scope(kind: str, raw_id: str) -> Scope:
+        if kind not in {"user", "chat"}:
+            raise ValueError("Unknown admin target.")
+        try:
+            telegram_id = int(raw_id)
+        except ValueError as error:
+            raise ValueError("Unknown admin target.") from error
+        expected: ScopeKind = "chat" if telegram_id < 0 else "user"
+        if kind != expected:
+            raise ValueError("Unknown admin target.")
+        return Scope(expected, telegram_id)
+
+    @staticmethod
+    def _admin_prompt_text(action: str) -> str:
+        if action == "allow":
+            verb = "allow"
+        elif action == "ban":
+            verb = "ban"
+        else:
+            verb = "remove"
+        return (
+            f"Reply with the numeric Telegram id to {verb}, or reply to that user. "
+            "Negative ids are groups."
+        )
+
+    @staticmethod
+    def _admin_home_keyboard(
+        context: RequestContext,
+        entries: Sequence[AccessEntry],
+        reply_user: User | None,
+        group_effect: AccessEffect | None,
+    ) -> InlineKeyboardMarkup:
+        rows: list[list[InlineKeyboardButton]] = []
+        if context.chat_type in {"group", "supergroup"}:
+            if group_effect == "allow":
+                rows.append(
+                    [
+                        InlineKeyboardButton(
+                            text="Remove this group", callback_data="admin:remove_group"
+                        )
+                    ]
+                )
+            else:
+                rows.append(
+                    [
+                        InlineKeyboardButton(
+                            text="Allow this group", callback_data="admin:allow_group"
+                        )
+                    ]
+                )
+        if reply_user is not None:
+            name = (reply_user.first_name or "user")[:20]
+            rows.append(
+                [
+                    InlineKeyboardButton(
+                        text=f"Allow {name}",
+                        callback_data=f"admin:set:allow:user:{reply_user.id}",
+                    ),
+                    InlineKeyboardButton(
+                        text=f"Ban {name}",
+                        callback_data=f"admin:set:ban:user:{reply_user.id}",
+                    ),
+                ]
+            )
+        rows.append(
+            [
+                InlineKeyboardButton(text="Allow", callback_data="admin:ask:allow"),
+                InlineKeyboardButton(text="Ban", callback_data="admin:ask:ban"),
+            ]
+        )
+        rows.append([InlineKeyboardButton(text="Remove", callback_data="admin:ask:remove")])
+        rows.extend(
+            [
+                [
+                    InlineKeyboardButton(
+                        text=f"{entry.scope.kind} {entry.scope.id} · {entry.effect}",
+                        callback_data=f"admin:open:{entry.scope.kind}:{entry.scope.id}",
+                    )
+                ]
+                for entry in entries
+            ]
+        )
+        return InlineKeyboardMarkup(inline_keyboard=rows)
+
+    @staticmethod
+    def _admin_entry_keyboard(entry: AccessEntry) -> InlineKeyboardMarkup:
+        kind = entry.scope.kind
+        telegram_id = entry.scope.id
+        toggle: AccessEffect = "ban" if entry.effect == "allow" else "allow"
+        return InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text=toggle.title(),
+                        callback_data=f"admin:set:{toggle}:{kind}:{telegram_id}",
+                    ),
+                    InlineKeyboardButton(
+                        text="Remove", callback_data=f"admin:rm:{kind}:{telegram_id}"
+                    ),
+                ],
+                [InlineKeyboardButton(text="‹ Back", callback_data="admin:home")],
+            ]
+        )
+
+    @staticmethod
+    def _admin_cancel_keyboard() -> InlineKeyboardMarkup:
+        return InlineKeyboardMarkup(
+            inline_keyboard=[[InlineKeyboardButton(text="Cancel", callback_data="admin:cancel")]]
+        )
 
     @staticmethod
     def _settings_keyboard(editable: bool) -> InlineKeyboardMarkup | None:

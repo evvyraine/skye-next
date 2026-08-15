@@ -6,12 +6,14 @@ import re
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import Any, cast
 
 import aiosqlite
 
 from .config import ModelId, Reasoning
 from .models import (
+    AccessEffect,
+    AccessEntry,
     AgentCapability,
     AgentProfile,
     AgentVersion,
@@ -22,9 +24,8 @@ from .models import (
     Memory,
     MemoryCategory,
     Scope,
+    ScopeKind,
 )
-
-AccessEffect = Literal["allow", "ban"]
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS access_entries (
@@ -275,12 +276,20 @@ class Database:
         )
         return cursor.rowcount > 0
 
-    async def list_access(self) -> list[dict[str, Any]]:
+    async def list_access(self) -> list[AccessEntry]:
         cursor = await self.conn.execute(
             "SELECT kind, telegram_id, effect, created_by, created_at "
             "FROM access_entries ORDER BY created_at"
         )
-        return [dict(row) for row in await cursor.fetchall()]
+        return [
+            AccessEntry(
+                Scope(cast(ScopeKind, row["kind"]), int(row["telegram_id"])),
+                cast(AccessEffect, row["effect"]),
+                int(row["created_by"]),
+                str(row["created_at"]),
+            )
+            for row in await cursor.fetchall()
+        ]
 
     async def get_settings(self, scope: Scope) -> ChatSettings:
         table, key = self._settings_table(scope)

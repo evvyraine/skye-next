@@ -1,6 +1,11 @@
-from aiogram.types import InputMediaPhoto, InputRichBlockTable, InputRichBlockThinking
+from aiogram.types import (
+    InputMediaPhoto,
+    InputRichBlockParagraph,
+    InputRichBlockTable,
+    InputRichBlockThinking,
+)
 
-from skye.models import ChatSettings, Memory, Scope
+from skye.models import AccessEntry, ChatSettings, Memory, Scope
 from skye.rich import RichMessages
 
 
@@ -29,6 +34,28 @@ def test_thinking_block_is_valid_for_drafts() -> None:
     block = InputRichBlockThinking(text="Thinking…")
 
     assert block.type == "thinking"
+
+
+def test_access_screen_lists_entries_and_group_status() -> None:
+    entries = [
+        AccessEntry(Scope("user", 42), "allow", 1, "now"),
+        AccessEntry(Scope("chat", -100), "ban", 1, "now"),
+    ]
+
+    message = RichMessages.access(entries, notice="Allowed user `42`.", in_group=True)
+
+    assert message.blocks
+    notice = message.blocks[1]
+    status = message.blocks[3]
+    table = message.blocks[4]
+    assert isinstance(notice, InputRichBlockParagraph)
+    assert isinstance(status, InputRichBlockParagraph)
+    assert notice.text == "Allowed user `42`."
+    assert status.text == "This group is not allowlisted."
+    assert isinstance(table, InputRichBlockTable)
+    assert table.cells[1][0].text == "user"
+    assert table.cells[1][1].text == "42"
+    assert table.cells[1][2].text == "allow"
 
 
 def test_memory_screen_uses_plain_rich_cells() -> None:

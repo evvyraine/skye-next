@@ -5,6 +5,7 @@ from .config import ModelId, Reasoning
 
 ScopeKind = Literal["user", "chat"]
 ChatType = Literal["private", "group", "supergroup", "channel"]
+AccessEffect = Literal["allow", "ban"]
 MemoryCategory = Literal["preference", "personal", "project", "instruction", "other"]
 AgentVisibility = Literal["private", "unlisted", "public"]
 AgentCapability = Literal["web", "image", "shell"]
@@ -14,6 +15,14 @@ AgentCapability = Literal["web", "image", "shell"]
 class Scope:
     kind: ScopeKind
     id: int
+
+
+@dataclass(frozen=True, slots=True)
+class AccessEntry:
+    scope: Scope
+    effect: AccessEffect
+    created_by: int
+    created_at: str
 
 
 @dataclass(frozen=True, slots=True)
