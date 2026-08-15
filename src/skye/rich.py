@@ -19,7 +19,7 @@ from aiogram.types import (
 )
 
 from .config import MODELS
-from .models import ChatSettings, InstalledAgent, Memory
+from .models import AccessEffect, AccessEntry, ChatSettings, InstalledAgent, Memory
 from .telegram_threads import api_thread_id
 
 
@@ -173,6 +173,68 @@ class RichMessages:
                 InputRichBlockParagraph(text=instructions[:4000]),
             ]
         )
+
+    @staticmethod
+    def access(
+        entries: Sequence[AccessEntry],
+        *,
+        notice: str | None = None,
+        group_effect: AccessEffect | None = None,
+        in_group: bool = False,
+        show_entries: bool = True,
+    ) -> InputRichMessage:
+        blocks: list[InputRichBlockUnion] = [
+            InputRichBlockSectionHeading(text="Access", size=2)
+        ]
+        if notice:
+            blocks.append(InputRichBlockParagraph(text=notice))
+        blocks.append(
+            InputRichBlockParagraph(
+                text=(
+                    "Owner-only allowlist. A ban beats every allow except the owner. "
+                    "Allowlisting a group grants access only inside that group."
+                )
+            )
+        )
+        if in_group:
+            if group_effect == "allow":
+                status = "This group is allowlisted."
+            elif group_effect == "ban":
+                status = "This group is banned."
+            else:
+                status = "This group is not allowlisted."
+            blocks.append(InputRichBlockParagraph(text=status))
+        if not show_entries:
+            return InputRichMessage(blocks=blocks)
+        if not entries:
+            blocks.append(InputRichBlockParagraph(text="The allowlist is empty."))
+            return InputRichMessage(blocks=blocks)
+
+        def cell(text: str, *, header: bool = False) -> RichBlockTableCell:
+            return RichBlockTableCell(
+                text=text,
+                is_header=header or None,
+                align="left",
+                valign="middle",
+            )
+
+        rows = [
+            [
+                cell("Kind", header=True),
+                cell("Id", header=True),
+                cell("Effect", header=True),
+            ]
+        ]
+        rows.extend(
+            [
+                cell(entry.scope.kind),
+                cell(str(entry.scope.id)),
+                cell(entry.effect),
+            ]
+            for entry in entries
+        )
+        blocks.append(InputRichBlockTable(cells=rows, is_bordered=True, is_striped=True))
+        return InputRichMessage(blocks=blocks)
 
     @staticmethod
     def memory(memories: list[Memory], enabled: bool) -> InputRichMessage:

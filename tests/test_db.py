@@ -6,7 +6,7 @@ import pytest
 
 from skye.access import AccessService
 from skye.db import Database
-from skye.models import GroupMessage, RequestContext, Scope
+from skye.models import AccessEntry, GroupMessage, RequestContext, Scope
 
 
 @pytest.fixture
@@ -41,6 +41,18 @@ async def test_group_access_does_not_grant_private_access(database: Database) ->
 
     assert await access.allowed(group)
     assert not await access.allowed(private)
+
+
+async def test_list_access_returns_typed_entries(database: Database) -> None:
+    await database.set_access(Scope("user", 42), "allow", created_by=1)
+    await database.set_access(Scope("chat", -100), "ban", created_by=1)
+
+    entries = await database.list_access()
+
+    assert entries == [
+        AccessEntry(Scope("user", 42), "allow", 1, entries[0].created_at),
+        AccessEntry(Scope("chat", -100), "ban", 1, entries[1].created_at),
+    ]
 
 
 async def test_user_ban_wins_inside_allowed_group(database: Database) -> None:
