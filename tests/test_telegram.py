@@ -2,7 +2,8 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from aiogram.types import Chat, InlineKeyboardMarkup, Message, User, VideoNote
+from aiogram.dispatcher.event.bases import UNHANDLED
+from aiogram.types import Chat, InlineKeyboardMarkup, InputRichBlockTable, Message, User, VideoNote
 
 from skye.group_context import GroupHistory
 from skye.models import AccessEntry, Scope
@@ -237,13 +238,29 @@ async def test_admin_opens_keyboard_and_ignores_subcommands() -> None:
     assert button_data(markup) == ["admin:ask:allow", "admin:ask:ban", "admin:ask:remove"]
 
 
-async def test_admin_group_keyboard_can_allow_this_group() -> None:
-    app = admin_app()
+async def test_admin_group_keyboard_does_not_list_other_entries() -> None:
+    entries = [AccessEntry(Scope("user", 42), "allow", 1, "now")]
+    app = admin_app(entries)
+
+    await app.admin(owner_group_message(), AsyncMock())
+
+    content = app.rich.send.await_args.args[1]
+    labels = button_labels(app.rich.send.await_args.kwargs["reply_markup"])
+    assert labels == ["Allow this group"]
+    assert content.blocks
+    assert all(not isinstance(block, InputRichBlockTable) for block in content.blocks)
+
+
+async def test_admin_banned_group_offers_remove_and_allow() -> None:
+    entries = [AccessEntry(Scope("chat", -100), "ban", 1, "now")]
+    app = admin_app(entries)
 
     await app.admin(owner_group_message(), AsyncMock())
 
     labels = button_labels(app.rich.send.await_args.kwargs["reply_markup"])
-    assert labels[:4] == ["Allow this group", "Allow", "Ban", "Remove"]
+    data = button_data(app.rich.send.await_args.kwargs["reply_markup"])
+    assert labels == ["Remove this group", "Allow this group"]
+    assert data == ["admin:remove_group", "admin:allow_group"]
 
 
 async def test_admin_reply_offers_user_buttons() -> None:
@@ -266,35 +283,10 @@ async def test_admin_reply_offers_user_buttons() -> None:
     assert "admin:set:ban:user:42" in data
 
 
-def test_admin_input_target_ignores_bot_replies() -> None:
-    bot_reply = Message(
-        message_id=2,
-        date=0,
-        chat=Chat(id=1, type="private", first_name="Owner"),
-        from_user=User(id=777, is_bot=True, first_name="Skye"),
-        text="Reply with the numeric Telegram id to allow, or reply to that user.",
-    )
-
-    assert TelegramApp._admin_input_target(private_message("42", reply=bot_reply)) == Scope(
-        "user", 42
-    )
-    assert TelegramApp._admin_input_target(private_message("not-an-id", reply=bot_reply)) is None
-
-
-def test_admin_input_target_uses_replied_user_and_numeric_ids() -> None:
-    alice = Message(
-        message_id=2,
-        date=0,
-        chat=Chat(id=1, type="private", first_name="Owner"),
-        from_user=User(id=42, is_bot=False, first_name="Alice"),
-        text="hello",
-    )
-
-    assert TelegramApp._admin_input_target(private_message("ignored", reply=alice)) == Scope(
-        "user", 42
-    )
-    assert TelegramApp._admin_input_target(private_message("99")) == Scope("user", 99)
-    assert TelegramApp._admin_input_target(private_message("-100")) == Scope("chat", -100)
+def test_admin_scope_from_text_parses_numeric_ids() -> None:
+    assert TelegramApp._admin_scope_from_text("99") == Scope("user", 99)
+    assert TelegramApp._admin_scope_from_text("-100") == Scope("chat", -100)
+    assert TelegramApp._admin_scope_from_text("not-an-id") is None
     assert TelegramApp._admin_scope("chat", "-100") == Scope("chat", -100)
     with pytest.raises(ValueError, match="Unknown admin target"):
         TelegramApp._admin_scope("user", "-100")
@@ -303,33 +295,38 @@ def test_admin_input_target_uses_replied_user_and_numeric_ids() -> None:
 async def test_admin_callback_asks_for_an_id() -> None:
     app = admin_app()
     state = AsyncMock()
-    callback = admin_callback_query("admin:ask:allow", private_message("/admin"))
+    panel = private_message("/admin")
+    callback = admin_callback_query("admin:ask:allow", panel)
 
     await app.admin_callback(callback, state)
 
     state.set_state.assert_awaited_once_with(AdminPrompt.target)
-    state.set_data.assert_awaited_once_with({"action": "allow"})
-    assert "Reply with the numeric Telegram id to allow" in app.rich.edit.await_args.args[1]
+    state.set_data.assert_awaited_once_with({"action": "allow", "prompt_message_id": 1})
+    assert "Reply to this message with the numeric Telegram id to allow" in (
+        app.rich.edit.await_args.args[1]
+    )
     assert button_data(app.rich.edit.await_args.kwargs["reply_markup"]) == ["admin:cancel"]
     callback.answer.assert_awaited_once()
 
 
-async def test_admin_prompt_allows_numeric_id() -> None:
+async def test_admin_prompt_allows_numeric_id_when_replying_to_prompt() -> None:
     app = admin_app()
     state = AsyncMock()
-    state.get_data = AsyncMock(return_value={"action": "allow"})
+    prompt = private_message("Reply to this message with the numeric Telegram id to allow.")
+    state.get_data = AsyncMock(return_value={"action": "allow", "prompt_message_id": 1})
 
-    await app.admin_prompt(private_message("42"), state)
+    await app.admin_prompt(private_message("42", reply=prompt), state)
 
     state.clear.assert_awaited_once()
     app.database.set_access.assert_awaited_once_with(Scope("user", 42), "allow", 1)
-    assert app.rich.send.await_args.kwargs["reply_markup"] is not None
+    app.rich.edit.assert_awaited_once()
+    assert app.rich.edit.await_args.args[0] is prompt
 
 
-async def test_admin_prompt_allows_replied_user() -> None:
+async def test_admin_prompt_ignores_messages_that_are_not_replies_to_prompt() -> None:
     app = admin_app()
     state = AsyncMock()
-    state.get_data = AsyncMock(return_value={"action": "ban"})
+    state.get_data = AsyncMock(return_value={"action": "allow", "prompt_message_id": 9})
     alice = Message(
         message_id=2,
         date=0,
@@ -338,9 +335,10 @@ async def test_admin_prompt_allows_replied_user() -> None:
         text="hello",
     )
 
-    await app.admin_prompt(private_message("ban this", reply=alice), state)
-
-    app.database.set_access.assert_awaited_once_with(Scope("user", 42), "ban", 1)
+    assert await app.admin_prompt(private_message("42"), state) is UNHANDLED
+    assert await app.admin_prompt(private_message("42", reply=alice), state) is UNHANDLED
+    app.database.set_access.assert_not_awaited()
+    state.clear.assert_not_awaited()
 
 
 async def test_admin_cannot_ban_owner() -> None:
@@ -360,6 +358,53 @@ async def test_admin_allow_group_sets_access() -> None:
 
     app.database.set_access.assert_awaited_once_with(Scope("chat", -100), "allow", 1)
     app.rich.edit.assert_awaited_once()
+
+
+async def test_admin_remove_group_clears_access() -> None:
+    app = admin_app([AccessEntry(Scope("chat", -100), "allow", 1, "now")])
+    callback = admin_callback_query("admin:remove_group", owner_group_message())
+
+    await app.admin_callback(callback, AsyncMock())
+
+    app.database.remove_access.assert_awaited_once_with(Scope("chat", -100))
+    app.rich.edit.assert_awaited_once()
+
+
+async def test_admin_open_set_and_remove_entry() -> None:
+    app = admin_app([AccessEntry(Scope("user", 42), "allow", 1, "now")])
+    panel = private_message("/admin")
+
+    await app.admin_callback(admin_callback_query("admin:open:user:42", panel), AsyncMock())
+    assert button_data(app.rich.edit.await_args.kwargs["reply_markup"]) == [
+        "admin:set:allow:user:42",
+        "admin:set:ban:user:42",
+        "admin:rm:user:42",
+        "admin:home",
+    ]
+
+    await app.admin_callback(admin_callback_query("admin:set:ban:user:42", panel), AsyncMock())
+    app.database.set_access.assert_awaited_once_with(Scope("user", 42), "ban", 1)
+
+    await app.admin_callback(admin_callback_query("admin:rm:user:42", panel), AsyncMock())
+    app.database.remove_access.assert_awaited_once_with(Scope("user", 42))
+
+
+async def test_admin_group_rejects_allowlist_management() -> None:
+    app = admin_app([AccessEntry(Scope("user", 42), "allow", 1, "now")])
+    panel = owner_group_message()
+
+    ask = admin_callback_query("admin:ask:allow", panel)
+    await app.admin_callback(ask, AsyncMock())
+    ask.answer.assert_awaited_once_with(
+        "Manage the full allowlist in a private chat.", show_alert=True
+    )
+
+    open_entry = admin_callback_query("admin:open:user:42", panel)
+    await app.admin_callback(open_entry, AsyncMock())
+    open_entry.answer.assert_awaited_once_with(
+        "Manage the full allowlist in a private chat.", show_alert=True
+    )
+    app.database.set_access.assert_not_awaited()
 
 
 async def test_admin_callback_rejects_non_owner() -> None:

@@ -181,6 +181,7 @@ class RichMessages:
         notice: str | None = None,
         group_effect: AccessEffect | None = None,
         in_group: bool = False,
+        show_entries: bool = True,
     ) -> InputRichMessage:
         blocks: list[InputRichBlockUnion] = [
             InputRichBlockSectionHeading(text="Access", size=2)
@@ -203,6 +204,8 @@ class RichMessages:
             else:
                 status = "This group is not allowlisted."
             blocks.append(InputRichBlockParagraph(text=status))
+        if not show_entries:
+            return InputRichMessage(blocks=blocks)
         if not entries:
             blocks.append(InputRichBlockParagraph(text="The allowlist is empty."))
             return InputRichMessage(blocks=blocks)

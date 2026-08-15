@@ -58,6 +58,18 @@ def test_access_screen_lists_entries_and_group_status() -> None:
     assert table.cells[1][2].text == "allow"
 
 
+def test_access_screen_can_hide_entries() -> None:
+    entries = [AccessEntry(Scope("user", 42), "allow", 1, "now")]
+
+    message = RichMessages.access(entries, in_group=True, show_entries=False)
+
+    assert message.blocks
+    assert all(not isinstance(block, InputRichBlockTable) for block in message.blocks)
+    status = message.blocks[2]
+    assert isinstance(status, InputRichBlockParagraph)
+    assert status.text == "This group is not allowlisted."
+
+
 def test_memory_screen_uses_plain_rich_cells() -> None:
     memory = Memory(1, Scope("user", 7), "preference", "Likes **literal** tea", "now", "now")
 

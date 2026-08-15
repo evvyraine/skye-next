@@ -173,20 +173,25 @@ buttons. There are no per-member model overrides inside a group.
 `/admin` is owner-only and uses the same in-place keyboard. There are no
 admin subcommands.
 
+In a private chat the owner sees the full allowlist:
+
 ```text
 Access
 
 Owner-only allowlist. A ban beats every allow except the owner.
 
-[ Allow this group ]
 [ Allow ] [ Ban ]
 [ Remove ]
 [ user 42 · allow ]
 ```
 
-"Allow this group" appears only inside a group. Allow, Ban, and Remove ask
-for a numeric Telegram id or a reply to that user. Tapping an entry opens
-Allow / Ban / Remove for that id.
+Allow, Ban, and Remove ask for a reply to that prompt with a numeric
+Telegram id. Tapping an entry opens Allow / Ban / Remove for that id.
+
+In a group the panel shows only this group's status. Members never see
+other allow/ban entries. The group keyboard is Allow this group and/or
+Remove this group, plus one-tap Allow / Ban if `/admin` is a reply to a
+user. Manage the rest in a private chat.
 
 Agent creation is a short Telegram wizard:
 

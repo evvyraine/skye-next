@@ -12,6 +12,7 @@ from typing import Any, Literal, cast
 import structlog
 from agents.items import TResponseInputItem
 from aiogram import BaseMiddleware, Bot, Dispatcher, F, Router
+from aiogram.dispatcher.event.bases import UNHANDLED
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
@@ -670,26 +671,39 @@ class TelegramApp:
                 )
                 await self._show_admin(callback.message, context, notice=notice)
             elif len(action) == 3 and action[:2] == ["admin", "ask"]:
+                if context.chat_type != "private":
+                    raise PermissionError("Manage the full allowlist in a private chat.")
                 prompt_action = action[2]
                 if prompt_action not in {"allow", "ban", "remove"}:
                     raise ValueError("Unknown admin action.")
                 await state.set_state(AdminPrompt.target)
-                await state.set_data({"action": prompt_action})
+                await state.set_data(
+                    {
+                        "action": prompt_action,
+                        "prompt_message_id": callback.message.message_id,
+                    }
+                )
                 await self.rich.edit(
                     callback.message,
                     self._admin_prompt_text(prompt_action),
                     reply_markup=self._admin_cancel_keyboard(),
                 )
             elif len(action) == 4 and action[:2] == ["admin", "open"]:
+                if context.chat_type != "private":
+                    raise PermissionError("Manage the full allowlist in a private chat.")
                 target = self._admin_scope(action[2], action[3])
                 await self._show_admin_entry(callback.message, context, target)
             elif len(action) == 5 and action[:2] == ["admin", "set"]:
                 target = self._admin_scope(action[3], action[4])
+                if context.chat_type != "private" and target.kind != "user":
+                    raise PermissionError("Manage the full allowlist in a private chat.")
                 notice = await self._apply_admin(
                     context.user_id, self._admin_effect(action[2]), target
                 )
                 await self._show_admin(callback.message, context, notice=notice)
             elif len(action) == 4 and action[:2] == ["admin", "rm"]:
+                if context.chat_type != "private":
+                    raise PermissionError("Manage the full allowlist in a private chat.")
                 target = self._admin_scope(action[2], action[3])
                 notice = await self._apply_admin(context.user_id, "remove", target)
                 await self._show_admin(callback.message, context, notice=notice)
@@ -700,32 +714,35 @@ class TelegramApp:
             return
         await callback.answer()
 
-    async def admin_prompt(self, message: Message, state: FSMContext) -> None:
+    async def admin_prompt(self, message: Message, state: FSMContext) -> Any:
         context = self._context(message)
         if context is None or not self.access.is_owner(context.user_id):
             await state.clear()
-            return
+            return None
         data = await state.get_data()
         action = data.get("action")
+        prompt = self._admin_prompt_reply(message, data.get("prompt_message_id"))
+        if prompt is None:
+            return UNHANDLED
         if action not in {"allow", "ban", "remove"}:
             await state.clear()
             await self.rich.send(message, "That admin action is no longer active.")
-            return
-        target = self._admin_input_target(message)
+            return None
+        target = self._admin_scope_from_text(message.text)
         if target is None:
             await self.rich.send(
                 message,
-                "Reply with a numeric Telegram id, or reply to that user. "
-                "Negative ids are groups.",
+                "Reply to this message with a numeric Telegram id. Negative ids are groups.",
             )
-            return
+            return None
         await state.clear()
         try:
             notice = await self._apply_admin(context.user_id, cast(AdminAction, action), target)
         except (PermissionError, ValueError) as error:
             await self.rich.send(message, str(error))
-            return
-        await self._show_admin(message, context, notice=notice, edit=False)
+            return None
+        await self._show_admin(prompt, context, notice=notice)
+        return None
 
     async def _show_admin(
         self,
@@ -745,10 +762,15 @@ class TelegramApp:
                 (entry.effect for entry in entries if entry.scope == group_scope),
                 None,
             )
+        visible = () if in_group else entries
         content = self.rich.access(
-            entries, notice=notice, group_effect=group_effect, in_group=in_group
+            visible,
+            notice=notice,
+            group_effect=group_effect,
+            in_group=in_group,
+            show_entries=not in_group,
         )
-        markup = self._admin_home_keyboard(context, entries, reply_user, group_effect)
+        markup = self._admin_home_keyboard(context, visible, reply_user, group_effect)
         if edit:
             await self.rich.edit(message, content, reply_markup=markup)
         else:
@@ -953,12 +975,12 @@ class TelegramApp:
             return reply.from_user
         return None
 
-    @classmethod
-    def _admin_input_target(cls, message: Message) -> Scope | None:
-        reply_user = cls._admin_reply_user(message)
-        if reply_user is not None:
-            return Scope("user", reply_user.id)
-        return cls._admin_scope_from_text(message.text)
+    @staticmethod
+    def _admin_prompt_reply(message: Message, prompt_message_id: object) -> Message | None:
+        reply = message.reply_to_message
+        if reply is None or reply.message_id != prompt_message_id:
+            return None
+        return reply
 
     @staticmethod
     def _admin_scope_from_text(raw_id: str | None) -> Scope | None:
@@ -1000,7 +1022,7 @@ class TelegramApp:
         else:
             verb = "remove"
         return (
-            f"Reply with the numeric Telegram id to {verb}, or reply to that user. "
+            f"Reply to this message with the numeric Telegram id to {verb}. "
             "Negative ids are groups."
         )
 
@@ -1013,22 +1035,21 @@ class TelegramApp:
     ) -> InlineKeyboardMarkup:
         rows: list[list[InlineKeyboardButton]] = []
         if context.chat_type in {"group", "supergroup"}:
-            if group_effect == "allow":
-                rows.append(
-                    [
-                        InlineKeyboardButton(
-                            text="Remove this group", callback_data="admin:remove_group"
-                        )
-                    ]
+            group_row: list[InlineKeyboardButton] = []
+            if group_effect is not None:
+                group_row.append(
+                    InlineKeyboardButton(
+                        text="Remove this group", callback_data="admin:remove_group"
+                    )
                 )
-            else:
-                rows.append(
-                    [
-                        InlineKeyboardButton(
-                            text="Allow this group", callback_data="admin:allow_group"
-                        )
-                    ]
+            if group_effect != "allow":
+                group_row.append(
+                    InlineKeyboardButton(
+                        text="Allow this group", callback_data="admin:allow_group"
+                    )
                 )
+            if group_row:
+                rows.append(group_row)
         if reply_user is not None:
             name = (reply_user.first_name or "user")[:20]
             rows.append(
@@ -1043,41 +1064,45 @@ class TelegramApp:
                     ),
                 ]
             )
-        rows.append(
-            [
-                InlineKeyboardButton(text="Allow", callback_data="admin:ask:allow"),
-                InlineKeyboardButton(text="Ban", callback_data="admin:ask:ban"),
-            ]
-        )
-        rows.append([InlineKeyboardButton(text="Remove", callback_data="admin:ask:remove")])
-        rows.extend(
-            [
+        if context.chat_type == "private":
+            rows.append(
                 [
-                    InlineKeyboardButton(
-                        text=f"{entry.scope.kind} {entry.scope.id} · {entry.effect}",
-                        callback_data=f"admin:open:{entry.scope.kind}:{entry.scope.id}",
-                    )
+                    InlineKeyboardButton(text="Allow", callback_data="admin:ask:allow"),
+                    InlineKeyboardButton(text="Ban", callback_data="admin:ask:ban"),
                 ]
-                for entry in entries
-            ]
-        )
+            )
+            rows.append([InlineKeyboardButton(text="Remove", callback_data="admin:ask:remove")])
+            rows.extend(
+                [
+                    [
+                        InlineKeyboardButton(
+                            text=f"{entry.scope.kind} {entry.scope.id} · {entry.effect}",
+                            callback_data=f"admin:open:{entry.scope.kind}:{entry.scope.id}",
+                        )
+                    ]
+                    for entry in entries
+                ]
+            )
         return InlineKeyboardMarkup(inline_keyboard=rows)
 
     @staticmethod
     def _admin_entry_keyboard(entry: AccessEntry) -> InlineKeyboardMarkup:
         kind = entry.scope.kind
         telegram_id = entry.scope.id
-        toggle: AccessEffect = "ban" if entry.effect == "allow" else "allow"
         return InlineKeyboardMarkup(
             inline_keyboard=[
                 [
                     InlineKeyboardButton(
-                        text=toggle.title(),
-                        callback_data=f"admin:set:{toggle}:{kind}:{telegram_id}",
+                        text="Allow", callback_data=f"admin:set:allow:{kind}:{telegram_id}"
                     ),
                     InlineKeyboardButton(
-                        text="Remove", callback_data=f"admin:rm:{kind}:{telegram_id}"
+                        text="Ban", callback_data=f"admin:set:ban:{kind}:{telegram_id}"
                     ),
+                ],
+                [
+                    InlineKeyboardButton(
+                        text="Remove", callback_data=f"admin:rm:{kind}:{telegram_id}"
+                    )
                 ],
                 [InlineKeyboardButton(text="‹ Back", callback_data="admin:home")],
             ]
