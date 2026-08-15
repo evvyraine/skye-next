@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="ru" data-theme="light" data-sound="on">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light dark">
+    <meta name="description" content="Skye — a calm personal assistant inside Telegram.">
+    <title>Skye</title>
+    <link rel="icon" href="./assets/logo-mark.svg" type="image/svg+xml">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="./css/site.css">
+    <script>
+      (() => {
+        const theme = localStorage.getItem("skye-theme");
+        const lang = localStorage.getItem("skye-lang");
+        const sound = localStorage.getItem("skye-sound");
+        document.documentElement.dataset.theme = theme || "light";
+        if (lang === "en") document.documentElement.lang = "en";
+        document.documentElement.dataset.sound = sound === "off" ? "off" : "on";
+      })();
+    </script>
+  </head>
+  <body>
+    <a class="skip" href="#content" data-i18n="skip">К содержанию</a>
+    <header class="site-header wrap">
+      <div class="nav-cluster">
+        <a class="logo" href="./index.html" aria-label="Skye" data-cuelume-hover="tick">
+          <img class="logo-mark" src="./assets/logo-mark.svg" alt="" width="44" height="44">
+          <img class="logo-word" src="./assets/logo-wordmark.svg" alt="skye" width="59" height="25">
+        </a>
+        <ul class="nav-links">
+          <li>
+            <a href="https://t.me/skye_ai_bot" data-cuelume-hover="tick" data-cuelume-press data-cuelume-release>
+              <span data-i18n="bot">бот</span>
+              <img class="ext-icon" src="./assets/arrow-outward.svg" alt="" width="10" height="10">
+            </a>
+          </li>
+          <li>
+            <a href="#" data-cuelume-hover="tick"><span data-i18n="docs">документация</span></a>
+          </li>
+          <li>
+            <a href="#" data-cuelume-hover="tick"><span data-i18n="blog">блог</span></a>
+          </li>
+        </ul>
+      </div>
+      <div class="header-tools">
+        <button class="lang-btn" type="button" data-action="lang" data-cuelume-toggle data-i18n="lang">en</button>
+        <button class="tool-btn" type="button" data-action="theme" data-cuelume-toggle data-i18n-aria="theme" aria-label="Тема">
+          <span class="icon-swap theme-swap">
+            <svg class="main" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M21.752 15.002A9.72 9.72 0 0 1 18 15.75c-5.385 0-9.75-4.365-9.75-9.75 0-1.33.266-2.597.748-3.752A9.753 9.753 0 0 0 3 11.25C3 16.635 7.365 21 12.75 21a9.753 9.753 0 0 0 9.002-5.998Z"/></svg>
+            <svg class="alt" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M12 3v2.25m6.364.386-1.591 1.591M21 12h-2.25m-.386 6.364-1.591-1.591M12 18.75V21m-4.773-4.227-1.591 1.591M5.25 12H3m4.227-4.773L5.636 5.636M15.75 12a3.75 3.75 0 1 1-7.5 0 3.75 3.75 0 0 1 7.5 0Z"/></svg>
+          </span>
+        </button>
+        <button class="tool-btn" type="button" data-action="sound" data-cuelume-toggle data-i18n-aria="sound" aria-label="Звук">
+          <span class="icon-swap sound-swap">
+            <svg class="main" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M19.114 5.636a9 9 0 0 1 0 12.728M16.463 8.288a5.25 5.25 0 0 1 0 7.424M6.75 8.25l4.72-4.72a.75.75 0 0 1 1.28.53v15.88a.75.75 0 0 1-1.28.53l-4.72-4.72H4.51c-.88 0-1.704-.507-1.938-1.354A9.01 9.01 0 0 1 2.25 12c0-.83.112-1.633.322-2.396C2.806 8.756 3.63 8.25 4.51 8.25H6.75Z"/></svg>
+            <svg class="alt" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M17.25 9.75 19.5 12m0 0 2.25 2.25M19.5 12l2.25-2.25M19.5 12l-2.25 2.25m-10.5-6 4.72-4.72a.75.75 0 0 1 1.28.53v15.88a.75.75 0 0 1-1.28.53l-4.72-4.72H4.51c-.88 0-1.704-.507-1.938-1.354A9.009 9.009 0 0 1 2.25 12c0-.83.112-1.633.322-2.396C2.806 8.756 3.63 8.25 4.51 8.25H6.75Z"/></svg>
+          </span>
+        </button>
+        <button class="tool-btn menu-btn" type="button" data-action="menu" data-i18n-aria="menu" aria-expanded="false" aria-label="Меню">
+          <span class="icon-swap">
+            <svg class="main" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5"/></svg>
+          </span>
+        </button>
+      </div>
+    </header>
+
+    <main id="content">
+      <section class="hero wrap">
+        <div class="hero-copy">
+          <h1>
+            <span class="grad" data-i18n="heroLine1">Спокойная</span><br>
+            <span data-i18n="heroLine2">сторона ИИ</span>
+          </h1>
+          <p class="lede" data-i18n="lede">Личный ассистент внутри Telegram, который понимает, помнит, создаёт и действует — без лишнего шума.</p>
+          <a class="btn" href="https://t.me/skye_ai_bot" data-cuelume-press="pulse" data-cuelume-release="scan">
+            <img src="./assets/telegram.svg" alt="" width="36" height="30">
+            <span data-i18n="start">Начать разговор</span>
+          </a>
+        </div>
+        <div class="mascot float">
+          <img src="./assets/mascot.png" alt="Skye, a soft purple companion with closed eyes" width="513" height="616">
+        </div>
+      </section>
+
+      <section class="intro wrap">
+        <h2 class="reveal" data-i18n="introTitle" data-i18n-html>Пишите<br>как обычно</h2>
+        <p class="reveal" data-i18n="introBody">Skye живёт там, где уже проходят ваши разговоры, работа и повседневные дела. Не нужно осваивать ещё один сервис — просто напишите ей так, как написали бы человеку. Коротко, голосом, с фотографией или документом — Skye разберётся в контексте и поможет довести дело до результата.</p>
+        <aside class="origin reveal">
+          <p class="origin-kicker" data-i18n="originKicker">О проекте</p>
+          <ul class="origin-facts">
+            <li>
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M15 10.5a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z"/>
+                <path stroke-linecap="round" stroke-linejoin="round" d="M19.5 10.5c0 7.142-7.5 11.25-7.5 11.25S4.5 17.642 4.5 10.5a7.5 7.5 0 1 1 15 0Z"/>
+              </svg>
+              <span data-i18n="originRu">Российская разработка</span>
+            </li>
+            <li>
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M14.25 9.75 16.5 12l-2.25 2.25m-4.5 0L7.5 12l2.25-2.25M6 20.25h12A2.25 2.25 0 0 0 20.25 18V6A2.25 2.25 0 0 0 18 3.75H6A2.25 2.25 0 0 0 3.75 6v12A2.25 2.25 0 0 0 6 20.25Z"/>
+              </svg>
+              <span data-i18n="originOs">Открытый исходный код</span>
+            </li>
+            <li>
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M8.25 3v1.5M15.75 3v1.5M8.25 19.5V21M15.75 19.5V21M4.5 8.25H3M4.5 15.75H3M21 8.25h-1.5M21 15.75h-1.5M5.25 6.75h13.5v10.5H5.25V6.75ZM6.75 9h10.5v6H6.75V9Z"/>
+              </svg>
+              <span data-i18n="originAi">Модели — от партнёров</span>
+            </li>
+          </ul>
+          <a class="origin-repo" href="https://github.com/overwaven/skye-next" data-cuelume-hover="tick" data-cuelume-press>
+            <span data-i18n="repo">Репозиторий проекта</span>
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M13.5 6H5.25A2.25 2.25 0 0 0 3 8.25v10.5A2.25 2.25 0 0 0 5.25 21h10.5A2.25 2.25 0 0 0 18 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25"/>
+            </svg>
+          </a>
+        </aside>
+      </section>
+
+      <section class="features wrap">
+        <article class="feature reveal">
+          <img src="./assets/icon-chat.svg" alt="" width="128" height="128">
+          <h2 data-i18n="f1Title">Общайтесь текстом и голосом</h2>
+          <p data-i18n="f1Body">Получайте ответы на вопросы, проводите мозговые штурмы и отправляйте голосовые сообщения. Skye объяснит суть — и раскроет тему, когда нужно. А ещё ассистент работает в группах и помогает вести каналы.</p>
+        </article>
+        <article class="feature reveal">
+          <img src="./assets/icon-photos.svg" alt="" width="128" height="128">
+          <h2 data-i18n="f2Title">Работайте с фото и документами</h2>
+          <p data-i18n="f2Body">Создавайте и изменяйте изображения — просто скажите, что вы хотите получить. Skye опишет картинку, разберёт и сравнит документы, объяснит данные в таблице и даст краткое содержание текста.</p>
+        </article>
+        <article class="feature reveal">
+          <img src="./assets/icon-search.svg" alt="" width="128" height="128">
+          <h2 data-i18n="f3Title">Ищите информацию и исследуйте темы</h2>
+          <p data-i18n="f3Body">Собирайте факты из разных источников, получайте актуальную информацию и экспериментируйте. Skye не только советует, но и действует в подключённых сервисах: Gmail, Github, Notion, Slack.</p>
+        </article>
+        <article class="feature reveal">
+          <img src="./assets/icon-agents.svg" alt="" width="128" height="128">
+          <h2 data-i18n="f4Title">Создавайте личных агентов</h2>
+          <p data-i18n="f4Body">Организуйте собственную команду агентов, каждый из которых имеет свой характер и специализируется на предметной области. Skye сама переключится между нужными моделями и учтёт все инструкции.</p>
+        </article>
+      </section>
+
+      <section class="pricing">
+        <div class="pricing-grid wrap">
+          <h2 class="reveal" data-i18n="pricingTitle" data-i18n-html>Всего<br>два тарифа</h2>
+          <article class="plan reveal">
+            <p class="plan-name" data-i18n="freeName">Free</p>
+            <p class="plan-price">
+              <span class="plan-amount" data-i18n="freePrice">0 ₽</span>
+              <span class="plan-period" data-i18n="perMonth">в месяц</span>
+            </p>
+            <ul class="plan-list">
+              <li data-i18n="free1">100 тыс. токенов</li>
+              <li data-i18n="free2">Базовые возможности</li>
+            </ul>
+          </article>
+          <article class="plan reveal">
+            <p class="plan-name" data-i18n="plusName">Plus</p>
+            <p class="plan-price">
+              <span class="plan-amount" data-i18n="plusPrice">990 ₽</span>
+              <span class="plan-period" data-i18n="perMonth">в месяц</span>
+            </p>
+            <ul class="plan-list">
+              <li data-i18n="plus1">2 млн токенов</li>
+              <li data-i18n="plus2">Все возможности</li>
+              <li data-i18n="plus3">Выбор модели</li>
+              <li data-i18n="plus4">Дополнительные пакеты</li>
+            </ul>
+          </article>
+        </div>
+      </section>
+
+      <section class="outro wrap">
+        <img class="mascot-peek float-slow" src="./assets/mascot-small.png" alt="" width="400" height="480">
+        <h2 class="reveal" data-i18n="outro" data-i18n-html>Понять важное.<br>Довести до результата.<br>Остаться человечной.</h2>
+        <a class="btn reveal" href="https://t.me/skye_ai_bot" data-cuelume-press="pulse" data-cuelume-release="scan">
+          <img src="./assets/telegram.svg" alt="" width="36" height="30">
+          <span data-i18n="tryNow">Попробуйте сейчас</span>
+        </a>
+      </section>
+    </main>
+
+    <footer class="site-footer wrap">
+      <div class="footer-links">
+        <a href="./terms.html" data-cuelume-hover="tick" data-i18n="terms">Условия использования</a>
+        <a href="./privacy.html" data-cuelume-hover="tick" data-i18n="privacy">Политика конфиденциальности</a>
+        <p><span data-i18n="support">Поддержка →</span> <a href="mailto:serg@skye-bot.com" data-cuelume-hover="tick">serg@skye-bot.com</a></p>
+      </div>
+      <div class="footer-meta">
+        <p>© Skye, 2026</p>
+        <p class="credit"><span data-i18n="designed">Задизайнено</span> <a class="designed-by" href="https://umudumu.ru" data-cuelume-hover="tick">umudumu</a></p>
+      </div>
+    </footer>
+    <script type="module" src="./js/site.js"></script>
+  </body>
+</html>

@@ -21,6 +21,16 @@ Custom HTTPS MCP servers work without it.
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the product and system design.
 
+## Website
+
+The static site lives in `site/`. From the repository root:
+
+```bash
+python3 -m http.server 4173 --directory site
+```
+
+Then open `http://127.0.0.1:4173`.
+
 ## Docker
 
 Create the configuration file and start Skye in the background:
