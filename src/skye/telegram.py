@@ -12,6 +12,7 @@ from typing import Any, Literal, cast
 import structlog
 from agents.items import TResponseInputItem
 from aiogram import BaseMiddleware, Bot, Dispatcher, F, Router
+from aiogram.client.default import Default
 from aiogram.dispatcher.event.bases import UNHANDLED
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, StateFilter
@@ -83,7 +84,7 @@ class UpdateMiddleware(BaseMiddleware):
     ) -> Any:
         if not isinstance(event, Update):
             return await handler(event, data)
-        payload = event.model_dump_json(exclude_none=True)
+        payload = dump_update(event)
         if not await self.database.claim_update(event.update_id, payload):
             return None
         try:
@@ -911,6 +912,7 @@ class TelegramApp:
                 chat_id=context.chat_id,
                 thread_id=context.thread_id,
                 error=type(error).__name__,
+                error_detail=str(error)[:300],
             )
             await self._finish(message, placeholder, "Something went wrong. Please try again.")
 
@@ -1396,6 +1398,16 @@ class TelegramApp:
         if text:
             chunks.append(text)
         return chunks
+
+
+def dump_update(update: Update) -> str:
+    return update.model_dump_json(exclude_none=True, fallback=_update_fallback)
+
+
+def _update_fallback(value: object) -> None:
+    if isinstance(value, Default):
+        return None
+    raise TypeError(f"Unable to serialize {type(value)!r}")
 
 
 async def replay_pending(dispatcher: Dispatcher, bot: Bot, database: Database) -> None:

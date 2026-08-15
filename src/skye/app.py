@@ -21,6 +21,8 @@ from .memory import MemoryService
 from .runtime import AgentRuntime
 from .telegram import COMMANDS, TelegramApp, UpdateMiddleware, replay_pending
 
+log = structlog.get_logger()
+
 
 def configure_logging() -> None:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -59,6 +61,12 @@ async def run() -> None:
     memory = MemoryService(database)
     custom_agents = CustomAgentService(database)
     composio = ComposioClient(config.composio_api_key) if config.composio_api_key else None
+    if config.composio_api_key:
+        log.info(
+            "composio_configured",
+            key_prefix=config.composio_api_key.split("_", 1)[0],
+            key_length=len(config.composio_api_key),
+        )
     connectors = ConnectorService(database, composio)
     groups = GroupContextService(config, database, bot)
     attachments = AttachmentService(config, bot, client)

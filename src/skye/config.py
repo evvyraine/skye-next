@@ -49,6 +49,18 @@ class Settings(BaseSettings):
     @field_validator("composio_api_key", mode="before")
     @classmethod
     def _empty_key(cls, value: object) -> object:
-        if isinstance(value, str) and not value.strip():
-            return None
+        return _clean_secret(value)
+
+
+def _clean_secret(value: object) -> object:
+    if not isinstance(value, str):
         return value
+    text = value.strip().strip("\ufeff")
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in {"'", '"'}:
+        text = text[1:-1].strip()
+    lowered = text.lower()
+    if lowered.startswith("bearer "):
+        text = text[7:].strip()
+    if lowered.startswith("x-api-key:"):
+        text = text.split(":", 1)[1].strip()
+    return text or None

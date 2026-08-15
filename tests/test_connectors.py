@@ -7,6 +7,7 @@ from agents import HostedMCPTool, ToolSearchTool
 from skye.connectors import (
     ConnectorError,
     ConnectorService,
+    composio_auth_headers,
     composio_user_key,
     mcp_label,
     parse_headers,
@@ -26,6 +27,8 @@ class FakeComposio:
         }
         self.deleted: list[str] = []
         self.sessions: list[tuple[str, tuple[str, ...]]] = []
+        self.last_accounts: dict[str, str] = {}
+        self.fail_session = False
 
     async def list_toolkits(self, query: str = "", limit: int = 8) -> list[AppConnector]:
         items = list(self.toolkits.values())
@@ -52,9 +55,17 @@ class FakeComposio:
         self.accounts = [item for item in self.accounts if item.account_id != account_id]
         self.deleted.append(account_id)
 
-    async def create_session(self, user_key: str, slugs: Sequence[str]) -> tuple[str, str]:
+    async def create_session(
+        self,
+        user_key: str,
+        slugs: Sequence[str],
+        accounts: dict[str, str] | None = None,
+    ) -> tuple[str, str]:
+        if self.fail_session:
+            raise ConnectorError("Couldn't reach the connector service.")
         self.sessions.append((user_key, tuple(slugs)))
-        return "sess_1", "https://backend.composio.dev/mcp/sess_1"
+        self.last_accounts = dict(accounts or {})
+        return "sess_1", "https://backend.composio.dev/mcp/sess_1", {}
 
     async def delete_session(self, session_id: str) -> None:
         self.deleted.append(session_id)
@@ -97,6 +108,11 @@ def test_headers_are_parsed_and_filtered() -> None:
 
 def test_composio_user_key_is_stable() -> None:
     assert composio_user_key(42) == "tg:42"
+
+
+def test_composio_uses_org_header_for_org_keys() -> None:
+    assert "x-api-key" in composio_auth_headers("ck_live_abc")
+    assert "x-org-api-key" in composio_auth_headers("oak_live_abc")
 
 
 def test_mcp_labels_are_safe() -> None:
@@ -168,14 +184,12 @@ async def test_hosted_tools_are_private_only(database: Database) -> None:
     assert custom.tool_config["headers"] == {"Authorization": "Bearer x"}
     assert custom.tool_config["server_url"] == "https://example.com/mcp"
     assert composio.sessions == [("tg:4", ("gmail",))]
+    assert composio.last_accounts == {"gmail": "ca_1"}
 
 
 async def test_failed_composio_session_does_not_claim_apps(database: Database) -> None:
-    class BrokenComposio(FakeComposio):
-        async def create_session(self, user_key: str, slugs: Sequence[str]) -> tuple[str, str]:
-            raise ConnectorError("Couldn't reach the connector service.")
-
-    composio = BrokenComposio()
+    composio = FakeComposio()
+    composio.fail_session = True
     composio.accounts = [AppConnector("gmail", "Gmail", "connected", account_id="ca_1")]
     service = ConnectorService(database, composio)
     await service.add_custom(5, "CRM", "https://example.com/mcp", {})
@@ -264,6 +278,7 @@ async def test_group_tools_use_only_shared_connectors(database: Database) -> Non
     assert group.labels == ("GitHub (shared by Alice)",)
     assert other.tools == ()
     assert ("tg:4", ("github",)) in composio.sessions
+    assert composio.last_accounts == {"github": "ca_2"}
 
 
 async def test_disconnect_and_delete_revoke_shares(database: Database) -> None:

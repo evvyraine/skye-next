@@ -44,6 +44,20 @@ def test_empty_composio_key_is_optional() -> None:
     assert settings(composio_api_key="ck_test").composio_api_key == "ck_test"
 
 
+@pytest.mark.parametrize(
+    ("raw", "cleaned"),
+    [
+        ('"ck_live_abc"', "ck_live_abc"),
+        ("'ck_live_abc'", "ck_live_abc"),
+        ("Bearer ck_live_abc", "ck_live_abc"),
+        ("x-api-key: ck_live_abc", "ck_live_abc"),
+        ("  ck_live_abc  ", "ck_live_abc"),
+    ],
+)
+def test_composio_key_strips_wrapping(raw: str, cleaned: str) -> None:
+    assert settings(composio_api_key=raw).composio_api_key == cleaned
+
+
 def test_model_catalog_rejects_unknown_model() -> None:
     with pytest.raises(ValidationError):
         settings(skye_default_model="unknown")

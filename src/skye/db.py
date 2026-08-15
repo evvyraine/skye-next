@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, cast
@@ -254,6 +254,9 @@ class Database:
         await self._ensure_column("chat_settings", "memory_enabled", "INTEGER NOT NULL DEFAULT 1")
         await self._ensure_column("user_settings", "active_agent_id", "TEXT")
         await self._ensure_column("chat_settings", "active_agent_id", "TEXT")
+        await self._ensure_column(
+            "composio_session_cache", "mcp_headers", "TEXT NOT NULL DEFAULT '{}'"
+        )
         await self._normalize_group_message_threads()
         await self._migrate_composio_sessions()
         await self.connection.commit()
@@ -994,28 +997,49 @@ class Database:
         )
         return cursor.rowcount > 0
 
-    async def composio_session(self, user_id: int, toolkit_key: str) -> tuple[str, str] | None:
+    async def composio_session(
+        self, user_id: int, toolkit_key: str
+    ) -> tuple[str, str, dict[str, str]] | None:
         cursor = await self.conn.execute(
-            """SELECT session_id, mcp_url FROM composio_session_cache
+            """SELECT session_id, mcp_url, mcp_headers FROM composio_session_cache
                WHERE user_id = ? AND toolkit_key = ?""",
             (user_id, toolkit_key),
         )
         row = await cursor.fetchone()
         if row is None:
             return None
-        return str(row["session_id"]), str(row["mcp_url"])
+        raw = json.loads(cast(str, row["mcp_headers"] or "{}"))
+        headers = {
+            str(key): str(value)
+            for key, value in raw.items()
+            if isinstance(key, str) and isinstance(value, str)
+        }
+        return str(row["session_id"]), str(row["mcp_url"]), headers
 
     async def save_composio_session(
-        self, user_id: int, session_id: str, mcp_url: str, toolkit_key: str
+        self,
+        user_id: int,
+        session_id: str,
+        mcp_url: str,
+        toolkit_key: str,
+        headers: Mapping[str, str] | None = None,
     ) -> None:
         await self._write(
-            """INSERT INTO composio_session_cache (user_id, toolkit_key, session_id, mcp_url)
-               VALUES (?, ?, ?, ?)
+            """INSERT INTO composio_session_cache
+               (user_id, toolkit_key, session_id, mcp_url, mcp_headers)
+               VALUES (?, ?, ?, ?, ?)
                ON CONFLICT(user_id, toolkit_key) DO UPDATE SET
                    session_id = excluded.session_id,
                    mcp_url = excluded.mcp_url,
+                   mcp_headers = excluded.mcp_headers,
                    updated_at = CURRENT_TIMESTAMP""",
-            (user_id, toolkit_key, session_id, mcp_url),
+            (
+                user_id,
+                toolkit_key,
+                session_id,
+                mcp_url,
+                json.dumps(dict(headers or {}), separators=(",", ":")),
+            ),
         )
 
     async def delete_composio_sessions(self, user_id: int) -> None:

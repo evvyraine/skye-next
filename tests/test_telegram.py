@@ -1,14 +1,25 @@
+import json
+from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
 from aiogram.dispatcher.event.bases import UNHANDLED
-from aiogram.types import Chat, InlineKeyboardMarkup, InputRichBlockTable, Message, User, VideoNote
+from aiogram.types import (
+    Chat,
+    InlineKeyboardMarkup,
+    InputRichBlockTable,
+    LinkPreviewOptions,
+    Message,
+    Update,
+    User,
+    VideoNote,
+)
 
 from skye.group_context import GroupHistory
 from skye.models import AccessEntry, Scope
 from skye.rich import RichMessages
-from skye.telegram import AdminPrompt, TelegramApp
+from skye.telegram import AdminPrompt, TelegramApp, dump_update
 
 
 def group_message(
@@ -38,6 +49,23 @@ def telegram_app() -> TelegramApp:
         id=777, is_bot=True, first_name="Skye", username="skye_example_bot"
     )
     return app
+
+
+def test_update_dump_survives_link_preview_defaults() -> None:
+    message = Message(
+        message_id=1,
+        date=datetime(2026, 8, 15, 16, 0, 0),
+        chat=Chat(id=7, type="private"),
+        from_user=User(id=7, is_bot=False, first_name="Alice"),
+        text="https://example.com/mcp",
+        link_preview_options=LinkPreviewOptions(),
+    )
+    payload = dump_update(Update(update_id=1, message=message))
+    parsed = Update.model_validate(json.loads(payload))
+
+    assert parsed.update_id == 1
+    assert parsed.message is not None
+    assert parsed.message.text == "https://example.com/mcp"
 
 
 def test_message_chunks_preserve_content() -> None:

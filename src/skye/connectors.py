@@ -76,6 +76,10 @@ class ConnectorWizard(StatesGroup):
 class ConnectorError(ValueError):
     """User-facing connector failure."""
 
+    def __init__(self, message: str, *, status: int | None = None) -> None:
+        super().__init__(message)
+        self.status = status
+
 
 class ComposioAPI(Protocol):
     async def list_toolkits(self, query: str = "", limit: int = 8) -> list[AppConnector]: ...
@@ -83,7 +87,12 @@ class ComposioAPI(Protocol):
     async def list_accounts(self, user_key: str) -> list[AppConnector]: ...
     async def create_link(self, user_key: str, slug: str) -> str: ...
     async def delete_account(self, user_key: str, account_id: str) -> None: ...
-    async def create_session(self, user_key: str, slugs: Sequence[str]) -> tuple[str, str]: ...
+    async def create_session(
+        self,
+        user_key: str,
+        slugs: Sequence[str],
+        accounts: Mapping[str, str] | None = None,
+    ) -> tuple[str, str, dict[str, str]]: ...
     async def delete_session(self, session_id: str) -> None: ...
     async def aclose(self) -> None: ...
 
@@ -190,12 +199,18 @@ def _reject_ip(value: str) -> None:
         raise ConnectorError("That host is not allowed.")
 
 
+def composio_auth_headers(api_key: str) -> dict[str, str]:
+    prefix = api_key.split("_", 1)[0].lower()
+    header = "x-org-api-key" if prefix in {"oak", "oa", "org"} else "x-api-key"
+    return {header: api_key, "accept": "application/json"}
+
+
 class ComposioClient:
     def __init__(self, api_key: str) -> None:
         self.api_key = api_key
         self._http = httpx.AsyncClient(
             base_url=COMPOSIO_API,
-            headers={"x-api-key": api_key, "accept": "application/json"},
+            headers=composio_auth_headers(api_key),
             timeout=20,
         )
         self._auth_configs: dict[str, str] = {}
@@ -254,24 +269,52 @@ class ComposioClient:
             raise ConnectorError("That connection is not yours.")
         await self._request("DELETE", f"/connected_accounts/{account_id}")
 
-    async def create_session(self, user_key: str, slugs: Sequence[str]) -> tuple[str, str]:
-        data = await self._request(
-            "POST",
-            "/tool_router/session",
-            json={
-                "user_id": user_key,
-                "toolkits": list(slugs),
-                "manage_connections": {"enable": False},
-                "workbench": {"enable": False},
-            },
-        )
+    async def create_session(
+        self,
+        user_key: str,
+        slugs: Sequence[str],
+        accounts: Mapping[str, str] | None = None,
+    ) -> tuple[str, str, dict[str, str]]:
+        body: dict[str, Any] = {
+            "user_id": user_key,
+            "toolkits": {"enable": list(slugs)},
+            "manage_connections": {"enable": False},
+            "workbench": {"enable": False},
+            "mcp": True,
+        }
+        pinned = {
+            slug: [account_id]
+            for slug, account_id in (accounts or {}).items()
+            if account_id
+        }
+        if pinned:
+            body["connected_accounts"] = pinned
+        try:
+            data = await self._request("POST", "/tool_router/session", json=body)
+        except ConnectorError as error:
+            if error.status != 400:
+                raise
+            body.pop("mcp", None)
+            data = await self._request("POST", "/tool_router/session", json=body)
         session_id = data.get("session_id")
         raw_mcp = data.get("mcp")
         mcp = raw_mcp if isinstance(raw_mcp, dict) else {}
         url = mcp.get("url")
+        raw_headers = mcp.get("headers")
+        headers = {
+            str(key): str(value)
+            for key, value in (raw_headers.items() if isinstance(raw_headers, dict) else [])
+            if isinstance(key, str) and isinstance(value, str)
+        }
+        if not headers:
+            headers = {
+                key: value
+                for key, value in composio_auth_headers(self.api_key).items()
+                if key != "accept"
+            }
         if not isinstance(session_id, str) or not isinstance(url, str):
             raise ConnectorError("Composio did not return a session.")
-        return session_id, url
+        return session_id, url, headers
 
     async def delete_session(self, session_id: str) -> None:
         with suppress_http():
@@ -332,13 +375,18 @@ class ComposioClient:
             raise ConnectorError("Couldn't reach the connector service.") from error
         if response.status_code >= 400:
             message = _composio_message(response)
+            slug, detail = _composio_error_fields(response)
             log.warning(
                 "composio_request_rejected",
                 method=method,
                 path=path,
                 status=response.status_code,
+                error_slug=slug,
+                error_detail=detail,
+                key_prefix=self.api_key.split("_", 1)[0],
+                key_length=len(self.api_key),
             )
-            raise ConnectorError(message)
+            raise ConnectorError(message, status=response.status_code)
         if not response.content:
             return {}
         payload = response.json()
@@ -371,6 +419,13 @@ def _composio_message(response: httpx.Response) -> str:
         payload = response.json()
     except ValueError:
         payload = None
+    if response.status_code == 401:
+        return (
+            "Composio rejected the API key. Use a project API key from "
+            "Settings → API keys, without quotes, then restart the bot."
+        )
+    if response.status_code == 400:
+        return "Couldn't start the connected apps. Reconnect the app in settings, then try again."
     if isinstance(payload, dict):
         error = payload.get("error")
         if isinstance(error, dict) and isinstance(error.get("message"), str):
@@ -380,6 +435,24 @@ def _composio_message(response: httpx.Response) -> str:
     if response.status_code == 404:
         return "That app was not found."
     return "The connector service is unavailable right now."
+
+
+def _composio_error_fields(response: httpx.Response) -> tuple[str | None, str | None]:
+    try:
+        payload = response.json()
+    except ValueError:
+        return None, None
+    if not isinstance(payload, dict):
+        return None, None
+    error = payload.get("error")
+    if isinstance(error, dict):
+        slug = error.get("slug")
+        detail = error.get("message")
+        return (
+            slug if isinstance(slug, str) else None,
+            detail if isinstance(detail, str) else None,
+        )
+    return None, None
 
 
 class ConnectorService:
@@ -436,7 +509,9 @@ class ConnectorService:
         for slug, name in POPULAR_APPS:
             try:
                 item = await self.client.get_toolkit(slug)
-            except ConnectorError:
+            except ConnectorError as error:
+                if error.status == 401:
+                    raise
                 item = AppConnector(slug=slug, name=name, status="available")
             popular.append(replace(item, name=name or item.name))
         return popular
@@ -615,12 +690,17 @@ class ConnectorService:
         snapshot = await self.snapshot(user_id)
         tools: list[Tool] = []
         labels: list[str] = []
-        slugs = [item.slug for item in snapshot.apps if item.status == "connected"]
+        connected = [item for item in snapshot.apps if item.status == "connected"]
+        slugs = [item.slug for item in connected]
         if slugs and self.client is not None:
             try:
-                url = await self._session_url(user_id, slugs)
-                tools.append(_composio_tool(url, "composio", "Connected apps for this user."))
-                labels.extend(item.name for item in snapshot.apps if item.status == "connected")
+                url, headers = await self._session_url(
+                    user_id, slugs, _account_map(connected)
+                )
+                tools.append(
+                    _composio_tool(url, "composio", "Connected apps for this user.", headers)
+                )
+                labels.extend(item.name for item in connected)
             except ConnectorError:
                 log.warning("composio_session_failed")
         for connector in snapshot.custom:
@@ -655,7 +735,12 @@ class ConnectorService:
         if slugs_by_owner and self.client is not None:
             for owner_id, slugs in slugs_by_owner.items():
                 try:
-                    url = await self._session_url(owner_id, slugs)
+                    owner_apps = await self.snapshot(owner_id)
+                    wanted = set(slugs)
+                    accounts = _account_map(
+                        [item for item in owner_apps.apps if item.slug in wanted]
+                    )
+                    url, headers = await self._session_url(owner_id, slugs, accounts)
                 except ConnectorError:
                     log.warning("composio_session_failed")
                     continue
@@ -664,6 +749,7 @@ class ConnectorService:
                         url,
                         mcp_label("cmp", str(owner_id)),
                         f"Apps shared by {owner_names.get(owner_id, 'a member')}.",
+                        headers,
                     )
                 )
                 labels.extend(
@@ -714,18 +800,27 @@ class ConnectorService:
             created_at=share.created_at,
         )
 
-    async def _session_url(self, user_id: int, slugs: Sequence[str]) -> str:
+    async def _session_url(
+        self,
+        user_id: int,
+        slugs: Sequence[str],
+        accounts: Mapping[str, str] | None = None,
+    ) -> tuple[str, dict[str, str]]:
         if self.client is None:
             raise ConnectorError("App connections are not configured.")
-        key = ",".join(sorted(slugs))
+        key = "mcp:" + ",".join(sorted(slugs))
         lock = self._locks.setdefault(user_id, asyncio.Lock())
         async with lock:
             stored = await self.database.composio_session(user_id, key)
             if stored:
-                return stored[1]
-            session_id, url = await self.client.create_session(composio_user_key(user_id), slugs)
-            await self.database.save_composio_session(user_id, session_id, url, key)
-            return url
+                return stored[1], stored[2]
+            session_id, url, headers = await self.client.create_session(
+                composio_user_key(user_id), slugs, accounts
+            )
+            await self.database.save_composio_session(
+                user_id, session_id, url, key, headers
+            )
+            return url, headers
 
 
 def _app_name(slug: str, fallback: str, names: Mapping[str, str]) -> str:
@@ -743,20 +838,20 @@ def _require_slug(slug: str) -> str:
     return value
 
 
-def _composio_tool(url: str, label: str, description: str) -> HostedMCPTool:
-    return HostedMCPTool(
-        tool_config=cast(
-            Mcp,
-            {
-                "type": "mcp",
-                "server_label": label,
-                "server_url": url,
-                "server_description": description,
-                "require_approval": "never",
-                "defer_loading": True,
-            },
-        )
-    )
+def _composio_tool(
+    url: str, label: str, description: str, headers: Mapping[str, str] | None = None
+) -> HostedMCPTool:
+    config: dict[str, Any] = {
+        "type": "mcp",
+        "server_label": label,
+        "server_url": url,
+        "server_description": description,
+        "require_approval": "never",
+        "defer_loading": True,
+    }
+    if headers:
+        config["headers"] = dict(headers)
+    return HostedMCPTool(tool_config=cast(Mcp, config))
 
 
 def _custom_tool(connector: CustomConnector) -> HostedMCPTool:
@@ -775,6 +870,10 @@ def _custom_tool(connector: CustomConnector) -> HostedMCPTool:
 
 def is_sensitive(kind: ConnectorKind, ref: str) -> bool:
     return kind == "app" and ref in SENSITIVE_APPS
+
+
+def _account_map(apps: Sequence[AppConnector]) -> dict[str, str]:
+    return {item.slug: item.account_id for item in apps if item.account_id}
 
 
 def connectors_keyboard(
