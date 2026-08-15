@@ -32,7 +32,7 @@ from .models import (
     KnownGroup,
     Memory,
 )
-from .telegram_threads import api_thread_id
+from .telegram_threads import api_thread_id, reply_parameters
 
 
 class RichMessages:
@@ -51,6 +51,7 @@ class RichMessages:
             chat_id=target.chat.id,
             message_thread_id=api_thread_id(target),
             rich_message=self._content(content),
+            reply_parameters=reply_parameters(target),
             reply_markup=reply_markup,
         )
 
