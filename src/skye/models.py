@@ -9,6 +9,7 @@ AccessEffect = Literal["allow", "ban"]
 MemoryCategory = Literal["preference", "personal", "project", "instruction", "other"]
 AgentVisibility = Literal["private", "unlisted", "public"]
 AgentCapability = Literal["web", "image", "shell"]
+ConnectorKind = Literal["app", "custom"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,6 +82,66 @@ class InstalledAgent:
     enabled: bool
     installed_by: int
     installed_at: str
+
+
+@dataclass(frozen=True, slots=True)
+class CustomConnector:
+    id: str
+    user_id: int
+    name: str
+    url: str
+    headers: dict[str, str]
+    enabled: bool
+    created_at: str
+    updated_at: str
+
+
+@dataclass(frozen=True, slots=True)
+class AppConnector:
+    slug: str
+    name: str
+    status: Literal["connected", "pending", "available"]
+    account_id: str | None = None
+    no_auth: bool = False
+    description: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class ConnectorSnapshot:
+    apps: tuple[AppConnector, ...]
+    custom: tuple[CustomConnector, ...]
+
+    @property
+    def connected_count(self) -> int:
+        return sum(1 for item in self.apps if item.status == "connected") + sum(
+            1 for item in self.custom if item.enabled
+        )
+
+    @property
+    def labels(self) -> tuple[str, ...]:
+        names = [item.name for item in self.apps if item.status == "connected"]
+        names.extend(item.name for item in self.custom if item.enabled)
+        return tuple(names)
+
+
+@dataclass(frozen=True, slots=True)
+class KnownGroup:
+    chat_id: int
+    title: str
+
+
+@dataclass(frozen=True, slots=True)
+class ConnectorShare:
+    id: str
+    chat_id: int
+    chat_title: str
+    owner_id: int
+    owner_name: str
+    kind: ConnectorKind
+    ref: str
+    name: str
+    available: bool
+    created_at: str
 
 
 @dataclass(frozen=True, slots=True)

@@ -9,7 +9,8 @@ application code as possible.
 The application owns only what OpenAI and Telegram cannot own for us:
 
 - Telegram identity, permissions, updates, buttons, streaming, and files;
-- durable product data: settings, allowlist, memories, agents, and skills;
+- durable product data: settings, allowlist, memories, agents, skills, and
+  connector selections;
 - safe composition of the active agent and its capabilities;
 - reliability, observability, and lifecycle management.
 
@@ -143,7 +144,7 @@ All user-facing text is English. The permanent command list stays small:
 | --- | --- |
 | `/start` | Welcome, deep-link import, and access status |
 | `/help` | Compact capabilities and usage |
-| `/settings` | Inline model, agent, skill, and memory settings |
+| `/settings` | Inline model, agent, skill, memory, and connector settings |
 | `/agents` | Create, edit, install, share, select, and remove agents |
 | `/skills` | Add, inspect, enable, attach, share, and remove skills |
 | `/reset` | Start a fresh OpenAI conversation for this thread |
@@ -158,13 +159,20 @@ Settings
 Model        Luna
 Reasoning    Medium
 Agent        Skye
-Skills       2 enabled
+Connectors   2 connected
 Memory       On
 
 [ Model ] [ Reasoning ]
-[ Agent ] [ Skills ]
-[ Memory ] [ Reset conversation ]
+[ Agent ] [ Connectors ]
+[ Memory ]
 ```
+
+Connectors are set up in a private chat. A group run never receives a
+member's private connectors unless that person explicitly shared a specific
+app or custom MCP with that group. Shared connectors stay references to the
+owner's current connection; revoke, disconnect, or delete removes them from
+the group. Hosted apps connect through Composio Connect Links; a custom
+HTTPS MCP is stored locally and attached as a native hosted MCP tool.
 
 `/settings` in a group shows one shared model and one shared default agent.
 Non-admin members may inspect the settings but do not receive mutation
@@ -259,6 +267,8 @@ Hosted tools in v1:
 - `ShellTool(environment={"type": "container_auto", ...})`;
 - `ToolSearchTool()` only when deferred function namespaces or deferred MCP
   tools actually exist. It is not useful by itself.
+- `HostedMCPTool` for the user's Composio session and each enabled custom
+  HTTPS MCP server. Composio credentials never enter the bot database.
 
 Application function tools in v1:
 
@@ -406,6 +416,11 @@ Core tables:
 | `updates` | `update_id`, payload, state, attempts, timestamps, last_error |
 | `runs` | scope, update id, model, status, OpenAI ids, usage, latency, error class |
 | `artifacts` | run id, kind, OpenAI file id, Telegram file id, metadata |
+| `custom_connectors` | `id`, `user_id`, name, HTTPS URL, headers, enabled |
+| `user_toolkits` | `user_id`, Composio toolkit slug for no-auth apps |
+| `composio_session_cache` | `user_id`, toolkit key, session id, MCP URL |
+| `known_chats` | `chat_id`, title |
+| `connector_shares` | `id`, `chat_id`, `owner_id`, kind, ref |
 
 `scope_kind + scope_id` is always validated through a shared value object.
 Repository methods accept that object so private data cannot accidentally be
@@ -468,7 +483,11 @@ SKYE_RUN_TIMEOUT_SECONDS=300
 SKYE_MAX_ATTACHMENT_BYTES=26214400
 SKYE_SHELL_NETWORK=disabled
 SKYE_TRACING=false
+COMPOSIO_API_KEY=
 ```
+
+`COMPOSIO_API_KEY` is optional. Without it, hosted app connections are hidden
+and custom HTTPS MCP still works.
 
 ## Dependencies
 
@@ -476,6 +495,7 @@ Keep the direct dependency list short:
 
 - `aiogram` for Telegram;
 - `openai` and `openai-agents` for the only AI provider/runtime;
+- `httpx` for the Composio REST client;
 - `pydantic-settings` for configuration;
 - `aiosqlite` for durable local state;
 - `structlog` for structured logs;

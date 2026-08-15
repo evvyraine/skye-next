@@ -1,7 +1,7 @@
 from pathlib import Path
 from typing import Annotated, Literal
 
-from pydantic import BeforeValidator, Field
+from pydantic import BeforeValidator, Field, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 ModelId = Literal["gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol"]
@@ -32,6 +32,7 @@ class Settings(BaseSettings):
 
     telegram_bot_token: str = Field(min_length=1)
     openai_api_key: str = Field(min_length=1)
+    composio_api_key: str | None = None
     skye_owner_ids: OwnerIds = Field(min_length=1)
     skye_database_path: Path = Path("data/skye.db")
     skye_base_prompt_path: Path = Path("BASE_PROMPT.md")
@@ -44,3 +45,10 @@ class Settings(BaseSettings):
     skye_group_context_messages: int = Field(default=200, ge=20, le=500)
     skye_group_context_images: int = Field(default=10, ge=0, le=50)
     skye_tracing: bool = False
+
+    @field_validator("composio_api_key", mode="before")
+    @classmethod
+    def _empty_key(cls, value: object) -> object:
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value

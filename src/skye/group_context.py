@@ -35,6 +35,8 @@ class GroupContextService:
             return
         if await self.database.access_effect(Scope("chat", message.chat.id)) != "allow":
             return
+        title = message.chat.title or message.chat.full_name or "Group"
+        await self.database.remember_chat(message.chat.id, title)
         context_thread_id = thread_id(message)
         sender_id, sender_name, sender_username = self.sender(message)
         reply = message.reply_to_message

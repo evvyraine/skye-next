@@ -19,7 +19,7 @@ Skye's voice is calm, short, warm, and grounded. She is female. Identity and ton
 ## What we own
 
 - Telegram identity, permissions, updates, buttons, streaming, and files
-- Durable product data: settings, allowlist, memories, custom agents
+- Durable product data: settings, allowlist, memories, custom agents, connectors
 - Safe composition of the active agent and its tools
 - Reliability, observability, and lifecycle
 
@@ -30,6 +30,7 @@ We do not own a model loop, a provider abstraction, billing, subscriptions, a we
 - **One provider.** OpenAI Responses API through `openai-agents`. Every normal chat turn is `Agent` + `Runner.run_streamed()`. Use the official `openai` client only for resource lifecycle (conversations, files). No Chat Completions fallback. No second-provider interface until a second real provider exists.
 - **Small model catalog**, code-owned: Luna (`gpt-5.6-luna`, default), Terra (`gpt-5.6-terra`), Sol (`gpt-5.6-sol`).
 - **No Mini App.** Settings and management are inline-keyboard messages edited in place. Callback data is a short action plus an opaque id — never JSON, never trusted client state.
+- **Connectors are per user.** Hosted apps connect through Composio; custom HTTPS MCP is stored locally. A group run receives a connector only after the owner explicitly shares that one item with that group. The owner or a group admin can revoke the share.
 - **Explicit composition.** One typed app container, one startup function. Features expose services; they do not register themselves.
 - **Two memories, never mixed.** OpenAI `conversation_id` is the working context for a Telegram thread — send only the new turn; `/reset` starts a new conversation. Skye memories are small, inspectable, scoped facts (`remember` / `recall` / `forget`). Private memories are `scope=user`. Group memories are `scope=chat`. A group run never sees a participant's private memories. Never combine an Agents SDK `Session` with `conversation_id` on the same run. The local database stores the OpenAI conversation id, not a duplicate transcript.
 - **Hosted execution only.** Shell never runs on the bot host. `ShellTool` uses `container_auto` with networking disabled. Never pass bot secrets into that container. Web search and image generation/editing are native hosted tools; users ask in natural language.
@@ -93,5 +94,6 @@ Line length 100. Ruff selects `E`, `F`, `I`, `UP`, `B`, `SIM`.
 Test the boundaries: scope isolation, allowlist precedence, callback parsing, prompt/tool composition, Telegram rendering, SQLite repositories, and fake-runtime events. Prefer focused tests over mocks of the universe.
 
 Required env: `TELEGRAM_BOT_TOKEN`, `OPENAI_API_KEY`, `SKYE_OWNER_IDS`.
+Optional: `COMPOSIO_API_KEY` for hosted app connections.
 
 `ARCHITECTURE.md` is the product and system design. This file is the short operating brief — follow both, and do not re-litigate settled decisions.

@@ -19,8 +19,12 @@ from .models import (
     AgentVersion,
     AgentVisibility,
     ChatSettings,
+    ConnectorKind,
+    ConnectorShare,
+    CustomConnector,
     GroupMessage,
     InstalledAgent,
+    KnownGroup,
     Memory,
     MemoryCategory,
     Scope,
@@ -143,6 +147,66 @@ CREATE TABLE IF NOT EXISTS group_messages (
 CREATE INDEX IF NOT EXISTS group_messages_context
 ON group_messages(chat_id, thread_id, message_id DESC);
 
+CREATE TABLE IF NOT EXISTS custom_connectors (
+    id TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    url TEXT NOT NULL,
+    headers TEXT NOT NULL DEFAULT '{}',
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS custom_connectors_user
+ON custom_connectors(user_id, enabled, updated_at);
+
+CREATE TABLE IF NOT EXISTS user_toolkits (
+    user_id INTEGER NOT NULL,
+    slug TEXT NOT NULL,
+    PRIMARY KEY (user_id, slug)
+);
+
+CREATE TABLE IF NOT EXISTS composio_sessions (
+    user_id INTEGER PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    mcp_url TEXT NOT NULL,
+    toolkit_key TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS composio_session_cache (
+    user_id INTEGER NOT NULL,
+    toolkit_key TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    mcp_url TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (user_id, toolkit_key)
+);
+
+CREATE TABLE IF NOT EXISTS known_chats (
+    chat_id INTEGER PRIMARY KEY,
+    title TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS connector_shares (
+    id TEXT PRIMARY KEY,
+    chat_id INTEGER NOT NULL,
+    owner_id INTEGER NOT NULL,
+    owner_name TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('app', 'custom')),
+    ref TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (chat_id, owner_id, kind, ref)
+);
+
+CREATE INDEX IF NOT EXISTS connector_shares_chat
+ON connector_shares(chat_id, created_at);
+
+CREATE INDEX IF NOT EXISTS connector_shares_owner
+ON connector_shares(owner_id, kind, ref);
+
 CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
     content,
     category,
@@ -191,6 +255,7 @@ class Database:
         await self._ensure_column("user_settings", "active_agent_id", "TEXT")
         await self._ensure_column("chat_settings", "active_agent_id", "TEXT")
         await self._normalize_group_message_threads()
+        await self._migrate_composio_sessions()
         await self.connection.commit()
 
     async def close(self) -> None:
@@ -214,6 +279,22 @@ class Database:
         cursor = await self.conn.execute(f"PRAGMA table_info({table})")
         if column not in {row[1] for row in await cursor.fetchall()}:
             await self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+    async def _migrate_composio_sessions(self) -> None:
+        cursor = await self.conn.execute("SELECT COUNT(*) FROM composio_session_cache")
+        row = await cursor.fetchone()
+        if row and int(row[0]) > 0:
+            return
+        cursor = await self.conn.execute(
+            "SELECT user_id, session_id, mcp_url, toolkit_key FROM composio_sessions"
+        )
+        for item in await cursor.fetchall():
+            await self.conn.execute(
+                """INSERT OR IGNORE INTO composio_session_cache
+                   (user_id, toolkit_key, session_id, mcp_url)
+                   VALUES (?, ?, ?, ?)""",
+                (item["user_id"], item["toolkit_key"], item["session_id"], item["mcp_url"]),
+            )
 
     async def _normalize_group_message_threads(self) -> None:
         await self.conn.execute(
@@ -840,6 +921,285 @@ class Database:
             scope=Scope(cast(Any, row["scope_kind"]), cast(int, row["scope_id"])),
             category=cast(MemoryCategory, row["category"]),
             content=cast(str, row["content"]),
+            created_at=cast(str, row["created_at"]),
+            updated_at=cast(str, row["updated_at"]),
+        )
+
+    async def list_custom_connectors(self, user_id: int) -> list[CustomConnector]:
+        cursor = await self.conn.execute(
+            """SELECT * FROM custom_connectors WHERE user_id = ?
+               ORDER BY lower(name), updated_at DESC""",
+            (user_id,),
+        )
+        return [self._custom_connector(row) for row in await cursor.fetchall()]
+
+    async def get_custom_connector(self, user_id: int, connector_id: str) -> CustomConnector | None:
+        cursor = await self.conn.execute(
+            "SELECT * FROM custom_connectors WHERE id = ? AND user_id = ?",
+            (connector_id, user_id),
+        )
+        row = await cursor.fetchone()
+        return self._custom_connector(row) if row else None
+
+    async def save_custom_connector(self, connector: CustomConnector) -> CustomConnector:
+        await self._write(
+            """INSERT INTO custom_connectors (
+                   id, user_id, name, url, headers, enabled, created_at, updated_at
+               ) VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+               ON CONFLICT(id) DO UPDATE SET
+                   name = excluded.name,
+                   url = excluded.url,
+                   headers = excluded.headers,
+                   enabled = excluded.enabled,
+                   updated_at = CURRENT_TIMESTAMP
+               WHERE custom_connectors.user_id = excluded.user_id""",
+            (
+                connector.id,
+                connector.user_id,
+                connector.name,
+                connector.url,
+                json.dumps(connector.headers, separators=(",", ":")),
+                int(connector.enabled),
+            ),
+        )
+        saved = await self.get_custom_connector(connector.user_id, connector.id)
+        if saved is None:
+            raise LookupError("Connector not found.")
+        return saved
+
+    async def delete_custom_connector(self, user_id: int, connector_id: str) -> bool:
+        cursor = await self._write(
+            "DELETE FROM custom_connectors WHERE id = ? AND user_id = ?",
+            (connector_id, user_id),
+        )
+        return cursor.rowcount > 0
+
+    async def list_user_toolkits(self, user_id: int) -> list[str]:
+        cursor = await self.conn.execute(
+            "SELECT slug FROM user_toolkits WHERE user_id = ? ORDER BY slug",
+            (user_id,),
+        )
+        return [cast(str, row["slug"]) for row in await cursor.fetchall()]
+
+    async def add_user_toolkit(self, user_id: int, slug: str) -> None:
+        await self._write(
+            "INSERT OR IGNORE INTO user_toolkits (user_id, slug) VALUES (?, ?)",
+            (user_id, slug),
+        )
+
+    async def remove_user_toolkit(self, user_id: int, slug: str) -> bool:
+        cursor = await self._write(
+            "DELETE FROM user_toolkits WHERE user_id = ? AND slug = ?",
+            (user_id, slug),
+        )
+        return cursor.rowcount > 0
+
+    async def composio_session(self, user_id: int, toolkit_key: str) -> tuple[str, str] | None:
+        cursor = await self.conn.execute(
+            """SELECT session_id, mcp_url FROM composio_session_cache
+               WHERE user_id = ? AND toolkit_key = ?""",
+            (user_id, toolkit_key),
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            return None
+        return str(row["session_id"]), str(row["mcp_url"])
+
+    async def save_composio_session(
+        self, user_id: int, session_id: str, mcp_url: str, toolkit_key: str
+    ) -> None:
+        await self._write(
+            """INSERT INTO composio_session_cache (user_id, toolkit_key, session_id, mcp_url)
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT(user_id, toolkit_key) DO UPDATE SET
+                   session_id = excluded.session_id,
+                   mcp_url = excluded.mcp_url,
+                   updated_at = CURRENT_TIMESTAMP""",
+            (user_id, toolkit_key, session_id, mcp_url),
+        )
+
+    async def delete_composio_sessions(self, user_id: int) -> None:
+        await self._write("DELETE FROM composio_session_cache WHERE user_id = ?", (user_id,))
+
+    async def chat_title(self, chat_id: int) -> str:
+        cursor = await self.conn.execute(
+            "SELECT title FROM known_chats WHERE chat_id = ?", (chat_id,)
+        )
+        row = await cursor.fetchone()
+        return str(row["title"]) if row else "this group"
+
+    async def remember_chat(self, chat_id: int, title: str) -> None:
+        label = " ".join(title.split())[:128] or "Group"
+        await self._write(
+            """INSERT INTO known_chats (chat_id, title)
+               VALUES (?, ?)
+               ON CONFLICT(chat_id) DO UPDATE SET
+                   title = excluded.title,
+                   updated_at = CURRENT_TIMESTAMP""",
+            (chat_id, label),
+        )
+
+    async def shareable_groups(self, user_id: int) -> list[KnownGroup]:
+        cursor = await self.conn.execute(
+            """SELECT m.chat_id, COALESCE(k.title, 'Group') AS title
+               FROM group_messages AS m
+               JOIN access_entries AS a
+                 ON a.kind = 'chat' AND a.telegram_id = m.chat_id AND a.effect = 'allow'
+               LEFT JOIN known_chats AS k ON k.chat_id = m.chat_id
+               WHERE m.sender_id = ?
+               GROUP BY m.chat_id
+               ORDER BY lower(title), m.chat_id""",
+            (user_id,),
+        )
+        return [
+            KnownGroup(int(row["chat_id"]), str(row["title"])) for row in await cursor.fetchall()
+        ]
+
+    async def save_connector_share(self, share: ConnectorShare) -> ConnectorShare:
+        await self._write(
+            """INSERT INTO connector_shares (
+                   id, chat_id, owner_id, owner_name, kind, ref
+               ) VALUES (?, ?, ?, ?, ?, ?)
+               ON CONFLICT(chat_id, owner_id, kind, ref) DO UPDATE SET
+                   owner_name = excluded.owner_name""",
+            (share.id, share.chat_id, share.owner_id, share.owner_name, share.kind, share.ref),
+        )
+        saved = await self.connector_share_by_target(
+            share.chat_id, share.owner_id, share.kind, share.ref
+        )
+        if saved is None:
+            raise RuntimeError("Share was not saved")
+        return saved
+
+    async def connector_share(self, share_id: str) -> ConnectorShare | None:
+        cursor = await self.conn.execute(
+            """SELECT s.id, s.chat_id, COALESCE(k.title, 'Group') AS chat_title,
+                      s.owner_id, s.owner_name, s.kind, s.ref, s.created_at
+               FROM connector_shares AS s
+               LEFT JOIN known_chats AS k ON k.chat_id = s.chat_id
+               WHERE s.id = ?""",
+            (share_id,),
+        )
+        row = await cursor.fetchone()
+        return self._connector_share(row) if row else None
+
+    async def connector_share_by_target(
+        self, chat_id: int, owner_id: int, kind: ConnectorKind, ref: str
+    ) -> ConnectorShare | None:
+        cursor = await self.conn.execute(
+            """SELECT s.id, s.chat_id, COALESCE(k.title, 'Group') AS chat_title,
+                      s.owner_id, s.owner_name, s.kind, s.ref, s.created_at
+               FROM connector_shares AS s
+               LEFT JOIN known_chats AS k ON k.chat_id = s.chat_id
+               WHERE s.chat_id = ? AND s.owner_id = ? AND s.kind = ? AND s.ref = ?""",
+            (chat_id, owner_id, kind, ref),
+        )
+        row = await cursor.fetchone()
+        return self._connector_share(row) if row else None
+
+    async def list_connector_shares(
+        self,
+        *,
+        chat_id: int | None = None,
+        owner_id: int | None = None,
+        kind: ConnectorKind | None = None,
+        ref: str | None = None,
+    ) -> list[ConnectorShare]:
+        clauses = ["1 = 1"]
+        params: list[object] = []
+        if chat_id is not None:
+            clauses.append("s.chat_id = ?")
+            params.append(chat_id)
+        if owner_id is not None:
+            clauses.append("s.owner_id = ?")
+            params.append(owner_id)
+        if kind is not None:
+            clauses.append("s.kind = ?")
+            params.append(kind)
+        if ref is not None:
+            clauses.append("s.ref = ?")
+            params.append(ref)
+        cursor = await self.conn.execute(
+            """SELECT s.id, s.chat_id, COALESCE(k.title, 'Group') AS chat_title,
+                      s.owner_id, s.owner_name, s.kind, s.ref, s.created_at
+               FROM connector_shares AS s
+               LEFT JOIN known_chats AS k ON k.chat_id = s.chat_id
+               WHERE """
+            + " AND ".join(clauses)
+            + " ORDER BY lower(s.owner_name), s.created_at",
+            params,
+        )
+        return [self._connector_share(row) for row in await cursor.fetchall()]
+
+    async def count_connector_shares(
+        self, *, chat_id: int | None = None, owner_id: int | None = None
+    ) -> int:
+        clauses = ["1 = 1"]
+        params: list[object] = []
+        if chat_id is not None:
+            clauses.append("chat_id = ?")
+            params.append(chat_id)
+        if owner_id is not None:
+            clauses.append("owner_id = ?")
+            params.append(owner_id)
+        cursor = await self.conn.execute(
+            "SELECT COUNT(*) FROM connector_shares WHERE " + " AND ".join(clauses),
+            params,
+        )
+        row = await cursor.fetchone()
+        return int(row[0]) if row else 0
+
+    async def delete_connector_share(self, share_id: str) -> bool:
+        cursor = await self._write("DELETE FROM connector_shares WHERE id = ?", (share_id,))
+        return cursor.rowcount > 0
+
+    async def delete_connector_shares(
+        self, *, owner_id: int, kind: ConnectorKind | None = None, ref: str | None = None
+    ) -> None:
+        if kind is None:
+            await self._write("DELETE FROM connector_shares WHERE owner_id = ?", (owner_id,))
+            return
+        if ref is None:
+            await self._write(
+                "DELETE FROM connector_shares WHERE owner_id = ? AND kind = ?",
+                (owner_id, kind),
+            )
+            return
+        await self._write(
+            "DELETE FROM connector_shares WHERE owner_id = ? AND kind = ? AND ref = ?",
+            (owner_id, kind, ref),
+        )
+
+    @staticmethod
+    def _connector_share(row: aiosqlite.Row) -> ConnectorShare:
+        return ConnectorShare(
+            id=cast(str, row["id"]),
+            chat_id=cast(int, row["chat_id"]),
+            chat_title=cast(str, row["chat_title"]),
+            owner_id=cast(int, row["owner_id"]),
+            owner_name=cast(str, row["owner_name"]),
+            kind=cast(ConnectorKind, row["kind"]),
+            ref=cast(str, row["ref"]),
+            name=cast(str, row["ref"]),
+            available=True,
+            created_at=cast(str, row["created_at"]),
+        )
+
+    @staticmethod
+    def _custom_connector(row: aiosqlite.Row) -> CustomConnector:
+        raw = json.loads(cast(str, row["headers"]) or "{}")
+        headers = {
+            str(key): str(value)
+            for key, value in raw.items()
+            if isinstance(key, str) and isinstance(value, str)
+        }
+        return CustomConnector(
+            id=cast(str, row["id"]),
+            user_id=cast(int, row["user_id"]),
+            name=cast(str, row["name"]),
+            url=cast(str, row["url"]),
+            headers=headers,
+            enabled=bool(row["enabled"]),
             created_at=cast(str, row["created_at"]),
             updated_at=cast(str, row["updated_at"]),
         )

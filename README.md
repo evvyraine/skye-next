@@ -16,6 +16,9 @@ Required environment variables:
 - `OPENAI_API_KEY`
 - `SKYE_OWNER_IDS` — comma-separated Telegram user ids
 
+Optional: `COMPOSIO_API_KEY` enables hosted app connections in `/settings`.
+Custom HTTPS MCP servers work without it.
+
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the product and system design.
 
 ## Docker

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+from urllib.parse import urlsplit
 
 from aiogram import Bot
 from aiogram.types import (
@@ -19,7 +20,18 @@ from aiogram.types import (
 )
 
 from .config import MODELS
-from .models import AccessEffect, AccessEntry, ChatSettings, InstalledAgent, Memory
+from .models import (
+    AccessEffect,
+    AccessEntry,
+    AppConnector,
+    ChatSettings,
+    ConnectorShare,
+    ConnectorSnapshot,
+    CustomConnector,
+    InstalledAgent,
+    KnownGroup,
+    Memory,
+)
 from .telegram_threads import api_thread_id
 
 
@@ -69,7 +81,12 @@ class RichMessages:
         )
 
     @staticmethod
-    def settings(settings: ChatSettings, agent_name: str = "Skye") -> InputRichMessage:
+    def settings(
+        settings: ChatSettings,
+        agent_name: str = "Skye",
+        *,
+        connector_count: int | None = None,
+    ) -> InputRichMessage:
         def cell(text: str, *, header: bool = False) -> RichBlockTableCell:
             return RichBlockTableCell(
                 text=text,
@@ -78,20 +95,24 @@ class RichMessages:
                 valign="middle",
             )
 
+        rows = [
+            [cell("Option", header=True), cell("Selected", header=True)],
+            [cell("Model"), cell(MODELS[settings.model])],
+            [cell("Reasoning"), cell(settings.reasoning.title())],
+            [cell("Agent"), cell(agent_name)],
+        ]
+        if connector_count is not None:
+            rows.append(
+                [
+                    cell("Connectors"),
+                    cell(f"{connector_count} connected" if connector_count else "None"),
+                ]
+            )
+        rows.append([cell("Memory"), cell("On" if settings.memory_enabled else "Off")])
         return InputRichMessage(
             blocks=[
                 InputRichBlockSectionHeading(text="Settings", size=2),
-                InputRichBlockTable(
-                    cells=[
-                        [cell("Option", header=True), cell("Selected", header=True)],
-                        [cell("Model"), cell(MODELS[settings.model])],
-                        [cell("Reasoning"), cell(settings.reasoning.title())],
-                        [cell("Agent"), cell(agent_name)],
-                        [cell("Memory"), cell("On" if settings.memory_enabled else "Off")],
-                    ],
-                    is_bordered=True,
-                    is_striped=True,
-                ),
+                InputRichBlockTable(cells=rows, is_bordered=True, is_striped=True),
             ]
         )
 
@@ -237,6 +258,248 @@ class RichMessages:
         return InputRichMessage(blocks=blocks)
 
     @staticmethod
+    def connectors(snapshot: ConnectorSnapshot, *, configured: bool) -> InputRichMessage:
+        blocks: list[InputRichBlockUnion] = [
+            InputRichBlockSectionHeading(text="Connectors", size=2),
+            InputRichBlockParagraph(
+                text=(
+                    "Apps and custom MCP servers Skye can use in this private chat. "
+                    "Each person has their own list."
+                )
+            ),
+        ]
+        if not configured:
+            blocks.append(
+                InputRichBlockParagraph(
+                    text="Hosted apps need COMPOSIO_API_KEY. Custom MCP still works."
+                )
+            )
+        if not snapshot.apps and not snapshot.custom:
+            blocks.append(InputRichBlockParagraph(text="No connectors yet."))
+            return InputRichMessage(blocks=blocks)
+
+        def cell(text: str, *, header: bool = False) -> RichBlockTableCell:
+            return RichBlockTableCell(
+                text=text,
+                is_header=header or None,
+                align="left",
+                valign="middle",
+            )
+
+        rows = [
+            [cell("Connector", header=True), cell("Kind", header=True), cell("Status", header=True)]
+        ]
+        rows.extend(
+            [cell(item.name), cell("App"), cell(item.status.title())] for item in snapshot.apps
+        )
+        rows.extend(
+            [
+                cell(item.name),
+                cell("Custom MCP"),
+                cell("On" if item.enabled else "Off"),
+            ]
+            for item in snapshot.custom
+        )
+        blocks.append(InputRichBlockTable(cells=rows, is_bordered=True, is_striped=True))
+        return InputRichMessage(blocks=blocks)
+
+    @staticmethod
+    def connector_catalog(
+        apps: Sequence[AppConnector], *, configured: bool, query: str | None = None
+    ) -> InputRichMessage:
+        heading = f"Apps matching “{query}”" if query else "Add an app"
+        body = (
+            "Search by name, or pick a popular one."
+            if configured
+            else "Hosted apps are not configured on this bot."
+        )
+        if query and not apps:
+            body = "No apps matched that name."
+        return InputRichMessage(
+            blocks=[
+                InputRichBlockSectionHeading(text=heading, size=2),
+                InputRichBlockParagraph(text=body),
+            ]
+        )
+
+    @staticmethod
+    def connector_app(
+        app: AppConnector,
+        *,
+        connecting: bool = False,
+        shares: Sequence[ConnectorShare] = (),
+    ) -> InputRichMessage:
+        if connecting:
+            status = (
+                "Open the secure page to connect your account. "
+                "Credentials stay with Composio, not in Telegram."
+            )
+        elif app.status == "connected":
+            status = "Connected. Skye can use this app when you ask in this private chat."
+        elif app.no_auth:
+            status = "This app does not need a sign-in. Tap Connect to enable it."
+        else:
+            status = "Not connected yet."
+        description = app.description[:400] if app.description else ""
+        blocks: list[InputRichBlockUnion] = [
+            InputRichBlockSectionHeading(text=app.name, size=2),
+            InputRichBlockParagraph(text=status),
+        ]
+        if description:
+            blocks.append(InputRichBlockParagraph(text=description))
+        if shares:
+            names = ", ".join(item.chat_title for item in shares)
+            blocks.append(InputRichBlockParagraph(text=f"Shared with: {names}."))
+        return InputRichMessage(blocks=blocks)
+
+    @staticmethod
+    def connector_custom(
+        connector: CustomConnector, *, shares: Sequence[ConnectorShare] = ()
+    ) -> InputRichMessage:
+        header_names = ", ".join(connector.headers) if connector.headers else "None"
+
+        def cell(text: str) -> RichBlockTableCell:
+            return RichBlockTableCell(text=text, align="left", valign="top")
+
+        blocks: list[InputRichBlockUnion] = [
+            InputRichBlockSectionHeading(text=connector.name, size=2),
+            InputRichBlockParagraph(
+                text=(
+                    "Custom MCP. Skye will call this HTTPS server when it is on."
+                    if connector.enabled
+                    else "This custom MCP is off."
+                )
+            ),
+            InputRichBlockTable(
+                cells=[
+                    [cell("Status"), cell("On" if connector.enabled else "Off")],
+                    [cell("URL"), cell(_safe_url(connector.url))],
+                    [cell("Headers"), cell(header_names)],
+                ],
+                is_bordered=True,
+                is_striped=True,
+            ),
+        ]
+        if shares:
+            names = ", ".join(item.chat_title for item in shares)
+            blocks.append(InputRichBlockParagraph(text=f"Shared with: {names}."))
+        return InputRichMessage(blocks=blocks)
+
+    @staticmethod
+    def group_connectors(shares: Sequence[ConnectorShare]) -> InputRichMessage:
+        blocks: list[InputRichBlockUnion] = [
+            InputRichBlockSectionHeading(text="Connectors", size=2),
+            InputRichBlockParagraph(
+                text=(
+                    "Connectors shared with this group. Anyone here can ask Skye to use them. "
+                    "Set them up in a private chat, then attach or share."
+                )
+            ),
+        ]
+        if not shares:
+            blocks.append(InputRichBlockParagraph(text="Nothing is shared with this group yet."))
+            return InputRichMessage(blocks=blocks)
+
+        def cell(text: str, *, header: bool = False) -> RichBlockTableCell:
+            return RichBlockTableCell(
+                text=text,
+                is_header=header or None,
+                align="left",
+                valign="middle",
+            )
+
+        rows = [
+            [
+                cell("Connector", header=True),
+                cell("Shared by", header=True),
+                cell("Status", header=True),
+            ]
+        ]
+        rows.extend(
+            [
+                cell(item.name),
+                cell(item.owner_name),
+                cell("On" if item.available else "Unavailable"),
+            ]
+            for item in shares
+        )
+        blocks.append(InputRichBlockTable(cells=rows, is_bordered=True, is_striped=True))
+        return InputRichMessage(blocks=blocks)
+
+    @staticmethod
+    def connector_picker(name: str, groups: Sequence[KnownGroup]) -> InputRichMessage:
+        body = (
+            "Pick a group. Skye only lists allowlisted groups where you have written."
+            if groups
+            else (
+                "Skye only knows groups where you have written while the bot is allowlisted. "
+                "In a group, open /settings and tap Attach one of mine."
+            )
+        )
+        return InputRichMessage(
+            blocks=[
+                InputRichBlockSectionHeading(text=f"Share {name}", size=2),
+                InputRichBlockParagraph(text=body),
+            ]
+        )
+
+    @staticmethod
+    def connector_share_confirm(name: str, group: str, *, sensitive: bool) -> InputRichMessage:
+        body = f"Share **{name}** with {group}? Anyone there can ask Skye to use it."
+        if sensitive:
+            body += " Replies that use this app will be visible to everyone in the group."
+        return InputRichMessage(
+            blocks=[
+                InputRichBlockSectionHeading(text=f"Share {name}", size=2),
+                InputRichBlockParagraph(text=body),
+            ]
+        )
+
+    @staticmethod
+    def connector_share(share: ConnectorShare) -> InputRichMessage:
+        status = (
+            f"Shared by {share.owner_name}. Anyone in this group can ask Skye to use it."
+            if share.available
+            else (
+                f"Shared by {share.owner_name}, but it is no longer connected. "
+                "Stop sharing to remove it from this group."
+            )
+        )
+        kind = "Custom MCP" if share.kind == "custom" else "App"
+        return InputRichMessage(
+            blocks=[
+                InputRichBlockSectionHeading(text=share.name, size=2),
+                InputRichBlockParagraph(text=status),
+                InputRichBlockParagraph(text=f"{kind} · {share.chat_title}"),
+            ]
+        )
+
+    @staticmethod
+    def connector_mine(snapshot: ConnectorSnapshot) -> InputRichMessage:
+        body = (
+            "Attach one of your connected apps or custom servers to this group."
+            if snapshot.apps or snapshot.custom
+            else "Connect an app or custom MCP in a private chat first."
+        )
+        return InputRichMessage(
+            blocks=[
+                InputRichBlockSectionHeading(text="Attach one of yours", size=2),
+                InputRichBlockParagraph(text=body),
+            ]
+        )
+
+    @staticmethod
+    def connector_preview(name: str, url: str, headers: Mapping[str, str]) -> InputRichMessage:
+        header_names = ", ".join(headers) if headers else "None"
+        return InputRichMessage(
+            blocks=[
+                InputRichBlockSectionHeading(text=f"Preview · {name}", size=2),
+                InputRichBlockParagraph(text=_safe_url(url)),
+                InputRichBlockParagraph(text=f"Headers: {header_names}"),
+            ]
+        )
+
+    @staticmethod
     def memory(memories: list[Memory], enabled: bool) -> InputRichMessage:
         heading = f"Memory · {'On' if enabled else 'Off'}"
         blocks: list[InputRichBlockUnion] = [
@@ -285,3 +548,10 @@ class RichMessages:
         if isinstance(content, InputRichMessage):
             return content
         return InputRichMessage(markdown=content)
+
+
+def _safe_url(url: str) -> str:
+    parts = urlsplit(url)
+    host = parts.netloc.split("@")[-1]
+    path = parts.path or "/"
+    return f"https://{host}{path}"

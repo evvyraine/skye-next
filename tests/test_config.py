@@ -39,6 +39,11 @@ def test_owner_is_required() -> None:
         settings(skye_owner_ids="")
 
 
+def test_empty_composio_key_is_optional() -> None:
+    assert settings(composio_api_key="").composio_api_key is None
+    assert settings(composio_api_key="ck_test").composio_api_key == "ck_test"
+
+
 def test_model_catalog_rejects_unknown_model() -> None:
     with pytest.raises(ValidationError):
         settings(skye_default_model="unknown")

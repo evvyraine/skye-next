@@ -5,7 +5,15 @@ from aiogram.types import (
     InputRichBlockThinking,
 )
 
-from skye.models import AccessEntry, ChatSettings, Memory, Scope
+from skye.models import (
+    AccessEntry,
+    AppConnector,
+    ChatSettings,
+    ConnectorSnapshot,
+    CustomConnector,
+    Memory,
+    Scope,
+)
 from skye.rich import RichMessages
 
 
@@ -68,6 +76,51 @@ def test_access_screen_can_hide_entries() -> None:
     status = message.blocks[2]
     assert isinstance(status, InputRichBlockParagraph)
     assert status.text == "This group is not allowlisted."
+
+
+def test_settings_can_show_connector_count() -> None:
+    message = RichMessages.settings(
+        ChatSettings(model="gpt-5.6-sol", reasoning="high"),
+        connector_count=2,
+    )
+
+    assert message.blocks
+    table = message.blocks[1]
+    assert isinstance(table, InputRichBlockTable)
+    assert table.cells[4][0].text == "Connectors"
+    assert table.cells[4][1].text == "2 connected"
+
+
+def test_connectors_screen_lists_apps_and_custom_servers() -> None:
+    snapshot = ConnectorSnapshot(
+        (AppConnector("gmail", "Gmail", "connected", account_id="ca_1"),),
+        (
+            CustomConnector(
+                "abc",
+                1,
+                "Work CRM",
+                "https://user:secret@example.com/mcp?token=1",
+                {"Authorization": "Bearer x"},
+                True,
+                "now",
+                "now",
+            ),
+        ),
+    )
+
+    message = RichMessages.connectors(snapshot, configured=True)
+    custom = RichMessages.connector_custom(snapshot.custom[0])
+
+    assert message.blocks
+    table = message.blocks[2]
+    assert isinstance(table, InputRichBlockTable)
+    assert table.cells[1][0].text == "Gmail"
+    assert table.cells[2][0].text == "Work CRM"
+    assert custom.blocks
+    custom_table = custom.blocks[2]
+    assert isinstance(custom_table, InputRichBlockTable)
+    assert custom_table.cells[1][1].text == "https://example.com/mcp"
+    assert "secret" not in custom_table.cells[1][1].text
 
 
 def test_memory_screen_uses_plain_rich_cells() -> None:

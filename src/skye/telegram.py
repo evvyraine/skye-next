@@ -32,6 +32,7 @@ from aiogram.types import (
 from .access import AccessService
 from .attachments import AttachmentService
 from .config import MODELS, Reasoning, Settings
+from .connectors import ConnectorError, ConnectorPanel, ConnectorService, ConnectorWizard
 from .conversations import ConversationService
 from .custom_agents import AGENT_CAPABILITIES, CustomAgentService
 from .db import Database
@@ -107,6 +108,7 @@ class TelegramApp:
         conversations: ConversationService,
         memory: MemoryService,
         custom_agents: CustomAgentService,
+        connectors: ConnectorService,
         groups: GroupContextService,
         attachments: AttachmentService,
         runtime: AgentRuntime,
@@ -118,10 +120,12 @@ class TelegramApp:
         self.conversations = conversations
         self.memory = memory
         self.custom_agents = custom_agents
+        self.connector_service = connectors
         self.groups = groups
         self.attachments = attachments
         self.runtime = runtime
         self.rich = RichMessages(bot)
+        self.connectors = ConnectorPanel(connectors, self.rich, bot)
         self.router = Router(name="skye")
         self._register()
 
@@ -134,6 +138,7 @@ class TelegramApp:
         self.router.message.register(self.stop, Command("stop"))
         self.router.message.register(self.admin, Command("admin"))
         self.router.callback_query.register(self.settings_callback, F.data.startswith("settings:"))
+        self.router.callback_query.register(self.connectors_callback, F.data.startswith("conn:"))
         self.router.callback_query.register(self.agents_callback, F.data.startswith("agents:"))
         self.router.callback_query.register(self.admin_callback, F.data.startswith("admin:"))
         self.router.message.register(
@@ -143,6 +148,16 @@ class TelegramApp:
                 AgentWizard.description,
                 AgentWizard.instructions,
                 AgentWizard.preview,
+            ),
+        )
+        self.router.message.register(
+            self.connector_wizard,
+            StateFilter(
+                ConnectorWizard.search,
+                ConnectorWizard.mcp_name,
+                ConnectorWizard.mcp_url,
+                ConnectorWizard.mcp_headers,
+                ConnectorWizard.edit,
             ),
         )
         self.router.message.register(self.admin_prompt, StateFilter(AdminPrompt.target))
@@ -187,8 +202,8 @@ class TelegramApp:
         await self.rich.send(
             message,
             "I can chat, search the web, work with images, "
-            "and run code in an isolated container.\n\n"
-            "/settings — model, reasoning, agent, and memory\n\n"
+            "run code in an isolated container, and use apps you connect.\n\n"
+            "/settings — model, reasoning, agent, memory, and connectors\n\n"
             "/agents — create, install, select, and share agents\n\n"
             "/reset — new conversation\n\n"
             "/stop — cancel the active task"
@@ -203,10 +218,16 @@ class TelegramApp:
         agent_name = await self.custom_agents.active_name(
             context.scope, current.active_agent_id
         )
+        private = context.chat_type == "private"
+        connector_count = (
+            await self.connector_service.connected_count(context.user_id)
+            if private
+            else await self.connector_service.group_share_count(context.chat_id)
+        )
         await self.rich.send(
             message,
-            self.rich.settings(current, agent_name),
-            reply_markup=self._settings_keyboard(editable),
+            self.rich.settings(current, agent_name, connector_count=connector_count),
+            reply_markup=self._settings_keyboard(editable, private=private),
         )
 
     async def settings_callback(self, callback: CallbackQuery) -> None:
@@ -237,6 +258,14 @@ class TelegramApp:
                     installed, current.active_agent_id, editable, settings_back=True
                 ),
             )
+        elif action == ["settings", "connectors"]:
+            try:
+                await self.connectors.show_home(
+                    callback.message, context, editable=editable
+                )
+            except ConnectorError as error:
+                await callback.answer(str(error), show_alert=True)
+                return
         elif action == ["settings", "memory"]:
             memories = await self.database.memories(context.scope, 10)
             await self.rich.edit(
@@ -278,31 +307,19 @@ class TelegramApp:
                 reply_markup=self._memory_keyboard(current, False, True),
             )
         elif action == ["settings", "back"]:
-            await self.rich.edit(
-                callback.message,
-                self.rich.settings(current, agent_name),
-                reply_markup=self._settings_keyboard(editable),
-            )
+            await self._edit_settings(callback.message, context, current, agent_name, editable)
         elif len(action) == 3 and action[:2] == ["settings", "model"]:
             if not editable or action[2] not in MODELS:
                 await callback.answer("Only chat administrators can change this.", show_alert=True)
                 return
             current = await self.database.set_model(context.scope, action[2])
-            await self.rich.edit(
-                callback.message,
-                self.rich.settings(current, agent_name),
-                reply_markup=self._settings_keyboard(True),
-            )
+            await self._edit_settings(callback.message, context, current, agent_name, True)
         elif len(action) == 3 and action[:2] == ["settings", "reason"]:
             if not editable or action[2] not in REASONING:
                 await callback.answer("Only chat administrators can change this.", show_alert=True)
                 return
             current = await self.database.set_reasoning(context.scope, action[2])
-            await self.rich.edit(
-                callback.message,
-                self.rich.settings(current, agent_name),
-                reply_markup=self._settings_keyboard(True),
-            )
+            await self._edit_settings(callback.message, context, current, agent_name, True)
         elif len(action) == 3 and action[:2] == ["settings", "agent"]:
             if not editable:
                 await callback.answer("Only chat administrators can change this.", show_alert=True)
@@ -317,12 +334,54 @@ class TelegramApp:
             agent_name = await self.custom_agents.active_name(
                 context.scope, current.active_agent_id
             )
-            await self.rich.edit(
-                callback.message,
-                self.rich.settings(current, agent_name),
-                reply_markup=self._settings_keyboard(True),
-            )
+            await self._edit_settings(callback.message, context, current, agent_name, True)
         await callback.answer()
+
+    async def connectors_callback(self, callback: CallbackQuery, state: FSMContext) -> None:
+        if not callback.message or not isinstance(callback.message, Message) or not callback.data:
+            await callback.answer()
+            return
+        context = self._context(callback.message, callback.from_user)
+        if context is None or not await self.access.allowed(context):
+            await callback.answer("Access denied", show_alert=True)
+            return
+        action = callback.data.split(":")[1:]
+        editable = await self._can_edit(context)
+        try:
+            await self.connectors.handle_callback(
+                callback.message, context, action, state, editable=editable
+            )
+        except (ConnectorError, PermissionError, LookupError) as error:
+            await callback.answer(str(error), show_alert=True)
+            return
+        await callback.answer()
+
+    async def connector_wizard(self, message: Message, state: FSMContext) -> None:
+        context = self._context(message)
+        if context is None or not await self._require_access(message, context):
+            await state.clear()
+            return
+        await self.connectors.handle_wizard(message, context, state)
+
+    async def _edit_settings(
+        self,
+        message: Message,
+        context: RequestContext,
+        current: ChatSettings,
+        agent_name: str,
+        editable: bool,
+    ) -> None:
+        private = context.chat_type == "private"
+        connector_count = (
+            await self.connector_service.connected_count(context.user_id)
+            if private
+            else await self.connector_service.group_share_count(context.chat_id)
+        )
+        await self.rich.edit(
+            message,
+            self.rich.settings(current, agent_name, connector_count=connector_count),
+            reply_markup=self._settings_keyboard(editable, private=private),
+        )
 
     async def agents(self, message: Message, state: FSMContext) -> None:
         context = self._context(message)
@@ -1115,21 +1174,27 @@ class TelegramApp:
         )
 
     @staticmethod
-    def _settings_keyboard(editable: bool) -> InlineKeyboardMarkup | None:
+    def _settings_keyboard(
+        editable: bool, *, private: bool = False
+    ) -> InlineKeyboardMarkup | None:
         if not editable:
-            return None
-        return InlineKeyboardMarkup(
-            inline_keyboard=[
-                [
-                    InlineKeyboardButton(text="Model", callback_data="settings:models"),
-                    InlineKeyboardButton(text="Reasoning", callback_data="settings:reasoning"),
-                ],
-                [
-                    InlineKeyboardButton(text="Agent", callback_data="settings:agents"),
-                    InlineKeyboardButton(text="Memory", callback_data="settings:memory"),
-                ],
-            ]
-        )
+            return InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [InlineKeyboardButton(text="Connectors", callback_data="settings:connectors")]
+                ]
+            )
+        rows = [
+            [
+                InlineKeyboardButton(text="Model", callback_data="settings:models"),
+                InlineKeyboardButton(text="Reasoning", callback_data="settings:reasoning"),
+            ],
+            [
+                InlineKeyboardButton(text="Agent", callback_data="settings:agents"),
+                InlineKeyboardButton(text="Connectors", callback_data="settings:connectors"),
+            ],
+            [InlineKeyboardButton(text="Memory", callback_data="settings:memory")],
+        ]
+        return InlineKeyboardMarkup(inline_keyboard=rows)
 
     @staticmethod
     def _agents_keyboard(
@@ -1342,7 +1407,7 @@ async def replay_pending(dispatcher: Dispatcher, bot: Bot, database: Database) -
 COMMANDS = [
     BotCommand(command="start", description="Start Skye"),
     BotCommand(command="help", description="Show capabilities"),
-    BotCommand(command="settings", description="Model, agent, and memory"),
+    BotCommand(command="settings", description="Model, agent, memory, and connectors"),
     BotCommand(command="agents", description="Create and manage agents"),
     BotCommand(command="reset", description="Start a new conversation"),
     BotCommand(command="stop", description="Stop the active task"),

@@ -12,6 +12,7 @@ from pydantic import ValidationError
 from .access import AccessService
 from .attachments import AttachmentService
 from .config import Settings
+from .connectors import ComposioClient, ConnectorService
 from .conversations import ConversationService
 from .custom_agents import CustomAgentService
 from .db import Database
@@ -57,6 +58,8 @@ async def run() -> None:
     conversations = ConversationService(database, client)
     memory = MemoryService(database)
     custom_agents = CustomAgentService(database)
+    composio = ComposioClient(config.composio_api_key) if config.composio_api_key else None
+    connectors = ConnectorService(database, composio)
     groups = GroupContextService(config, database, bot)
     attachments = AttachmentService(config, bot, client)
     access = AccessService(database, config.skye_owner_ids)
@@ -66,6 +69,7 @@ async def run() -> None:
         memory,
         load_base_prompt(config.skye_base_prompt_path),
         custom_agents,
+        connectors,
     )
     telegram = TelegramApp(
         config,
@@ -75,6 +79,7 @@ async def run() -> None:
         conversations,
         memory,
         custom_agents,
+        connectors,
         groups,
         attachments,
         runtime,
@@ -99,6 +104,7 @@ async def run() -> None:
             handle_signals=True,
         )
     finally:
+        await connectors.aclose()
         await client.close()
         await bot.session.close()
         await database.close()

@@ -4,6 +4,7 @@ from typing import Any, cast
 from agents import FunctionTool, ImageGenerationTool, ShellTool, WebSearchTool
 
 from skye.config import Settings
+from skye.connectors import ConnectorTools
 from skye.custom_agents import AgentComposition
 from skye.memory import MemoryService
 from skye.models import (
@@ -66,6 +67,27 @@ def test_disabled_memory_is_not_injected_or_exposed() -> None:
 
     assert len(agent.tools) == 3
     assert "secret memory" not in cast(str, agent.instructions)
+
+
+def test_connector_labels_are_private_context_only() -> None:
+    memory = MemoryService(cast(Any, None))
+    runtime = AgentRuntime(config(), cast(Any, None), memory, "You are Skye.")
+    tools = ConnectorTools((), ("Gmail", "Work CRM"))
+
+    private = runtime._agent(
+        RequestContext(1, "private", 1),
+        ChatSettings("gpt-5.6-luna", "medium", memory_enabled=False),
+        connector_tools=tools,
+    )
+    group = runtime._agent(
+        RequestContext(-100, "supergroup", 1),
+        ChatSettings("gpt-5.6-luna", "medium", memory_enabled=False),
+        connector_tools=ConnectorTools((), ()),
+    )
+
+    assert "Gmail" in cast(str, private.instructions)
+    assert "Work CRM" in cast(str, private.instructions)
+    assert "Gmail" not in cast(str, group.instructions)
 
 
 def test_generated_images_are_extracted() -> None:
