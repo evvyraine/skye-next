@@ -79,8 +79,7 @@ class Settings(BaseSettings):
     skye_run_timeout_seconds: int = Field(default=300, ge=10, le=1800)
     skye_max_attachment_bytes: int = Field(default=25 * 1024 * 1024, ge=1)
     skye_transcription_model: str = "gpt-transcribe"
-    skye_group_context_messages: int = Field(default=200, ge=20, le=500)
-    skye_group_context_images: int = Field(default=10, ge=0, le=50)
+    skye_group_context_messages: int = Field(default=20, ge=1, le=100)
     skye_sandbox_allowed_domains: SandboxDomains = Field(default=SANDBOX_DOMAINS, min_length=1)
     skye_tracing: bool = False
 

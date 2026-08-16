@@ -26,6 +26,13 @@ from agents.result import RunResultStreaming
 from agents.stream_events import RawResponsesStreamEvent
 from openai import APIError, AsyncOpenAI, RateLimitError
 from openai.types.responses.response_text_delta_event import ResponseTextDeltaEvent
+from tenacity import (
+    AsyncRetrying,
+    RetryCallState,
+    retry_if_exception,
+    stop_after_attempt,
+    wait_random_exponential,
+)
 
 from .artifacts import GeneratedFile, collect_container_files, without_sandbox_links
 from .config import Settings
@@ -38,9 +45,10 @@ from .skills import SkillService, hosted_skill_refs
 
 log = structlog.get_logger()
 TextCallback = Callable[[str], Awaitable[None]]
+# Official OpenAI SDK retries HTTP 429s and honors Retry-After. Default is 2.
+OPENAI_MAX_RETRIES = 6
 _RETRY_IN = re.compile(r"try again in\s+([0-9]+(?:\.[0-9]+)?)\s*s", re.IGNORECASE)
-_MIN_RETRY_SECONDS = 1.0
-_MAX_RETRY_SECONDS = 120.0
+_WAIT = wait_random_exponential(min=1, max=60)
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,34 +64,50 @@ class _ActiveRun:
     stream: RunResultStreaming | None = None
 
 
+def is_transient(error: BaseException) -> bool:
+    current: BaseException | None = error
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if _is_transient_one(current):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
 def retry_after(error: BaseException) -> float | None:
     current: BaseException | None = error
     seen: set[int] = set()
     while current is not None and id(current) not in seen:
         seen.add(id(current))
-        delay = _retry_after_one(current)
+        delay = _header_delay(current) or _message_delay(current)
         if delay is not None:
             return delay
         current = current.__cause__ or current.__context__
     return None
 
 
-def _retry_after_one(error: BaseException) -> float | None:
+def wait_openai(retry_state: RetryCallState) -> float:
+    error: BaseException | None = None
+    if retry_state.outcome is not None and retry_state.outcome.failed:
+        error = retry_state.outcome.exception()
+    minimum = retry_after(error) if error is not None else None
+    return max(minimum or 1.0, float(_WAIT(retry_state)))
+
+
+def _is_transient_one(error: BaseException) -> bool:
     if not isinstance(error, APIError):
-        return None
+        return False
     text = str(error).lower()
     status = getattr(error, "status_code", None)
-    rate_limited = (
+    if (
         isinstance(error, RateLimitError)
         or status == 429
         or "rate limit" in text
         or "tokens per min" in text
-    )
-    if rate_limited:
-        return _bounded(_header_delay(error) or _message_delay(error) or 5.0)
-    if _openai_code(error) == "conversation_locked" or "conversation_locked" in text:
-        return _bounded(_message_delay(error) or 3.0)
-    return None
+    ):
+        return True
+    return _openai_code(error) == "conversation_locked" or "conversation_locked" in text
 
 
 def _openai_code(error: APIError) -> str | None:
@@ -124,10 +148,6 @@ def _header_delay(error: BaseException) -> float | None:
 def _message_delay(error: BaseException) -> float | None:
     match = _RETRY_IN.search(str(error))
     return float(match.group(1)) if match else None
-
-
-def _bounded(delay: float) -> float:
-    return min(max(delay + 0.25, _MIN_RETRY_SECONDS), _MAX_RETRY_SECONDS)
 
 
 class AgentRuntime:
@@ -227,54 +247,78 @@ class AgentRuntime:
         active: _ActiveRun,
         context: RequestContext,
     ) -> RunOutput:
-        while True:
-            if active.cancel.is_set():
-                raise asyncio.CancelledError
-            started = int(time.time()) - 5
-            result = Runner.run_streamed(
-                agent,
-                user_input,
-                max_turns=self.config.skye_max_turns,
-                conversation_id=conversation_id,
-            )
-            active.stream = result
-            text = ""
-            try:
-                async for event in result.stream_events():
-                    if active.cancel.is_set():
-                        result.cancel()
-                        raise asyncio.CancelledError
-                    if isinstance(event, RawResponsesStreamEvent) and isinstance(
-                        event.data, ResponseTextDeltaEvent
-                    ):
-                        text += event.data.delta
-                        await on_text(text)
-            except asyncio.CancelledError:
-                raise
-            except Exception as error:
-                delay = retry_after(error)
-                if delay is None:
-                    raise
-                log.info(
-                    "openai_run_retry",
-                    chat_id=context.chat_id,
-                    thread_id=context.thread_id,
-                    error=type(error).__name__,
-                    wait_seconds=round(delay, 3),
-                )
-                await self._delay(active, delay)
-                continue
-            finally:
-                active.stream = None
+        async def sleep(seconds: float) -> None:
+            await self._delay(active, float(seconds))
 
-            final = result.final_output if isinstance(result.final_output, str) else text
-            files = await collect_container_files(
-                self.client,
-                result,
-                self.config.skye_max_attachment_bytes,
-                created_after=started,
+        async def before_sleep(retry_state: RetryCallState) -> None:
+            error = (
+                retry_state.outcome.exception()
+                if retry_state.outcome is not None and retry_state.outcome.failed
+                else None
             )
-            return RunOutput(without_sandbox_links(final.strip()), self._images(result), files)
+            log.info(
+                "openai_run_retry",
+                chat_id=context.chat_id,
+                thread_id=context.thread_id,
+                attempt=retry_state.attempt_number,
+                error=type(error).__name__ if error is not None else None,
+                wait_seconds=round(retry_state.upcoming_sleep, 3),
+            )
+
+        async for attempt in AsyncRetrying(
+            sleep=sleep,
+            wait=wait_openai,
+            stop=stop_after_attempt(OPENAI_MAX_RETRIES),
+            retry=retry_if_exception(is_transient),
+            before_sleep=before_sleep,
+            reraise=True,
+        ):
+            with attempt:
+                if active.cancel.is_set():
+                    raise asyncio.CancelledError
+                return await self._consume_stream(
+                    agent, user_input, conversation_id, on_text, active
+                )
+        raise RuntimeError("OpenAI run retry loop exited without a result.")
+
+    async def _consume_stream(
+        self,
+        agent: Agent[None],
+        user_input: str | list[TResponseInputItem],
+        conversation_id: str,
+        on_text: TextCallback,
+        active: _ActiveRun,
+    ) -> RunOutput:
+        started = int(time.time()) - 5
+        result = Runner.run_streamed(
+            agent,
+            user_input,
+            max_turns=self.config.skye_max_turns,
+            conversation_id=conversation_id,
+        )
+        active.stream = result
+        text = ""
+        try:
+            async for event in result.stream_events():
+                if active.cancel.is_set():
+                    result.cancel()
+                    raise asyncio.CancelledError
+                if isinstance(event, RawResponsesStreamEvent) and isinstance(
+                    event.data, ResponseTextDeltaEvent
+                ):
+                    text += event.data.delta
+                    await on_text(text)
+        finally:
+            active.stream = None
+
+        final = result.final_output if isinstance(result.final_output, str) else text
+        files = await collect_container_files(
+            self.client,
+            result,
+            self.config.skye_max_attachment_bytes,
+            created_after=started,
+        )
+        return RunOutput(without_sandbox_links(final.strip()), self._images(result), files)
 
     async def _delay(self, active: _ActiveRun, seconds: float) -> None:
         if active.cancel.is_set():

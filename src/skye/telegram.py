@@ -961,6 +961,8 @@ class TelegramApp:
 
         try:
             output = await self.runtime.run(context, current, user_input, on_text)
+            if context.chat_type != "private":
+                await self.groups.mark_seen(message)
             await self._deliver(message, placeholder, output)
         except TimeoutError:
             await self._finish(message, placeholder, "This took too long, so I stopped it.")
@@ -997,17 +999,15 @@ class TelegramApp:
                     f"\nReplying to {reply_identity} #{reply.message_id}: {excerpt[:500]}"
                 )
             history = await self.groups.history(message)
-            group_context = (
-                f"<recent_group_context>\n{history.transcript}\n</recent_group_context>\n\n"
-            )
-            text = (
-                f"{group_context}<current_message>\n"
-                f"{identity}: {text}{reply_context}\n"
-                "</current_message>"
-            )
-        else:
-            history = None
-        history_images = history.images if history else ()
+            if history.transcript:
+                text = (
+                    f"<recent_group_context>\n{history.transcript}\n</recent_group_context>\n\n"
+                    f"<current_message>\n{identity}: {text}{reply_context}\n</current_message>"
+                )
+            else:
+                text = (
+                    f"<current_message>\n{identity}: {text}{reply_context}\n</current_message>"
+                )
         has_attachments = any(
             (
                 source
@@ -1021,14 +1021,11 @@ class TelegramApp:
             )
             for source in (message, message.reply_to_message)
         )
-        if not has_attachments and not history_images:
+        if not has_attachments:
             return text
 
         content: list[dict[str, Any]] = [{"type": "input_text", "text": text}]
         await self.attachments.add(message, content)
-        for message_id, image_url in history_images:
-            content.append({"type": "input_text", "text": f"Image from message #{message_id}:"})
-            content.append({"type": "input_image", "image_url": image_url, "detail": "auto"})
         return cast(list[TResponseInputItem], [{"role": "user", "content": content}])
 
     async def _deliver(

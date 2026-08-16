@@ -61,7 +61,7 @@ async def group_context(tmp_path: Path):
         await database.close()
 
 
-async def test_passive_history_keeps_people_replies_and_images(group_context: Any) -> None:
+async def test_passive_history_keeps_people_and_replies(group_context: Any) -> None:
     database, service = group_context
     alice = User(id=1, is_bot=False, first_name="Alice", username="alice")
     bob = User(id=2, is_bot=False, first_name="Bob", username="bob")
@@ -75,29 +75,45 @@ async def test_passive_history_keeps_people_replies_and_images(group_context: An
 
     assert "Alice (@alice)" in history.transcript
     assert "Bob (@bob) [id 2] replying to Alice (@alice) #10" in history.transcript
-    assert history.images[0][0] == 11
-    assert history.images[0][1].startswith("data:image/jpeg;base64,")
+    assert "[photo]" in history.transcript
 
     repeated_history = await service.history(message(13, bob, "Anything new?"))
     assert "Launch is Friday" in repeated_history.transcript
     assert "Looks good" in repeated_history.transcript
 
 
-async def test_history_always_contains_latest_200_messages(group_context: Any) -> None:
+async def test_history_keeps_the_latest_20_messages(group_context: Any) -> None:
     _, service = group_context
     alice = User(id=1, is_bot=False, first_name="Alice", username="alice")
 
-    for message_id in range(1, 203):
+    for message_id in range(1, 24):
         await service.capture(message(message_id, alice, f"Message {message_id}"))
 
-    history = await service.history(message(202, alice, "Skye, summarize"))
+    history = await service.history(message(23, alice, "Skye, summarize"))
     lines = history.transcript.splitlines()
 
-    assert len(lines) == 200
-    assert "#2 " in lines[0]
-    assert "Message 2" in lines[0]
-    assert "#201 " in lines[-1]
-    assert "Message 201" in lines[-1]
+    assert len(lines) == 20
+    assert "#3 " in lines[0]
+    assert "Message 3" in lines[0]
+    assert "#22 " in lines[-1]
+    assert "Message 22" in lines[-1]
+
+
+async def test_history_skips_messages_already_sent_to_the_conversation(
+    group_context: Any,
+) -> None:
+    database, service = group_context
+    alice = User(id=1, is_bot=False, first_name="Alice", username="alice")
+    for message_id in range(1, 6):
+        await service.capture(message(message_id, alice, f"Message {message_id}"))
+    await database.save_conversation(-100, 0, "conv_1")
+    await service.mark_seen(message(3, alice, "Skye, earlier"))
+
+    history = await service.history(message(6, alice, "Skye, what did I miss?"))
+
+    assert "Message 3" not in history.transcript
+    assert "Message 4" in history.transcript
+    assert "Message 5" in history.transcript
 
 
 async def test_rich_message_text_is_kept_in_reply_context(group_context: Any) -> None:

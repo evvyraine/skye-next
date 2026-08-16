@@ -12,6 +12,7 @@ dependencies = [
     "openai-agents>=0.19.2",
     "pydantic-settings>=2.10.0",
     "structlog>=25.4.0",
+    "tenacity>=9.1.4",
 ]
 
 [project.scripts]

@@ -1,12 +1,9 @@
 from __future__ import annotations
 
-import base64
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from io import BytesIO
 from typing import Any
 
-import structlog
 from aiogram import Bot
 from aiogram.types import Message, User
 
@@ -15,13 +12,10 @@ from .db import Database
 from .models import GroupMessage, Scope
 from .telegram_threads import thread_id
 
-log = structlog.get_logger()
-
 
 @dataclass(frozen=True, slots=True)
 class GroupHistory:
     transcript: str
-    images: tuple[tuple[int, str], ...]
 
 
 class GroupContextService:
@@ -67,35 +61,24 @@ class GroupContextService:
 
     async def history(self, message: Message) -> GroupHistory:
         context_thread_id = thread_id(message)
+        after = await self.database.conversation_context_message_id(
+            message.chat.id, context_thread_id
+        )
         messages = await self.database.group_messages(
             message.chat.id,
             context_thread_id,
+            after=after,
             before=message.message_id,
             limit=self.config.skye_group_context_messages,
         )
         if not messages:
-            return GroupHistory("", ())
+            return GroupHistory("")
+        return GroupHistory("\n".join(self._line(item) for item in messages))
 
-        transcript = "\n".join(self._line(item) for item in messages)
-        photos: list[tuple[int, str]] = []
-        if self.config.skye_group_context_images:
-            photos = [
-                (item.message_id, item.media_file_id)
-                for item in messages
-                if item.media_kind == "photo" and item.media_file_id
-            ][-self.config.skye_group_context_images :]
-        images: list[tuple[int, str]] = []
-        for message_id, file_id in photos:
-            try:
-                destination = BytesIO()
-                await self.bot.download(file_id, destination=destination)
-                data = destination.getvalue()
-                if len(data) <= self.config.skye_max_attachment_bytes:
-                    encoded = base64.b64encode(data).decode()
-                    images.append((message_id, f"data:image/jpeg;base64,{encoded}"))
-            except Exception as error:
-                log.warning("group_context_image_failed", error=type(error).__name__)
-        return GroupHistory(transcript, tuple(images))
+    async def mark_seen(self, message: Message) -> None:
+        await self.database.set_conversation_context_message_id(
+            message.chat.id, thread_id(message), message.message_id
+        )
 
     @staticmethod
     def sender(message: Message) -> tuple[int | None, str, str | None]:

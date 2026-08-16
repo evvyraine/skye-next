@@ -201,6 +201,8 @@ async def test_existing_settings_tables_are_migrated(tmp_path: Path) -> None:
         );
         INSERT INTO user_settings (user_id, model, reasoning)
         VALUES (42, 'gpt-5.6-luna', 'medium');
+        INSERT INTO conversations (chat_id, thread_id, openai_conversation_id)
+        VALUES (-100, 0, 'conv_old');
         """
     )
     connection.close()
@@ -209,6 +211,7 @@ async def test_existing_settings_tables_are_migrated(tmp_path: Path) -> None:
     await database.open()
     try:
         assert (await database.get_settings(Scope("user", 42))).memory_enabled
-        assert await database.conversation_id(-100, 0) is None
+        assert await database.conversation_id(-100, 0) == "conv_old"
+        assert await database.conversation_context_message_id(-100, 0) == 0
     finally:
         await database.close()

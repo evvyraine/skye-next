@@ -67,6 +67,10 @@ def test_sandbox_domains_default_to_the_code_owned_allowlist() -> None:
     assert settings().skye_sandbox_allowed_domains == SANDBOX_DOMAINS
 
 
+def test_group_context_defaults_to_twenty_new_messages() -> None:
+    assert settings().skye_group_context_messages == 20
+
+
 def test_sandbox_domains_are_parsed_from_env(tmp_path: Path) -> None:
     env_file = tmp_path / ".env"
     env_file.write_text(

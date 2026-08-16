@@ -11,6 +11,7 @@ from aiogram.types import (
     InputRichBlockTable,
     LinkPreviewOptions,
     Message,
+    PhotoSize,
     Update,
     User,
     VideoNote,
@@ -30,13 +31,20 @@ def group_message(
     *,
     message_thread_id: int | None = None,
     is_topic_message: bool | None = None,
+    photo: bool = False,
 ) -> Message:
     return Message(
         message_id=1,
         date=0,
         chat=Chat(id=-100, type="supergroup", title="Skye Lab"),
         from_user=User(id=42, is_bot=False, first_name="Alice"),
-        text=text,
+        text=None if photo else text,
+        caption=text if photo else None,
+        photo=(
+            [PhotoSize(file_id="photo-1", file_unique_id="unique-photo", width=10, height=10)]
+            if photo
+            else None
+        ),
         reply_to_message=reply,
         message_thread_id=message_thread_id,
         is_topic_message=is_topic_message,
@@ -159,7 +167,7 @@ async def test_group_reply_always_includes_recent_context() -> None:
     app.groups = SimpleNamespace(
         text=lambda item: item.text or "",
         sender=lambda item: (item.from_user.id, item.from_user.first_name, item.from_user.username),
-        history=AsyncMock(return_value=GroupHistory("#1 · Alice: First message", ())),
+        history=AsyncMock(return_value=GroupHistory("#1 · Alice: First message")),
     )
     skye_message = Message(
         message_id=2,
@@ -182,11 +190,64 @@ async def test_group_reply_always_includes_recent_context() -> None:
     assert "Replying to Skye (@skye_example_bot) [id 777] #2: Previous answer" in result
 
 
-async def test_group_context_block_is_present_when_history_is_empty() -> None:
+async def test_group_photo_on_the_current_message_is_attached() -> None:
+    app = telegram_app()
+    app.groups = SimpleNamespace(
+        text=lambda item: item.caption or item.text or "",
+        history=AsyncMock(return_value=GroupHistory("")),
+        sender=lambda item: (item.from_user.id, item.from_user.first_name, item.from_user.username),
+    )
+    app.attachments = SimpleNamespace(add=AsyncMock())
+    incoming = group_message("Skye, look", photo=True)
+    context = app._context(incoming)
+    assert context is not None
+
+    result = await app._input(incoming, context)
+
+    app.attachments.add.assert_awaited_once()
+    assert result[0]["content"][0]["text"].endswith("Alice [id 42]: Skye, look\n</current_message>")
+
+
+async def test_group_reply_to_a_photo_is_attached() -> None:
+    app = telegram_app()
+    app.groups = SimpleNamespace(
+        text=lambda item: item.caption or item.text or "",
+        history=AsyncMock(return_value=GroupHistory("")),
+        sender=lambda item: (item.from_user.id, item.from_user.first_name, item.from_user.username),
+    )
+    app.attachments = SimpleNamespace(add=AsyncMock())
+    incoming = group_message("Skye, describe this", reply=group_message("sunset", photo=True))
+    context = app._context(incoming)
+    assert context is not None
+
+    await app._input(incoming, context)
+
+    app.attachments.add.assert_awaited_once()
+
+
+async def test_group_history_photos_are_not_attached() -> None:
     app = telegram_app()
     app.groups = SimpleNamespace(
         text=lambda item: item.text or "",
-        history=AsyncMock(return_value=GroupHistory("", ())),
+        history=AsyncMock(return_value=GroupHistory("#11 · Bob [photo]: Looks good")),
+    )
+    app.attachments = SimpleNamespace(add=AsyncMock())
+    incoming = group_message("Skye, hello")
+    context = app._context(incoming)
+    assert context is not None
+
+    result = await app._input(incoming, context)
+
+    app.attachments.add.assert_not_awaited()
+    assert isinstance(result, str)
+    assert "[photo]" in result
+
+
+async def test_group_context_block_is_omitted_when_history_is_empty() -> None:
+    app = telegram_app()
+    app.groups = SimpleNamespace(
+        text=lambda item: item.text or "",
+        history=AsyncMock(return_value=GroupHistory("")),
     )
     incoming = group_message("Skye, hello")
     context = app._context(incoming)
@@ -195,7 +256,8 @@ async def test_group_context_block_is_present_when_history_is_empty() -> None:
     result = await app._input(incoming, context)
 
     assert isinstance(result, str)
-    assert "<recent_group_context>\n\n</recent_group_context>" in result
+    assert "<recent_group_context>" not in result
+    assert "<current_message>\nAlice [id 42]: Skye, hello\n</current_message>" in result
 
 
 async def test_deliver_sends_container_files_after_the_text() -> None:

@@ -22,7 +22,7 @@ from skye.models import (
     Scope,
     Skill,
 )
-from skye.runtime import AgentRuntime, retry_after
+from skye.runtime import AgentRuntime, is_transient, retry_after
 
 
 def config() -> Settings:
@@ -318,7 +318,8 @@ def test_retry_after_reads_tpm_wait_from_message() -> None:
         body=None,
     )
 
-    assert retry_after(error) == pytest.approx(4.878)
+    assert is_transient(error)
+    assert retry_after(error) == pytest.approx(4.628)
 
 
 def test_retry_after_prefers_retry_after_header() -> None:
@@ -327,11 +328,15 @@ def test_retry_after_prefers_retry_after_header() -> None:
         headers={"retry-after": "6"},
     )
 
-    assert retry_after(error) == pytest.approx(6.25)
+    assert is_transient(error)
+    assert retry_after(error) == pytest.approx(6.0)
 
 
 def test_retry_after_waits_for_a_locked_conversation() -> None:
-    assert retry_after(conversation_locked_error()) == pytest.approx(3.25)
+    error = conversation_locked_error()
+
+    assert is_transient(error)
+    assert retry_after(error) is None
 
 
 def test_retry_after_ignores_permanent_errors() -> None:
@@ -341,6 +346,7 @@ def test_retry_after_ignores_permanent_errors() -> None:
         body={"error": {"code": "invalid_request", "message": "Invalid parameter"}},
     )
 
+    assert not is_transient(error)
     assert retry_after(error) is None
 
 
@@ -348,7 +354,8 @@ def test_retry_after_follows_the_cause_chain() -> None:
     error = RuntimeError("wrapper")
     error.__cause__ = rate_limit_error("Rate limit reached. Please try again in 2s.")
 
-    assert retry_after(error) == pytest.approx(2.25)
+    assert is_transient(error)
+    assert retry_after(error) == pytest.approx(2.0)
 
 
 async def test_run_retries_rate_limits_then_answers() -> None:
@@ -379,7 +386,7 @@ async def test_run_retries_rate_limits_then_answers() -> None:
         )
 
     assert output.text == "Queued answer"
-    assert delays == pytest.approx([4.878])
+    assert delays[0] == pytest.approx(4.628)
 
 
 async def test_run_strips_sandbox_links_and_attaches_files() -> None:
@@ -421,7 +428,7 @@ async def test_run_retries_conversation_locks() -> None:
         )
 
     assert output.text == "Later"
-    assert delays == pytest.approx([3.25])
+    assert delays[0] >= 1.0
 
 
 async def test_run_does_not_retry_permanent_errors() -> None:

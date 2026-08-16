@@ -64,6 +64,7 @@ CREATE TABLE IF NOT EXISTS conversations (
     chat_id INTEGER NOT NULL,
     thread_id INTEGER NOT NULL DEFAULT 0,
     openai_conversation_id TEXT NOT NULL,
+    context_message_id INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (chat_id, thread_id)
@@ -275,6 +276,9 @@ class Database:
         await self._ensure_column("chat_settings", "active_agent_id", "TEXT")
         await self._ensure_column(
             "composio_session_cache", "mcp_headers", "TEXT NOT NULL DEFAULT '{}'"
+        )
+        await self._ensure_column(
+            "conversations", "context_message_id", "INTEGER NOT NULL DEFAULT 0"
         )
         await self._normalize_group_message_threads()
         await self._migrate_composio_sessions()
@@ -784,6 +788,24 @@ class Database:
             (chat_id, thread_id, conversation_id),
         )
 
+    async def conversation_context_message_id(self, chat_id: int, thread_id: int) -> int:
+        cursor = await self.conn.execute(
+            "SELECT context_message_id FROM conversations WHERE chat_id = ? AND thread_id = ?",
+            (chat_id, thread_id),
+        )
+        row = await cursor.fetchone()
+        return cast(int, row["context_message_id"]) if row else 0
+
+    async def set_conversation_context_message_id(
+        self, chat_id: int, thread_id: int, message_id: int
+    ) -> None:
+        await self._write(
+            """UPDATE conversations
+               SET context_message_id = ?, updated_at = CURRENT_TIMESTAMP
+               WHERE chat_id = ? AND thread_id = ?""",
+            (message_id, chat_id, thread_id),
+        )
+
     async def pop_conversation(self, chat_id: int, thread_id: int) -> str | None:
         conversation_id = await self.conversation_id(chat_id, thread_id)
         await self._write(
@@ -848,12 +870,13 @@ class Database:
         *,
         before: int,
         limit: int,
+        after: int = 0,
     ) -> list[GroupMessage]:
         cursor = await self.conn.execute(
             """SELECT * FROM group_messages
-               WHERE chat_id = ? AND thread_id = ? AND message_id < ?
+               WHERE chat_id = ? AND thread_id = ? AND message_id > ? AND message_id < ?
                ORDER BY message_id DESC LIMIT ?""",
-            (chat_id, thread_id, before, limit),
+            (chat_id, thread_id, after, before, limit),
         )
         rows = list(await cursor.fetchall())
         return [self._group_message(row) for row in reversed(rows)]

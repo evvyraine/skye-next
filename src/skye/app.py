@@ -18,7 +18,7 @@ from .custom_agents import CustomAgentService
 from .db import Database
 from .group_context import GroupContextService
 from .memory import MemoryService
-from .runtime import AgentRuntime
+from .runtime import OPENAI_MAX_RETRIES, AgentRuntime
 from .skills import SkillService
 from .telegram import COMMANDS, TelegramApp, UpdateMiddleware, replay_pending
 
@@ -52,7 +52,7 @@ async def run() -> None:
     )
     await database.open()
 
-    client = AsyncOpenAI(api_key=config.openai_api_key)
+    client = AsyncOpenAI(api_key=config.openai_api_key, max_retries=OPENAI_MAX_RETRIES)
     set_default_openai_client(client, use_for_tracing=config.skye_tracing)
     set_tracing_disabled(not config.skye_tracing)
 
