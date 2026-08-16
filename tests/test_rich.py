@@ -4,6 +4,7 @@ from aiogram.types import (
     Chat,
     InputMediaPhoto,
     InputRichBlockParagraph,
+    InputRichBlockSectionHeading,
     InputRichBlockTable,
     InputRichBlockThinking,
     InputRichMessage,
@@ -61,8 +62,8 @@ def test_access_screen_lists_entries_and_group_status() -> None:
 
     assert message.blocks
     notice = message.blocks[1]
-    status = message.blocks[3]
-    table = message.blocks[4]
+    status = message.blocks[2]
+    table = message.blocks[3]
     assert isinstance(notice, InputRichBlockParagraph)
     assert isinstance(status, InputRichBlockParagraph)
     assert notice.text == "Allowed user `42`."
@@ -71,6 +72,9 @@ def test_access_screen_lists_entries_and_group_status() -> None:
     assert table.cells[1][0].text == "user"
     assert table.cells[1][1].text == "42"
     assert table.cells[1][2].text == "allow"
+    assert all(
+        "Owner-only allowlist" not in getattr(block, "text", "") for block in message.blocks
+    )
 
 
 def test_access_screen_can_hide_entries() -> None:
@@ -80,9 +84,35 @@ def test_access_screen_can_hide_entries() -> None:
 
     assert message.blocks
     assert all(not isinstance(block, InputRichBlockTable) for block in message.blocks)
-    status = message.blocks[2]
+    status = message.blocks[1]
     assert isinstance(status, InputRichBlockParagraph)
     assert status.text == "This group is not allowlisted."
+
+
+def test_model_chooser_uses_a_title_instead_of_the_settings_table() -> None:
+    message = RichMessages.choose_model("gpt-5.6-luna")
+
+    assert message.blocks
+    heading = message.blocks[0]
+    current = message.blocks[1]
+    assert isinstance(heading, InputRichBlockSectionHeading)
+    assert heading.text == "Choose your model"
+    assert isinstance(current, InputRichBlockParagraph)
+    assert current.text == "Currently Luna."
+    assert all(not isinstance(block, InputRichBlockTable) for block in message.blocks)
+
+
+def test_reasoning_chooser_uses_a_title_instead_of_the_settings_table() -> None:
+    message = RichMessages.choose_reasoning("medium")
+
+    assert message.blocks
+    heading = message.blocks[0]
+    current = message.blocks[1]
+    assert isinstance(heading, InputRichBlockSectionHeading)
+    assert heading.text == "Choose your reasoning"
+    assert isinstance(current, InputRichBlockParagraph)
+    assert current.text == "Currently Medium."
+    assert all(not isinstance(block, InputRichBlockTable) for block in message.blocks)
 
 
 def test_settings_can_show_connector_count() -> None:

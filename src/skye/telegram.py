@@ -249,9 +249,17 @@ class TelegramApp:
         )
 
         if action == ["settings", "models"]:
-            await callback.message.edit_reply_markup(reply_markup=self._model_keyboard(current))
+            await self.rich.edit(
+                callback.message,
+                self.rich.choose_model(current.model),
+                reply_markup=self._model_keyboard(current),
+            )
         elif action == ["settings", "reasoning"]:
-            await callback.message.edit_reply_markup(reply_markup=self._reasoning_keyboard(current))
+            await self.rich.edit(
+                callback.message,
+                self.rich.choose_reasoning(current.reasoning),
+                reply_markup=self._reasoning_keyboard(current),
+            )
         elif action == ["settings", "agents"]:
             installed = await self.custom_agents.list(context.scope)
             await self.rich.edit(

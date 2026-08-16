@@ -19,7 +19,7 @@ from aiogram.types import (
     RichBlockTableCell,
 )
 
-from .config import MODELS
+from .config import MODELS, ModelId, Reasoning
 from .models import (
     AccessEffect,
     AccessEntry,
@@ -118,6 +118,24 @@ class RichMessages:
         )
 
     @staticmethod
+    def choose_model(model: ModelId) -> InputRichMessage:
+        return InputRichMessage(
+            blocks=[
+                InputRichBlockSectionHeading(text="Choose your model", size=2),
+                InputRichBlockParagraph(text=f"Currently {MODELS[model]}."),
+            ]
+        )
+
+    @staticmethod
+    def choose_reasoning(reasoning: Reasoning) -> InputRichMessage:
+        return InputRichMessage(
+            blocks=[
+                InputRichBlockSectionHeading(text="Choose your reasoning", size=2),
+                InputRichBlockParagraph(text=f"Currently {reasoning.title()}."),
+            ]
+        )
+
+    @staticmethod
     def agents(
         agents: Sequence[InstalledAgent], active_agent_id: str | None
     ) -> InputRichMessage:
@@ -210,14 +228,6 @@ class RichMessages:
         ]
         if notice:
             blocks.append(InputRichBlockParagraph(text=notice))
-        blocks.append(
-            InputRichBlockParagraph(
-                text=(
-                    "Owner-only allowlist. A ban beats every allow except the owner. "
-                    "Allowlisting a group grants access only inside that group."
-                )
-            )
-        )
         if in_group:
             if group_effect == "allow":
                 status = "This group is allowlisted."
