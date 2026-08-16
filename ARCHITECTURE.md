@@ -143,7 +143,7 @@ All user-facing text is English. The permanent command list stays small:
 | Command | Purpose |
 | --- | --- |
 | `/start` | Welcome, deep-link import, and access status |
-| `/help` | Compact capabilities and usage |
+| `/help` | Compact capabilities, usage, and product links |
 | `/settings` | Inline model, agent, skill, memory, and connector settings |
 | `/agents` | Create, edit, install, share, select, and remove agents |
 | `/skills` | Add, inspect, enable, attach, share, and remove skills |

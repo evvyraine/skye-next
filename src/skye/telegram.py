@@ -207,7 +207,9 @@ class TelegramApp:
             "/settings — model, reasoning, agent, memory, and connectors\n\n"
             "/agents — create, install, select, and share agents\n\n"
             "/reset — new conversation\n\n"
-            "/stop — cancel the active task"
+            "/stop — cancel the active task\n\n"
+            "A few useful links.",
+            reply_markup=self._help_keyboard(),
         )
 
     async def settings(self, message: Message) -> None:
@@ -1176,6 +1178,18 @@ class TelegramApp:
         )
 
     @staticmethod
+    def _help_keyboard() -> InlineKeyboardMarkup:
+        return InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(text="Website", url=WEBSITE_URL),
+                    InlineKeyboardButton(text="Docs", url=DOCS_URL),
+                ],
+                [InlineKeyboardButton(text="Privacy policy", url=PRIVACY_URL)],
+            ]
+        )
+
+    @staticmethod
     def _settings_keyboard(
         editable: bool, *, private: bool = False
     ) -> InlineKeyboardMarkup | None:
@@ -1415,6 +1429,10 @@ async def replay_pending(dispatcher: Dispatcher, bot: Bot, database: Database) -
         update = Update.model_validate(json.loads(payload), context={"bot": bot})
         await dispatcher.feed_update(bot, update)
 
+
+WEBSITE_URL = "https://skye-bot.com"
+DOCS_URL = "https://ai.skye-bot.com/"
+PRIVACY_URL = "https://ai.skye-bot.com/privacy"
 
 COMMANDS = [
     BotCommand(command="start", description="Start Skye"),

@@ -80,6 +80,18 @@ def test_empty_message_has_no_chunks() -> None:
     assert TelegramApp._chunks("  ") == []
 
 
+def test_help_keyboard_opens_product_links() -> None:
+    from skye.telegram import DOCS_URL, PRIVACY_URL, WEBSITE_URL
+
+    markup = TelegramApp._help_keyboard()
+    buttons = [button for row in markup.inline_keyboard for button in row]
+    assert [(button.text, button.url) for button in buttons] == [
+        ("Website", WEBSITE_URL),
+        ("Docs", DOCS_URL),
+        ("Privacy policy", PRIVACY_URL),
+    ]
+
+
 @pytest.mark.parametrize(
     "text",
     [
