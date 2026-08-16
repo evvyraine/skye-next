@@ -9,7 +9,7 @@ from agents import FunctionTool, ImageGenerationTool, ShellTool, WebSearchTool
 from openai import APIError, BadRequestError, RateLimitError
 
 from skye.artifacts import GeneratedFile
-from skye.config import Settings
+from skye.config import SANDBOX_DOMAINS, Settings
 from skye.connectors import ConnectorTools
 from skye.custom_agents import AgentComposition
 from skye.memory import MemoryService
@@ -32,6 +32,10 @@ def config() -> Settings:
         skye_owner_ids="1",
         _env_file=None,
     )  # type: ignore[call-arg]
+
+
+def sandbox_network_policy() -> dict[str, object]:
+    return {"type": "allowlist", "allowed_domains": list(SANDBOX_DOMAINS)}
 
 
 def test_agent_uses_only_hosted_capabilities() -> None:
@@ -59,7 +63,7 @@ def test_agent_uses_only_hosted_capabilities() -> None:
     assert shell.executor is None
     assert shell.environment == {
         "type": "container_auto",
-        "network_policy": {"type": "unrestricted"},
+        "network_policy": sandbox_network_policy(),
     }
 
 
@@ -155,7 +159,7 @@ def test_shell_file_note_follows_capabilities() -> None:
     )
 
     assert "/mnt/data" in cast(str, with_shell.instructions)
-    assert "unrestricted outbound internet access" in cast(str, with_shell.instructions)
+    assert "can reach the public internet" in cast(str, with_shell.instructions)
     assert "/mnt/data" not in cast(str, without_shell.instructions)
 
 
@@ -238,7 +242,7 @@ def test_shell_mounts_uploaded_skills() -> None:
     shell = cast(ShellTool, agent.tools[2])
     assert shell.environment == {
         "type": "container_auto",
-        "network_policy": {"type": "unrestricted"},
+        "network_policy": sandbox_network_policy(),
         "skills": [{"type": "skill_reference", "skill_id": "skill_abc"}],
     }
     assert "basic-math" in cast(str, agent.instructions)

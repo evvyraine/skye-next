@@ -24,7 +24,44 @@ def _ids(value: object) -> frozenset[int]:
     return frozenset()
 
 
+SANDBOX_DOMAINS: tuple[str, ...] = (
+    "api.github.com",
+    "codeload.github.com",
+    "crates.io",
+    "files.pythonhosted.org",
+    "github.com",
+    "gitlab.com",
+    "index.crates.io",
+    "npmjs.com",
+    "objects.githubusercontent.com",
+    "pkg.go.dev",
+    "proxy.golang.org",
+    "pypi.org",
+    "pypi.python.org",
+    "raw.githubusercontent.com",
+    "registry.npmjs.org",
+    "rubygems.org",
+    "static.crates.io",
+    "sum.golang.org",
+)
+
+
+def _domains(value: object) -> tuple[str, ...]:
+    if isinstance(value, str):
+        items = tuple(
+            item.strip().lower().lstrip(".")
+            for item in value.replace(";", ",").split(",")
+            if item.strip()
+        )
+        return items or SANDBOX_DOMAINS
+    if isinstance(value, (list, tuple, set, frozenset)):
+        items = tuple(str(item).strip().lower() for item in value if str(item).strip())
+        return items or SANDBOX_DOMAINS
+    return SANDBOX_DOMAINS
+
+
 OwnerIds = Annotated[frozenset[int], NoDecode, BeforeValidator(_ids)]
+SandboxDomains = Annotated[tuple[str, ...], NoDecode, BeforeValidator(_domains)]
 
 
 class Settings(BaseSettings):
@@ -44,6 +81,7 @@ class Settings(BaseSettings):
     skye_transcription_model: str = "gpt-transcribe"
     skye_group_context_messages: int = Field(default=200, ge=20, le=500)
     skye_group_context_images: int = Field(default=10, ge=0, le=50)
+    skye_sandbox_allowed_domains: SandboxDomains = Field(default=SANDBOX_DOMAINS, min_length=1)
     skye_tracing: bool = False
 
     @field_validator("composio_api_key", mode="before")

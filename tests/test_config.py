@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from skye.config import Settings
+from skye.config import SANDBOX_DOMAINS, Settings
 
 
 def settings(**overrides: object) -> Settings:
@@ -61,3 +61,24 @@ def test_composio_key_strips_wrapping(raw: str, cleaned: str) -> None:
 def test_model_catalog_rejects_unknown_model() -> None:
     with pytest.raises(ValidationError):
         settings(skye_default_model="unknown")
+
+
+def test_sandbox_domains_default_to_the_code_owned_allowlist() -> None:
+    assert settings().skye_sandbox_allowed_domains == SANDBOX_DOMAINS
+
+
+def test_sandbox_domains_are_parsed_from_env(tmp_path: Path) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "TELEGRAM_BOT_TOKEN=123:token\nOPENAI_API_KEY=sk-test\nSKYE_OWNER_IDS=1\n"
+        "SKYE_SANDBOX_ALLOWED_DOMAINS=pypi.org, GitHub.com, files.pythonhosted.org\n",
+        encoding="utf-8",
+    )
+
+    loaded = Settings(_env_file=env_file)  # type: ignore[call-arg]
+
+    assert loaded.skye_sandbox_allowed_domains == (
+        "pypi.org",
+        "github.com",
+        "files.pythonhosted.org",
+    )

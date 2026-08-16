@@ -368,7 +368,7 @@ class AgentRuntime:
             )
         if "shell" in capabilities:
             instructions += (
-                "\n\nThe hosted sandbox has unrestricted outbound internet access. "
+                "\n\nThe hosted sandbox can reach the public internet. "
                 "Files you write under /mnt/data are sent to the user as Telegram documents. "
                 "Put a folder there, or a zip, when they want more than one file."
             )
@@ -380,8 +380,8 @@ class AgentRuntime:
             )
         return instructions
 
-    @staticmethod
     def _hosted_tools(
+        self,
         capabilities: tuple[AgentCapability, ...],
         skills: tuple[Skill, ...] = (),
     ) -> list[Tool]:
@@ -406,7 +406,10 @@ class AgentRuntime:
         if "shell" in capabilities:
             environment: dict[str, Any] = {
                 "type": "container_auto",
-                "network_policy": {"type": "unrestricted"},
+                "network_policy": {
+                    "type": "allowlist",
+                    "allowed_domains": list(self.config.skye_sandbox_allowed_domains),
+                },
             }
             if skills:
                 environment["skills"] = hosted_skill_refs(skills)
