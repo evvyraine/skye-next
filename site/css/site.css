@@ -713,40 +713,6 @@ button {
   letter-spacing: -0.02em;
 }
 
-/* Inner pages */
-
-.page-main {
-  padding-block: 2rem 5rem;
-}
-
-.page-kicker {
-  margin: 0 0 0.6rem;
-  color: var(--muted);
-  font-size: 1rem;
-  font-weight: 500;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-}
-
-.page-title {
-  margin: 0 0 1.5rem;
-  font-size: clamp(2.5rem, 1.6rem + 3vw, 4.5rem);
-  font-weight: 500;
-  letter-spacing: -0.03em;
-  line-height: 1.05;
-}
-
-.prose-narrow {
-  max-width: 42rem;
-  font-size: 1.25rem;
-  letter-spacing: -0.02em;
-  line-height: 1.5;
-}
-
-.prose-narrow a {
-  color: var(--link);
-}
-
 /* Motion */
 
 .reveal {

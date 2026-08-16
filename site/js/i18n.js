@@ -49,17 +49,9 @@ export const strings = {
     plus4: "Дополнительные пакеты",
     outro: "Понять важное.\nДовести до результата.\nОстаться человечной.",
     tryNow: "Попробуйте сейчас",
-    terms: "Условия использования",
     privacy: "Политика конфиденциальности",
     support: "Поддержка →",
     designed: "Задизайнено",
-    termsTitle: "Условия использования",
-    privacyTitle: "Политика конфиденциальности",
-    legalKicker: "Правовое",
-    termsBody:
-      "Skye — частный ассистент в Telegram. Доступ выдаётся по списку. Не передавайте боту данные, которые нельзя доверить модели внешнего партнёра. Исходный код открыт; модели предоставляет OpenAI.",
-    privacyBody:
-      "Мы храним настройки, список доступа, воспоминания и идентификаторы разговоров. Содержимое сообщений уходит к OpenAI для ответа. Токены Telegram и ключи API в журналы не пишутся. Чтобы удалить данные, напишите на serg@skye-bot.com.",
   },
   en: {
     skip: "Skip to content",
@@ -111,17 +103,9 @@ export const strings = {
     plus4: "Extra packs",
     outro: "See what matters.\nFollow through.\nStay human.",
     tryNow: "Try it now",
-    terms: "Terms of use",
     privacy: "Privacy policy",
     support: "Support →",
     designed: "Designed by",
-    termsTitle: "Terms of use",
-    privacyTitle: "Privacy policy",
-    legalKicker: "Legal",
-    termsBody:
-      "Skye is a private assistant in Telegram. Access is allowlisted. Do not send her anything you would not trust to an external model. The source is open; the models come from OpenAI.",
-    privacyBody:
-      "We store settings, the allowlist, memories, and conversation ids. Message content goes to OpenAI so she can reply. Telegram tokens and API keys are not written to logs. To delete your data, write to serg@skye-bot.com.",
   },
 };
 
