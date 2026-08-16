@@ -75,6 +75,17 @@ async def test_updates_are_idempotent_and_retryable(database: Database) -> None:
     assert not await database.claim_update(10, '{"update_id":10}')
 
 
+async def test_pending_updates_are_dropped_on_startup(database: Database) -> None:
+    assert await database.claim_update(10, '{"update_id":10}')
+    await database.finish_update(10, "TimeoutError")
+    assert await database.claim_update(11, '{"update_id":11}')
+
+    assert await database.drop_pending_updates() == 2
+    assert not await database.claim_update(10, '{"update_id":10}')
+    assert not await database.claim_update(11, '{"update_id":11}')
+    assert await database.drop_pending_updates() == 0
+
+
 async def test_reply_thread_migration_preserves_real_topics(database: Database) -> None:
     fake_thread = GroupMessage(
         -100,

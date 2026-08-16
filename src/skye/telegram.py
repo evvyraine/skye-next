@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import io
-import json
 import re
 import time
 from collections.abc import Awaitable, Callable, Sequence
@@ -11,7 +10,7 @@ from typing import Any, Literal, cast
 
 import structlog
 from agents.items import TResponseInputItem
-from aiogram import BaseMiddleware, Bot, Dispatcher, F, Router
+from aiogram import BaseMiddleware, Bot, F, Router
 from aiogram.client.default import Default
 from aiogram.dispatcher.event.bases import UNHANDLED
 from aiogram.exceptions import TelegramBadRequest
@@ -1483,12 +1482,6 @@ def _update_fallback(value: object) -> None:
     if isinstance(value, Default):
         return None
     raise TypeError(f"Unable to serialize {type(value)!r}")
-
-
-async def replay_pending(dispatcher: Dispatcher, bot: Bot, database: Database) -> None:
-    for payload in await database.pending_updates():
-        update = Update.model_validate(json.loads(payload), context={"bot": bot})
-        await dispatcher.feed_update(bot, update)
 
 
 WEBSITE_URL = "https://skye-bot.com"

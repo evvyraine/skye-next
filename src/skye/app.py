@@ -20,7 +20,7 @@ from .group_context import GroupContextService
 from .memory import MemoryService
 from .runtime import OPENAI_MAX_RETRIES, AgentRuntime
 from .skills import SkillService
-from .telegram import COMMANDS, TelegramApp, UpdateMiddleware, replay_pending
+from .telegram import COMMANDS, TelegramApp, UpdateMiddleware
 
 log = structlog.get_logger()
 
@@ -108,7 +108,10 @@ async def run() -> None:
                 hint="Disable Group Privacy in BotFather or make the bot a group administrator.",
             )
         await bot.set_my_commands(COMMANDS)
-        await replay_pending(dispatcher, bot, database)
+        dropped = await database.drop_pending_updates()
+        if dropped:
+            log.info("pending_updates_dropped", count=dropped)
+        await bot.delete_webhook(drop_pending_updates=True)
         await dispatcher.start_polling(
             bot,
             allowed_updates=sorted(

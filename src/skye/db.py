@@ -1370,12 +1370,13 @@ class Database:
             ("pending" if error else "done", error, update_id),
         )
 
-    async def pending_updates(self) -> list[str]:
-        await self._write("UPDATE updates SET state = 'pending' WHERE state = 'processing'")
-        cursor = await self.conn.execute(
-            "SELECT payload FROM updates WHERE state = 'pending' ORDER BY update_id"
+    async def drop_pending_updates(self) -> int:
+        cursor = await self._write(
+            """UPDATE updates
+               SET state = 'done', last_error = NULL, updated_at = CURRENT_TIMESTAMP
+               WHERE state IN ('pending', 'processing')"""
         )
-        return [cast(str, row["payload"]) for row in await cursor.fetchall()]
+        return max(cursor.rowcount, 0)
 
     @staticmethod
     def encode_payload(payload: dict[str, Any]) -> str:
