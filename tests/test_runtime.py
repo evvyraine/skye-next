@@ -8,6 +8,7 @@ import pytest
 from agents import FunctionTool, ImageGenerationTool, ShellTool, WebSearchTool
 from openai import APIError, BadRequestError, RateLimitError
 
+from skye.artifacts import GeneratedFile
 from skye.config import Settings
 from skye.connectors import ConnectorTools
 from skye.custom_agents import AgentComposition
@@ -137,6 +138,23 @@ def test_generated_images_are_extracted() -> None:
     )
 
     assert AgentRuntime._images(result) == (b"png",)
+
+
+def test_shell_file_note_follows_capabilities() -> None:
+    memory = MemoryService(cast(Any, None))
+    runtime = AgentRuntime(config(), cast(Any, None), memory, "You are Skye.")
+    with_shell = runtime._agent(
+        RequestContext(1, "private", 1),
+        ChatSettings("gpt-5.6-luna", "medium", memory_enabled=False),
+    )
+    without_shell = runtime._agent(
+        RequestContext(1, "private", 1),
+        ChatSettings("gpt-5.6-luna", "medium", memory_enabled=False, active_agent_id="a1"),
+        composition=AgentComposition(installed_agent("a1", "Researcher", ("web",)), ()),
+    )
+
+    assert "/mnt/data" in cast(str, with_shell.instructions)
+    assert "/mnt/data" not in cast(str, without_shell.instructions)
 
 
 def installed_agent(
@@ -314,6 +332,26 @@ async def test_run_retries_rate_limits_then_answers() -> None:
 
     assert output.text == "Queued answer"
     assert delays == pytest.approx([4.878])
+
+
+async def test_run_strips_sandbox_links_and_attaches_files() -> None:
+    runtime = runtime_for_run()
+    files = (GeneratedFile("notes.md", b"hi"),)
+    stream = FakeStream(output="Done: [download notes.md](sandbox:/mnt/data/notes.md)")
+
+    with (
+        patch("skye.runtime.Runner.run_streamed", return_value=stream),
+        patch("skye.runtime.collect_container_files", AsyncMock(return_value=files)),
+    ):
+        output = await runtime.run(
+            RequestContext(1, "private", 1),
+            ChatSettings("gpt-5.6-luna", "medium", memory_enabled=False),
+            "hello",
+            AsyncMock(),
+        )
+
+    assert output.text == "Done: download notes.md"
+    assert output.files == files
 
 
 async def test_run_retries_conversation_locks() -> None:

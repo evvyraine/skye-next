@@ -78,6 +78,7 @@ async def run() -> None:
         load_base_prompt(config.skye_base_prompt_path),
         custom_agents,
         connectors,
+        client,
     )
     telegram = TelegramApp(
         config,

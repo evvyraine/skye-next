@@ -990,6 +990,8 @@ class TelegramApp:
         await self._finish(target, placeholder, first)
         for chunk in chunks[1:]:
             await self.rich.send(target, self.rich.output(chunk))
+        if output.files:
+            await self.rich.send_documents(target, output.files)
 
     async def _finish(
         self, target: Message, placeholder: Message | None, content: str | InputRichMessage

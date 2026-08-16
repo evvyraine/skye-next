@@ -16,9 +16,11 @@ from aiogram.types import (
     VideoNote,
 )
 
+from skye.artifacts import GeneratedFile
 from skye.group_context import GroupHistory
 from skye.models import AccessEntry, Scope
 from skye.rich import RichMessages
+from skye.runtime import RunOutput
 from skye.telegram import AdminPrompt, TelegramApp, dump_update
 
 
@@ -194,6 +196,23 @@ async def test_group_context_block_is_present_when_history_is_empty() -> None:
 
     assert isinstance(result, str)
     assert "<recent_group_context>\n\n</recent_group_context>" in result
+
+
+async def test_deliver_sends_container_files_after_the_text() -> None:
+    app = telegram_app()
+    app.rich = SimpleNamespace(
+        output=RichMessages.output,
+        send=AsyncMock(),
+        edit=AsyncMock(),
+        send_documents=AsyncMock(),
+    )
+    incoming = private_message("make a file")
+    files = (GeneratedFile("notes.md", b"hi"),)
+
+    await app._deliver(incoming, None, RunOutput("Ready.", (), files))
+
+    app.rich.send.assert_awaited_once()
+    app.rich.send_documents.assert_awaited_once_with(incoming, files)
 
 
 def private_message(

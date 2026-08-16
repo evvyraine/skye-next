@@ -3,6 +3,7 @@ from unittest.mock import AsyncMock
 import pytest
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import (
+    BufferedInputFile,
     Chat,
     InputMediaPhoto,
     InputRichBlockParagraph,
@@ -15,6 +16,7 @@ from aiogram.types import (
     User,
 )
 
+from skye.artifacts import GeneratedFile
 from skye.models import (
     AccessEntry,
     AppConnector,
@@ -171,6 +173,32 @@ def test_memory_screen_uses_plain_rich_cells() -> None:
     table = message.blocks[1]
     assert isinstance(table, InputRichBlockTable)
     assert table.cells[1][2].text == "Likes **literal** tea"
+
+
+async def test_send_documents_uploads_container_files() -> None:
+    bot = AsyncMock()
+    incoming = Message(
+        message_id=17,
+        date=0,
+        chat=Chat(id=42, type="private", first_name="Alice"),
+        from_user=User(id=42, is_bot=False, first_name="Alice"),
+        text="Hello",
+    )
+
+    await RichMessages(bot).send_documents(
+        incoming, (GeneratedFile("Архитектура.md", b"# architecture"),)
+    )
+
+    kwargs = bot.send_document.await_args.kwargs
+    assert kwargs["chat_id"] == 42
+    assert kwargs["disable_content_type_detection"] is True
+    assert kwargs["reply_parameters"] == ReplyParameters(
+        message_id=17,
+        allow_sending_without_reply=True,
+    )
+    document = kwargs["document"]
+    assert isinstance(document, BufferedInputFile)
+    assert document.filename == "Архитектура.md"
 
 
 async def test_send_replies_to_the_triggering_message() -> None:

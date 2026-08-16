@@ -20,6 +20,7 @@ from aiogram.types import (
     RichBlockTableCell,
 )
 
+from .artifacts import GeneratedFile
 from .config import MODELS, ModelId, Reasoning
 from .models import (
     AccessEffect,
@@ -72,6 +73,16 @@ class RichMessages:
         except TelegramBadRequest as error:
             if "message is not modified" not in error.message.lower():
                 raise
+
+    async def send_documents(self, target: Message, files: Sequence[GeneratedFile]) -> None:
+        for item in files:
+            await self.bot.send_document(
+                chat_id=target.chat.id,
+                message_thread_id=api_thread_id(target),
+                document=BufferedInputFile(item.data, filename=item.filename),
+                reply_parameters=reply_parameters(target),
+                disable_content_type_detection=True,
+            )
 
     async def draft(self, target: Message, text: str | None = None) -> None:
         content = (
