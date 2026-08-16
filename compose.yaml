@@ -1,8 +1,11 @@
+name: skye-next
+
 services:
   skye:
     build:
       context: .
-    image: skye-next:local
+    image: skye-next:prod
+    container_name: skye-next
     env_file:
       - .env
     environment:

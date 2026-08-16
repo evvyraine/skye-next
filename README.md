@@ -58,6 +58,11 @@ docker compose down
 `docker compose down` removes the container but keeps the database volume. To deploy a new version,
 pull the changes and run `docker compose up -d --build` again.
 
+Production on vilnius lives at `/opt/skye-next` (bot, Docker Compose) and
+`/var/www/skye-bot.com/current` (static site). Pushes to `master` run GitHub Actions,
+which lint/test and then rsync + rebuild. The server `.env` is not in git and is not
+overwritten by deploys.
+
 ## Development
 
 ```bash

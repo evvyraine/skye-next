@@ -1,0 +1,76 @@
+name: Deploy
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-master
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Lint, typecheck, and test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.14"
+          enable-cache: true
+
+      - run: uv sync --locked --group dev
+      - run: uv run ruff check .
+      - run: uv run mypy
+      - run: uv run pytest
+
+  deploy:
+    name: Deploy to Vilnius
+    needs: check
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          cat >> ~/.ssh/known_hosts <<'EOF'
+          ssh.shftln.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHqH3GQvvtcYqbSgrwqi36m1Sx7uy9kr7guQwVZSLCCI
+          EOF
+          chmod 644 ~/.ssh/known_hosts
+          cat >> ~/.ssh/config <<'EOF'
+          Host vilnius
+            HostName ssh.shftln.com
+            User root
+            IdentityFile ~/.ssh/deploy_key
+            IdentitiesOnly yes
+          EOF
+          chmod 600 ~/.ssh/config
+
+      - name: Sync and restart
+        env:
+          GITHUB_SHA: ${{ github.sha }}
+        run: |
+          ssh vilnius 'mkdir -p /opt/skye-next'
+          rsync -az --delete \
+            --exclude '.git/' \
+            --exclude '.env' \
+            --exclude '.venv/' \
+            --exclude 'data/' \
+            --exclude '__pycache__/' \
+            --exclude '.mypy_cache/' \
+            --exclude '.pytest_cache/' \
+            --exclude '.ruff_cache/' \
+            --exclude '.DS_Store' \
+            ./ vilnius:/opt/skye-next/
+          ssh vilnius "GITHUB_SHA='$GITHUB_SHA' bash /opt/skye-next/scripts/deploy-remote.sh"

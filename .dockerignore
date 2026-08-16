@@ -1,6 +1,8 @@
 .git
+.github
 .gitignore
 .idea
+site
 .venv
 .env
 .mypy_cache
