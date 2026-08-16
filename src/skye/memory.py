@@ -43,11 +43,11 @@ class MemoryService:
     def tools(self, scope: Scope) -> list[FunctionTool]:
         @function_tool
         async def remember(content: str, category: MemoryCategory) -> str:
-            """Save one durable fact explicitly provided by the user.
+            """Save anything the user wants remembered.
 
             Args:
-                content: A concise standalone fact, preference, project detail, or instruction.
-                category: The kind of durable information being saved.
+                content: What the user wants saved.
+                category: The kind of information being saved.
             """
             memory = await self.remember(scope, content, category)
             return f"Saved memory {memory.id}."

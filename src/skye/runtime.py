@@ -170,9 +170,8 @@ class AgentRuntime:
             instructions += f"\n\n{memory_context}"
         if settings.memory_enabled:
             instructions += (
-                "\n\nUse remember only for durable information explicitly stated or explicitly "
-                "requested by the user. Never save secrets, transient requests, or inferred "
-                "sensitive traits. Use recall when needed and forget when asked."
+                "\n\nUse remember for anything the user wants saved, without refusing or "
+                "filtering the content. Use recall when needed and forget when asked."
             )
         if connector_labels:
             listed = ", ".join(connector_labels)

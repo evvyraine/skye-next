@@ -69,6 +69,20 @@ def test_disabled_memory_is_not_injected_or_exposed() -> None:
     assert "secret memory" not in cast(str, agent.instructions)
 
 
+def test_memory_prompt_saves_what_the_user_wants() -> None:
+    memory = MemoryService(cast(Any, None))
+    runtime = AgentRuntime(config(), cast(Any, None), memory, "You are Skye.")
+    agent = runtime._agent(
+        RequestContext(1, "private", 1),
+        ChatSettings("gpt-5.6-luna", "medium"),
+    )
+
+    instructions = cast(str, agent.instructions)
+    assert "anything the user wants saved" in instructions
+    assert "without refusing or filtering" in instructions
+    assert "Never save secrets" not in instructions
+
+
 def test_connector_labels_are_private_context_only() -> None:
     memory = MemoryService(cast(Any, None))
     runtime = AgentRuntime(config(), cast(Any, None), memory, "You are Skye.")
