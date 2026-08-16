@@ -33,7 +33,8 @@ from .connectors import ConnectorService, ConnectorTools
 from .conversations import ConversationService
 from .custom_agents import AGENT_CAPABILITIES, AgentComposition, CustomAgentService
 from .memory import MemoryService
-from .models import AgentCapability, ChatSettings, InstalledAgent, RequestContext
+from .models import AgentCapability, ChatSettings, InstalledAgent, RequestContext, Skill
+from .skills import SkillService, hosted_skill_refs
 
 log = structlog.get_logger()
 TextCallback = Callable[[str], Awaitable[None]]
@@ -139,6 +140,7 @@ class AgentRuntime:
         custom_agents: CustomAgentService | None = None,
         connectors: ConnectorService | None = None,
         client: AsyncOpenAI | None = None,
+        skills: SkillService | None = None,
     ) -> None:
         self.config = config
         self.conversations = conversations
@@ -146,6 +148,7 @@ class AgentRuntime:
         self.custom_agents = custom_agents
         self.connectors = connectors
         self.client = client
+        self.skills = skills
         self.base_prompt = base_prompt.strip()
         self._locks: defaultdict[tuple[int, int], asyncio.Lock] = defaultdict(asyncio.Lock)
         self._queue = asyncio.Lock()
@@ -179,8 +182,16 @@ class AgentRuntime:
                 connector_tools = ConnectorTools((), ())
                 if self.connectors is not None:
                     connector_tools = await self.connectors.hosted_tools(context)
+                skills: tuple[Skill, ...] = ()
+                if self.skills is not None:
+                    skills = await self.skills.mounted(context.scope)
                 agent = self._agent(
-                    context, settings, memory_context, composition, connector_tools
+                    context,
+                    settings,
+                    memory_context,
+                    composition,
+                    connector_tools,
+                    skills,
                 )
                 if self._queue.locked():
                     log.info(
@@ -281,20 +292,27 @@ class AgentRuntime:
         memory_context: str = "",
         composition: AgentComposition | None = None,
         connector_tools: ConnectorTools | None = None,
+        skills: tuple[Skill, ...] = (),
     ) -> Agent[None]:
         composition = composition or AgentComposition(None, ())
         connector_tools = connector_tools or ConnectorTools((), ())
         active = composition.active
         capabilities = active.version.capabilities if active else AGENT_CAPABILITIES
         instructions = self._instructions(
-            context, settings, memory_context, active, connector_tools.labels, capabilities
+            context,
+            settings,
+            memory_context,
+            active,
+            connector_tools.labels,
+            capabilities,
+            skills,
         )
-        tools = self._hosted_tools(capabilities)
+        tools = self._hosted_tools(capabilities, skills)
         tools.extend(connector_tools.tools)
         if settings.memory_enabled:
             tools.extend(self.memory.tools(context.scope))
         tools.extend(
-            self._specialist(item, context, settings, memory_context).as_tool(
+            self._specialist(item, context, settings, memory_context, skills).as_tool(
                 tool_name=f"agent_{item.profile.id}",
                 tool_description=(
                     f"Ask the {item.version.name} specialist for help when the task benefits "
@@ -320,6 +338,7 @@ class AgentRuntime:
         active: InstalledAgent | None,
         connector_labels: tuple[str, ...] = (),
         capabilities: tuple[AgentCapability, ...] | None = None,
+        skills: tuple[Skill, ...] = (),
     ) -> str:
         instructions = active.version.instructions if active else self.base_prompt
         capabilities = (
@@ -349,13 +368,23 @@ class AgentRuntime:
             )
         if "shell" in capabilities:
             instructions += (
-                "\n\nFiles you write under /mnt/data are sent to the user as Telegram documents. "
+                "\n\nThe hosted sandbox has unrestricted outbound internet access. "
+                "Files you write under /mnt/data are sent to the user as Telegram documents. "
                 "Put a folder there, or a zip, when they want more than one file."
+            )
+        if "shell" in capabilities and skills:
+            listed = ", ".join(item.name for item in skills)
+            instructions += (
+                f"\n\nHosted skills are mounted in the sandbox: {listed}. "
+                "Read a skill's SKILL.md when the task matches it."
             )
         return instructions
 
     @staticmethod
-    def _hosted_tools(capabilities: tuple[AgentCapability, ...]) -> list[Tool]:
+    def _hosted_tools(
+        capabilities: tuple[AgentCapability, ...],
+        skills: tuple[Skill, ...] = (),
+    ) -> list[Tool]:
         tools: list[Tool] = []
         if "web" in capabilities:
             tools.append(WebSearchTool(search_context_size="medium"))
@@ -375,17 +404,13 @@ class AgentRuntime:
                 )
             )
         if "shell" in capabilities:
-            tools.append(
-                ShellTool(
-                    environment=cast(
-                        Any,
-                        {
-                            "type": "container_auto",
-                            "network_policy": {"type": "disabled"},
-                        },
-                    )
-                )
-            )
+            environment: dict[str, Any] = {
+                "type": "container_auto",
+                "network_policy": {"type": "unrestricted"},
+            }
+            if skills:
+                environment["skills"] = hosted_skill_refs(skills)
+            tools.append(ShellTool(environment=cast(Any, environment)))
         return tools
 
     def _specialist(
@@ -394,9 +419,12 @@ class AgentRuntime:
         context: RequestContext,
         settings: ChatSettings,
         memory_context: str,
+        skills: tuple[Skill, ...] = (),
     ) -> Agent[None]:
-        instructions = self._instructions(context, settings, memory_context, installed)
-        tools = self._hosted_tools(installed.version.capabilities)
+        instructions = self._instructions(
+            context, settings, memory_context, installed, skills=skills
+        )
+        tools = self._hosted_tools(installed.version.capabilities, skills)
         return Agent(
             name=installed.version.name,
             instructions=instructions,

@@ -29,6 +29,7 @@ from .models import (
     MemoryCategory,
     Scope,
     ScopeKind,
+    Skill,
 )
 
 SCHEMA = """
@@ -206,6 +207,24 @@ ON connector_shares(chat_id, created_at);
 
 CREATE INDEX IF NOT EXISTS connector_shares_owner
 ON connector_shares(owner_id, kind, ref);
+
+CREATE TABLE IF NOT EXISTS skills (
+    id TEXT PRIMARY KEY,
+    scope_kind TEXT NOT NULL CHECK (scope_kind IN ('user', 'chat')),
+    scope_id INTEGER NOT NULL,
+    openai_skill_id TEXT NOT NULL UNIQUE,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL,
+    filename TEXT NOT NULL,
+    archive BLOB NOT NULL,
+    file_count INTEGER NOT NULL,
+    created_by INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (scope_kind, scope_id, name)
+);
+
+CREATE INDEX IF NOT EXISTS skills_scope
+ON skills(scope_kind, scope_id, created_at);
 
 CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
     content,
@@ -976,6 +995,78 @@ class Database:
             (connector_id, user_id),
         )
         return cursor.rowcount > 0
+
+    async def list_skills(self, scope: Scope) -> list[Skill]:
+        cursor = await self.conn.execute(
+            """SELECT id, scope_kind, scope_id, openai_skill_id, name, description, filename,
+                      file_count, created_by, created_at
+               FROM skills WHERE scope_kind = ? AND scope_id = ?
+               ORDER BY lower(name), created_at""",
+            (scope.kind, scope.id),
+        )
+        return [self._skill(row) for row in await cursor.fetchall()]
+
+    async def get_skill(self, scope: Scope, skill_id: str) -> Skill | None:
+        cursor = await self.conn.execute(
+            "SELECT * FROM skills WHERE id = ? AND scope_kind = ? AND scope_id = ?",
+            (skill_id, scope.kind, scope.id),
+        )
+        row = await cursor.fetchone()
+        return self._skill(row) if row else None
+
+    async def save_skill(self, skill: Skill) -> Skill:
+        await self._write(
+            """INSERT INTO skills (
+                   id, scope_kind, scope_id, openai_skill_id, name, description,
+                   filename, archive, file_count, created_by
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                skill.id,
+                skill.scope.kind,
+                skill.scope.id,
+                skill.openai_skill_id,
+                skill.name,
+                skill.description,
+                skill.filename,
+                skill.archive,
+                skill.file_count,
+                skill.created_by,
+            ),
+        )
+        saved = await self.get_skill(skill.scope, skill.id)
+        if saved is None:
+            raise LookupError("Skill not found.")
+        return saved
+
+    async def delete_skill(self, scope: Scope, skill_id: str) -> Skill | None:
+        current = await self.get_skill(scope, skill_id)
+        if current is None:
+            return None
+        await self._write(
+            "DELETE FROM skills WHERE id = ? AND scope_kind = ? AND scope_id = ?",
+            (skill_id, scope.kind, scope.id),
+        )
+        return current
+
+    @staticmethod
+    def _skill(row: aiosqlite.Row) -> Skill:
+        try:
+            raw_archive = row["archive"]
+        except IndexError:
+            raw_archive = None
+        archive = bytes(raw_archive) if raw_archive is not None else b""
+        return Skill(
+            id=cast(str, row["id"]),
+            scope=Scope(cast(ScopeKind, row["scope_kind"]), int(row["scope_id"])),
+            openai_skill_id=cast(str, row["openai_skill_id"]),
+            name=cast(str, row["name"]),
+            description=cast(str, row["description"]),
+            filename=cast(str, row["filename"]),
+            file_count=int(row["file_count"]),
+            created_by=int(row["created_by"]),
+            created_at=cast(str, row["created_at"]),
+            archive=archive,
+        )
 
     async def list_user_toolkits(self, user_id: int) -> list[str]:
         cursor = await self.conn.execute(

@@ -211,9 +211,23 @@ def test_settings_keyboard_adds_connectors_in_private() -> None:
     private_labels = [button.text for row in private.inline_keyboard for button in row]
     group_labels = [button.text for row in group.inline_keyboard for button in row]
     inspect_labels = [button.text for row in inspect.inline_keyboard for button in row]
-    assert private_labels == ["Model", "Reasoning", "Agent", "Connectors", "Memory"]
-    assert group_labels == ["Model", "Reasoning", "Agent", "Connectors", "Memory"]
-    assert inspect_labels == ["Connectors"]
+    assert private_labels == [
+        "Model",
+        "Reasoning",
+        "Agent",
+        "Connectors",
+        "Skills",
+        "Memory",
+    ]
+    assert group_labels == [
+        "Model",
+        "Reasoning",
+        "Agent",
+        "Connectors",
+        "Skills",
+        "Memory",
+    ]
+    assert inspect_labels == ["Connectors", "Skills"]
 
 
 def _group_message(chat_id: int, sender_id: int, message_id: int = 1) -> GroupMessage:

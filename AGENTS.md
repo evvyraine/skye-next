@@ -19,7 +19,7 @@ Skye's voice is calm, short, warm, and grounded. She is female. Identity and ton
 ## What we own
 
 - Telegram identity, permissions, updates, buttons, streaming, and files
-- Durable product data: settings, allowlist, memories, custom agents, connectors
+- Durable product data: settings, allowlist, memories, custom agents, connectors, skills
 - Safe composition of the active agent and its tools
 - Reliability, observability, and lifecycle
 
@@ -27,13 +27,14 @@ We do not own a model loop, a provider abstraction, billing, subscriptions, a we
 
 ## Core decisions
 
-- **One provider.** OpenAI Responses API through `openai-agents`. Every normal chat turn is `Agent` + `Runner.run_streamed()`. Use the official `openai` client only for resource lifecycle (conversations, files). No Chat Completions fallback. No second-provider interface until a second real provider exists.
+- **One provider.** OpenAI Responses API through `openai-agents`. Every normal chat turn is `Agent` + `Runner.run_streamed()`. Use the official `openai` client only for resource lifecycle (conversations, files, skills). No Chat Completions fallback. No second-provider interface until a second real provider exists.
 - **Small model catalog**, code-owned: Luna (`gpt-5.6-luna`, default), Terra (`gpt-5.6-terra`), Sol (`gpt-5.6-sol`).
 - **No Mini App.** Settings and management are inline-keyboard messages edited in place. Callback data is a short action plus an opaque id — never JSON, never trusted client state.
 - **Connectors are per user.** Hosted apps connect through Composio; custom HTTPS MCP is stored locally. A group run receives a connector only after the owner explicitly shares that one item with that group. The owner or a group admin can revoke the share.
 - **Explicit composition.** One typed app container, one startup function. Features expose services; they do not register themselves.
 - **Two memories, never mixed.** OpenAI `conversation_id` is the working context for a Telegram thread — send only the new turn; `/reset` starts a new conversation. Skye memories are small, inspectable, scoped facts (`remember` / `recall` / `forget`). Private memories are `scope=user`. Group memories are `scope=chat`. A group run never sees a participant's private memories. Never combine an Agents SDK `Session` with `conversation_id` on the same run. The local database stores the OpenAI conversation id, not a duplicate transcript.
-- **Hosted execution only.** Shell never runs on the bot host. `ShellTool` uses `container_auto` with networking disabled. Never pass bot secrets into that container. Web search and image generation/editing are native hosted tools; users ask in natural language.
+- **Hosted execution only.** Shell never runs on the bot host. `ShellTool` uses `container_auto` with unrestricted outbound network access. Never pass bot secrets into that container. Web search and image generation/editing are native hosted tools; users ask in natural language.
+- **Skills are data.** Users upload a zip bundle or a `SKILL.md` file; every file in the zip is stored locally and sent together to OpenAI `/v1/skills`. Mount them on hosted shell as `skill_reference`. Delete removes both the local copy and the OpenAI skill. Skills are scoped like memories: private skills stay `scope=user`, group skills stay `scope=chat`.
 - **Custom agents are data**, not Python: name, description, instructions, optional model, hosted capabilities, visibility. Users cannot upload function tools. Sharing pins an immutable published version; later edits never change an imported install. Default orchestration is manager-style: Skye is the root, specialists are `Agent.as_tool()`. Selecting an agent as active makes that profile the root.
 - **Access is deny-by-default.** Allowed if the sender is the owner, the private user is allowlisted, or the current group is allowlisted. A ban beats every allow except the immutable owner. Allowlisting a group grants access only inside that group.
 - **Groups stay quiet** unless the bot is mentioned, replied to, invoked by command, or named in the text. The latest ~200 messages per topic are attached as untrusted user content, never as higher-priority instructions. Forum topics get their own conversation state but share the group's settings and group memory. Ignore Telegram reply-only thread ids.

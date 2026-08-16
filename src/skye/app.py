@@ -19,6 +19,7 @@ from .db import Database
 from .group_context import GroupContextService
 from .memory import MemoryService
 from .runtime import AgentRuntime
+from .skills import SkillService
 from .telegram import COMMANDS, TelegramApp, UpdateMiddleware, replay_pending
 
 log = structlog.get_logger()
@@ -71,6 +72,7 @@ async def run() -> None:
     groups = GroupContextService(config, database, bot)
     attachments = AttachmentService(config, bot, client)
     access = AccessService(database, config.skye_owner_ids)
+    skills = SkillService(database, client, config.skye_max_attachment_bytes)
     runtime = AgentRuntime(
         config,
         conversations,
@@ -79,6 +81,7 @@ async def run() -> None:
         custom_agents,
         connectors,
         client,
+        skills,
     )
     telegram = TelegramApp(
         config,
@@ -92,6 +95,7 @@ async def run() -> None:
         groups,
         attachments,
         runtime,
+        skills,
     )
     dispatcher.update.outer_middleware(UpdateMiddleware(database, groups))
     dispatcher.include_router(telegram.router)

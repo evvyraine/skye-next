@@ -25,6 +25,7 @@ from skye.models import (
     CustomConnector,
     Memory,
     Scope,
+    Skill,
 )
 from skye.rich import RichMessages
 
@@ -119,10 +120,11 @@ def test_reasoning_chooser_uses_a_title_instead_of_the_settings_table() -> None:
     assert all(not isinstance(block, InputRichBlockTable) for block in message.blocks)
 
 
-def test_settings_can_show_connector_count() -> None:
+def test_settings_can_show_connector_and_skill_counts() -> None:
     message = RichMessages.settings(
         ChatSettings(model="gpt-5.6-sol", reasoning="high"),
         connector_count=2,
+        skill_count=1,
     )
 
     assert message.blocks
@@ -130,6 +132,8 @@ def test_settings_can_show_connector_count() -> None:
     assert isinstance(table, InputRichBlockTable)
     assert table.cells[4][0].text == "Connectors"
     assert table.cells[4][1].text == "2 connected"
+    assert table.cells[5][0].text == "Skills"
+    assert table.cells[5][1].text == "1 uploaded"
 
 
 def test_connectors_screen_lists_apps_and_custom_servers() -> None:
@@ -162,6 +166,32 @@ def test_connectors_screen_lists_apps_and_custom_servers() -> None:
     assert isinstance(custom_table, InputRichBlockTable)
     assert custom_table.cells[1][1].text == "https://example.com/mcp"
     assert "secret" not in custom_table.cells[1][1].text
+
+
+def test_skills_screen_lists_uploaded_bundles() -> None:
+    skill = Skill(
+        "abc",
+        Scope("user", 1),
+        "skill_1",
+        "basic-math",
+        "Add or multiply numbers.",
+        "basic-math.zip",
+        2,
+        1,
+        "now",
+    )
+    listing = RichMessages.skills((skill,))
+    detail = RichMessages.skill(skill, files=("basic-math/SKILL.md", "basic-math/calculate.py"))
+
+    assert listing.blocks
+    table = listing.blocks[2]
+    assert isinstance(table, InputRichBlockTable)
+    assert table.cells[1][0].text == "basic-math"
+    assert table.cells[1][1].text == "2"
+    assert detail.blocks
+    heading = detail.blocks[0]
+    assert isinstance(heading, InputRichBlockSectionHeading)
+    assert heading.text == "basic-math"
 
 
 def test_memory_screen_uses_plain_rich_cells() -> None:

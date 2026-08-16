@@ -52,6 +52,7 @@ from .models import (
 )
 from .rich import RichMessages
 from .runtime import AgentRuntime, RunOutput
+from .skills import SkillError, SkillPanel, SkillService, SkillWizard
 from .telegram_threads import thread_id
 
 log = structlog.get_logger()
@@ -113,6 +114,7 @@ class TelegramApp:
         groups: GroupContextService,
         attachments: AttachmentService,
         runtime: AgentRuntime,
+        skills: SkillService,
     ) -> None:
         self.config = config
         self.bot = bot
@@ -125,8 +127,10 @@ class TelegramApp:
         self.groups = groups
         self.attachments = attachments
         self.runtime = runtime
+        self.skill_service = skills
         self.rich = RichMessages(bot)
         self.connectors = ConnectorPanel(connectors, self.rich, bot)
+        self.skill_panel = SkillPanel(skills, self.rich, bot)
         self.router = Router(name="skye")
         self._register()
 
@@ -140,6 +144,7 @@ class TelegramApp:
         self.router.message.register(self.admin, Command("admin"))
         self.router.callback_query.register(self.settings_callback, F.data.startswith("settings:"))
         self.router.callback_query.register(self.connectors_callback, F.data.startswith("conn:"))
+        self.router.callback_query.register(self.skills_callback, F.data.startswith("skill:"))
         self.router.callback_query.register(self.agents_callback, F.data.startswith("agents:"))
         self.router.callback_query.register(self.admin_callback, F.data.startswith("admin:"))
         self.router.message.register(
@@ -161,6 +166,7 @@ class TelegramApp:
                 ConnectorWizard.edit,
             ),
         )
+        self.router.message.register(self.skill_wizard, StateFilter(SkillWizard.upload))
         self.router.message.register(self.admin_prompt, StateFilter(AdminPrompt.target))
         self.router.message.register(self.chat)
 
@@ -203,8 +209,8 @@ class TelegramApp:
         await self.rich.send(
             message,
             "I can chat, search the web, work with images, "
-            "run code in an isolated container, and use apps you connect.\n\n"
-            "/settings — model, reasoning, agent, memory, and connectors\n\n"
+            "run code in an isolated container, and use apps and skills you add.\n\n"
+            "/settings — model, reasoning, agent, memory, connectors, and skills\n\n"
             "/agents — create, install, select, and share agents\n\n"
             "/reset — new conversation\n\n"
             "/stop — cancel the active task\n\n"
@@ -222,14 +228,12 @@ class TelegramApp:
             context.scope, current.active_agent_id
         )
         private = context.chat_type == "private"
-        connector_count = (
-            await self.connector_service.connected_count(context.user_id)
-            if private
-            else await self.connector_service.group_share_count(context.chat_id)
-        )
+        connector_count, skill_count = await self._settings_counts(context, private)
         await self.rich.send(
             message,
-            self.rich.settings(current, agent_name, connector_count=connector_count),
+            self.rich.settings(
+                current, agent_name, connector_count=connector_count, skill_count=skill_count
+            ),
             reply_markup=self._settings_keyboard(editable, private=private),
         )
 
@@ -277,6 +281,10 @@ class TelegramApp:
             except ConnectorError as error:
                 await callback.answer(str(error), show_alert=True)
                 return
+        elif action == ["settings", "skills"]:
+            await self.skill_panel.show_home(
+                callback.message, context, editable=editable
+            )
         elif action == ["settings", "memory"]:
             memories = await self.database.memories(context.scope, 10)
             await self.rich.edit(
@@ -367,6 +375,39 @@ class TelegramApp:
             return
         await callback.answer()
 
+    async def skills_callback(self, callback: CallbackQuery, state: FSMContext) -> None:
+        if not callback.message or not isinstance(callback.message, Message) or not callback.data:
+            await callback.answer()
+            return
+        context = self._context(callback.message, callback.from_user)
+        if context is None or not await self.access.allowed(context):
+            await callback.answer("Access denied", show_alert=True)
+            return
+        action = callback.data.split(":")[1:]
+        editable = await self._can_edit(context)
+        try:
+            await self.skill_panel.handle_callback(
+                callback.message, context, action, state, editable=editable
+            )
+        except (SkillError, PermissionError, LookupError) as error:
+            await callback.answer(str(error), show_alert=True)
+            return
+        await callback.answer()
+
+    async def skill_wizard(self, message: Message, state: FSMContext) -> None:
+        context = self._context(message)
+        if context is None or not await self._require_access(message, context):
+            await state.clear()
+            return
+        if not await self._can_edit(context):
+            await state.clear()
+            await self.rich.send(message, "Only chat administrators can add skills here.")
+            return
+        try:
+            await self.skill_panel.handle_wizard(message, context, state)
+        except SkillError as error:
+            await self.rich.send(message, str(error))
+
     async def connector_wizard(self, message: Message, state: FSMContext) -> None:
         context = self._context(message)
         if context is None or not await self._require_access(message, context):
@@ -383,16 +424,25 @@ class TelegramApp:
         editable: bool,
     ) -> None:
         private = context.chat_type == "private"
+        connector_count, skill_count = await self._settings_counts(context, private)
+        await self.rich.edit(
+            message,
+            self.rich.settings(
+                current, agent_name, connector_count=connector_count, skill_count=skill_count
+            ),
+            reply_markup=self._settings_keyboard(editable, private=private),
+        )
+
+    async def _settings_counts(
+        self, context: RequestContext, private: bool
+    ) -> tuple[int, int]:
         connector_count = (
             await self.connector_service.connected_count(context.user_id)
             if private
             else await self.connector_service.group_share_count(context.chat_id)
         )
-        await self.rich.edit(
-            message,
-            self.rich.settings(current, agent_name, connector_count=connector_count),
-            reply_markup=self._settings_keyboard(editable, private=private),
-        )
+        skill_count = len(await self.skill_service.list(context.scope))
+        return connector_count, skill_count
 
     async def agents(self, message: Message, state: FSMContext) -> None:
         context = self._context(message)
@@ -1206,7 +1256,8 @@ class TelegramApp:
         if not editable:
             return InlineKeyboardMarkup(
                 inline_keyboard=[
-                    [InlineKeyboardButton(text="Connectors", callback_data="settings:connectors")]
+                    [InlineKeyboardButton(text="Connectors", callback_data="settings:connectors")],
+                    [InlineKeyboardButton(text="Skills", callback_data="settings:skills")],
                 ]
             )
         rows = [
@@ -1218,7 +1269,10 @@ class TelegramApp:
                 InlineKeyboardButton(text="Agent", callback_data="settings:agents"),
                 InlineKeyboardButton(text="Connectors", callback_data="settings:connectors"),
             ],
-            [InlineKeyboardButton(text="Memory", callback_data="settings:memory")],
+            [
+                InlineKeyboardButton(text="Skills", callback_data="settings:skills"),
+                InlineKeyboardButton(text="Memory", callback_data="settings:memory"),
+            ],
         ]
         return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -1447,7 +1501,7 @@ PRIVACY_URL = "https://ai.skye-bot.com/privacy"
 COMMANDS = [
     BotCommand(command="start", description="Start Skye"),
     BotCommand(command="help", description="Show capabilities"),
-    BotCommand(command="settings", description="Model, agent, memory, and connectors"),
+    BotCommand(command="settings", description="Model, agent, memory, connectors, and skills"),
     BotCommand(command="agents", description="Create and manage agents"),
     BotCommand(command="reset", description="Start a new conversation"),
     BotCommand(command="stop", description="Stop the active task"),

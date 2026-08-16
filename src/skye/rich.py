@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from pathlib import PurePosixPath
 from urllib.parse import urlsplit
 
 from aiogram import Bot
@@ -33,6 +34,7 @@ from .models import (
     InstalledAgent,
     KnownGroup,
     Memory,
+    Skill,
 )
 from .telegram_threads import api_thread_id, reply_parameters
 
@@ -103,6 +105,7 @@ class RichMessages:
         agent_name: str = "Skye",
         *,
         connector_count: int | None = None,
+        skill_count: int | None = None,
     ) -> InputRichMessage:
         def cell(text: str, *, header: bool = False) -> RichBlockTableCell:
             return RichBlockTableCell(
@@ -123,6 +126,13 @@ class RichMessages:
                 [
                     cell("Connectors"),
                     cell(f"{connector_count} connected" if connector_count else "None"),
+                ]
+            )
+        if skill_count is not None:
+            rows.append(
+                [
+                    cell("Skills"),
+                    cell(f"{skill_count} uploaded" if skill_count else "None"),
                 ]
             )
         rows.append([cell("Memory"), cell("On" if settings.memory_enabled else "Off")])
@@ -523,6 +533,60 @@ class RichMessages:
                 InputRichBlockSectionHeading(text=f"Preview · {name}", size=2),
                 InputRichBlockParagraph(text=_safe_url(url)),
                 InputRichBlockParagraph(text=f"Headers: {header_names}"),
+            ]
+        )
+
+    @staticmethod
+    def skills(skills: Sequence[Skill]) -> InputRichMessage:
+        blocks: list[InputRichBlockUnion] = [
+            InputRichBlockSectionHeading(text="Skills", size=2),
+            InputRichBlockParagraph(
+                text=(
+                    "Hosted skills mounted in the sandbox for this chat. "
+                    "Upload a zip bundle or a SKILL.md file."
+                )
+            ),
+        ]
+        if not skills:
+            blocks.append(InputRichBlockParagraph(text="No skills uploaded yet."))
+            return InputRichMessage(blocks=blocks)
+
+        def cell(text: str, *, header: bool = False) -> RichBlockTableCell:
+            return RichBlockTableCell(
+                text=text,
+                is_header=header or None,
+                align="left",
+                valign="middle",
+            )
+
+        rows = [
+            [cell("Skill", header=True), cell("Files", header=True)],
+        ]
+        rows.extend([cell(item.name), cell(str(item.file_count))] for item in skills)
+        blocks.append(InputRichBlockTable(cells=rows, is_bordered=True, is_striped=True))
+        return InputRichMessage(blocks=blocks)
+
+    @staticmethod
+    def skill(skill: Skill, *, files: Sequence[str] = ()) -> InputRichMessage:
+        def cell(text: str) -> RichBlockTableCell:
+            return RichBlockTableCell(text=text, align="left", valign="top")
+
+        names = [PurePosixPath(path).name for path in files[:12]]
+        listed = ", ".join(names) if names else "None"
+        if len(files) > 12:
+            listed += f", +{len(files) - 12} more"
+        return InputRichMessage(
+            blocks=[
+                InputRichBlockSectionHeading(text=skill.name, size=2),
+                InputRichBlockParagraph(text=skill.description),
+                InputRichBlockTable(
+                    cells=[
+                        [cell("Files"), cell(str(skill.file_count))],
+                        [cell("Bundle"), cell(listed)],
+                    ],
+                    is_bordered=True,
+                    is_striped=True,
+                ),
             ]
         )
 

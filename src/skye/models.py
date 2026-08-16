@@ -85,6 +85,20 @@ class InstalledAgent:
 
 
 @dataclass(frozen=True, slots=True)
+class Skill:
+    id: str
+    scope: Scope
+    openai_skill_id: str
+    name: str
+    description: str
+    filename: str
+    file_count: int
+    created_by: int
+    created_at: str
+    archive: bytes = b""
+
+
+@dataclass(frozen=True, slots=True)
 class CustomConnector:
     id: str
     user_id: int

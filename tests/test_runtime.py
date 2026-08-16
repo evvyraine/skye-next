@@ -20,6 +20,7 @@ from skye.models import (
     InstalledAgent,
     RequestContext,
     Scope,
+    Skill,
 )
 from skye.runtime import AgentRuntime, retry_after
 
@@ -58,7 +59,7 @@ def test_agent_uses_only_hosted_capabilities() -> None:
     assert shell.executor is None
     assert shell.environment == {
         "type": "container_auto",
-        "network_policy": {"type": "disabled"},
+        "network_policy": {"type": "unrestricted"},
     }
 
 
@@ -154,6 +155,7 @@ def test_shell_file_note_follows_capabilities() -> None:
     )
 
     assert "/mnt/data" in cast(str, with_shell.instructions)
+    assert "unrestricted outbound internet access" in cast(str, with_shell.instructions)
     assert "/mnt/data" not in cast(str, without_shell.instructions)
 
 
@@ -204,6 +206,48 @@ def test_active_agent_and_specialist_are_composed() -> None:
     assert nested.name == "Coder"
     assert "You are Skye." not in cast(str, nested.instructions)
     assert isinstance(nested.tools[0], ShellTool)
+
+
+def test_shell_mounts_uploaded_skills() -> None:
+    memory = MemoryService(cast(Any, None))
+    runtime = AgentRuntime(config(), cast(Any, None), memory, "You are Skye.")
+    skill = Skill(
+        "local1",
+        Scope("user", 1),
+        "skill_abc",
+        "basic-math",
+        "Add or multiply numbers.",
+        "basic-math.zip",
+        2,
+        1,
+        "now",
+    )
+    agent = runtime._agent(
+        RequestContext(1, "private", 1),
+        ChatSettings("gpt-5.6-luna", "medium", memory_enabled=False),
+        skills=(skill,),
+    )
+    specialist = installed_agent("b2", "Coder", ("shell",))
+    composed = runtime._agent(
+        RequestContext(1, "private", 1),
+        ChatSettings("gpt-5.6-luna", "medium", memory_enabled=False, active_agent_id="a1"),
+        composition=AgentComposition(installed_agent("a1", "Researcher", ("web",)), (specialist,)),
+        skills=(skill,),
+    )
+
+    shell = cast(ShellTool, agent.tools[2])
+    assert shell.environment == {
+        "type": "container_auto",
+        "network_policy": {"type": "unrestricted"},
+        "skills": [{"type": "skill_reference", "skill_id": "skill_abc"}],
+    }
+    assert "basic-math" in cast(str, agent.instructions)
+    nested = cast(Any, cast(FunctionTool, composed.tools[-1])._agent_instance)
+    nested_shell = cast(ShellTool, nested.tools[0])
+    assert nested_shell.environment is not None
+    assert nested_shell.environment["skills"] == [
+        {"type": "skill_reference", "skill_id": "skill_abc"}
+    ]
 
 
 def _request() -> httpx.Request:
