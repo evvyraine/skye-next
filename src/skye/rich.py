@@ -4,6 +4,7 @@ from collections.abc import Mapping, Sequence
 from urllib.parse import urlsplit
 
 from aiogram import Bot
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import (
     BufferedInputFile,
     InlineKeyboardMarkup,
@@ -61,12 +62,16 @@ class RichMessages:
         content: str | InputRichMessage,
         reply_markup: InlineKeyboardMarkup | None = None,
     ) -> None:
-        await self.bot.edit_message_text(
-            chat_id=message.chat.id,
-            message_id=message.message_id,
-            rich_message=self._content(content),
-            reply_markup=reply_markup,
-        )
+        try:
+            await self.bot.edit_message_text(
+                chat_id=message.chat.id,
+                message_id=message.message_id,
+                rich_message=self._content(content),
+                reply_markup=reply_markup,
+            )
+        except TelegramBadRequest as error:
+            if "message is not modified" not in error.message.lower():
+                raise
 
     async def draft(self, target: Message, text: str | None = None) -> None:
         content = (

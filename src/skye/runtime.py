@@ -4,11 +4,13 @@ import asyncio
 import base64
 import hashlib
 import hmac
+import re
 from collections import defaultdict
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, cast
 
+import structlog
 from agents import (
     Agent,
     ImageGenerationTool,
@@ -21,6 +23,7 @@ from agents import (
 from agents.items import TResponseInputItem
 from agents.result import RunResultStreaming
 from agents.stream_events import RawResponsesStreamEvent
+from openai import APIError, RateLimitError
 from openai.types.responses.response_text_delta_event import ResponseTextDeltaEvent
 
 from .config import Settings
@@ -30,13 +33,97 @@ from .custom_agents import AGENT_CAPABILITIES, AgentComposition, CustomAgentServ
 from .memory import MemoryService
 from .models import AgentCapability, ChatSettings, InstalledAgent, RequestContext
 
+log = structlog.get_logger()
 TextCallback = Callable[[str], Awaitable[None]]
+_RETRY_IN = re.compile(r"try again in\s+([0-9]+(?:\.[0-9]+)?)\s*s", re.IGNORECASE)
+_MIN_RETRY_SECONDS = 1.0
+_MAX_RETRY_SECONDS = 120.0
 
 
 @dataclass(frozen=True, slots=True)
 class RunOutput:
     text: str
     images: tuple[bytes, ...]
+
+
+@dataclass(slots=True)
+class _ActiveRun:
+    cancel: asyncio.Event = field(default_factory=asyncio.Event)
+    stream: RunResultStreaming | None = None
+
+
+def retry_after(error: BaseException) -> float | None:
+    current: BaseException | None = error
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        delay = _retry_after_one(current)
+        if delay is not None:
+            return delay
+        current = current.__cause__ or current.__context__
+    return None
+
+
+def _retry_after_one(error: BaseException) -> float | None:
+    if not isinstance(error, APIError):
+        return None
+    text = str(error).lower()
+    status = getattr(error, "status_code", None)
+    rate_limited = (
+        isinstance(error, RateLimitError)
+        or status == 429
+        or "rate limit" in text
+        or "tokens per min" in text
+    )
+    if rate_limited:
+        return _bounded(_header_delay(error) or _message_delay(error) or 5.0)
+    if _openai_code(error) == "conversation_locked" or "conversation_locked" in text:
+        return _bounded(_message_delay(error) or 3.0)
+    return None
+
+
+def _openai_code(error: APIError) -> str | None:
+    if isinstance(error.code, str) and error.code:
+        return error.code
+    body = error.body
+    if not isinstance(body, dict):
+        return None
+    nested = body.get("error")
+    if isinstance(nested, dict):
+        code = nested.get("code")
+        if isinstance(code, str) and code:
+            return code
+    code = body.get("code")
+    return code if isinstance(code, str) and code else None
+
+
+def _header_delay(error: BaseException) -> float | None:
+    response = getattr(error, "response", None)
+    headers = getattr(response, "headers", None)
+    if headers is None:
+        return None
+    retry_ms = headers.get("retry-after-ms")
+    if retry_ms:
+        try:
+            return max(float(retry_ms) / 1000.0, 0.0)
+        except ValueError:
+            pass
+    retry_after_header = headers.get("retry-after")
+    if retry_after_header:
+        try:
+            return max(float(retry_after_header), 0.0)
+        except ValueError:
+            pass
+    return None
+
+
+def _message_delay(error: BaseException) -> float | None:
+    match = _RETRY_IN.search(str(error))
+    return float(match.group(1)) if match else None
+
+
+def _bounded(delay: float) -> float:
+    return min(max(delay + 0.25, _MIN_RETRY_SECONDS), _MAX_RETRY_SECONDS)
 
 
 class AgentRuntime:
@@ -56,7 +143,8 @@ class AgentRuntime:
         self.connectors = connectors
         self.base_prompt = base_prompt.strip()
         self._locks: defaultdict[tuple[int, int], asyncio.Lock] = defaultdict(asyncio.Lock)
-        self._active: dict[tuple[int, int], RunResultStreaming] = {}
+        self._queue = asyncio.Lock()
+        self._active: dict[tuple[int, int], _ActiveRun] = {}
 
     async def run(
         self,
@@ -67,49 +155,112 @@ class AgentRuntime:
     ) -> RunOutput:
         key = context.chat_id, context.thread_id
         async with self._locks[key]:
-            conversation_id = await self.conversations.get_or_create(*key)
-            memory_context = ""
-            if settings.memory_enabled:
-                memory_context = await self.memory.context(context.scope, self._query(user_input))
-            composition = AgentComposition(None, ())
-            if self.custom_agents is not None:
-                composition = await self.custom_agents.composition(
-                    context.scope, settings.active_agent_id
+            active = _ActiveRun()
+            self._active[key] = active
+            try:
+                if active.cancel.is_set():
+                    raise asyncio.CancelledError
+                conversation_id = await self.conversations.get_or_create(*key)
+                memory_context = ""
+                if settings.memory_enabled:
+                    memory_context = await self.memory.context(
+                        context.scope, self._query(user_input)
+                    )
+                composition = AgentComposition(None, ())
+                if self.custom_agents is not None:
+                    composition = await self.custom_agents.composition(
+                        context.scope, settings.active_agent_id
+                    )
+                connector_tools = ConnectorTools((), ())
+                if self.connectors is not None:
+                    connector_tools = await self.connectors.hosted_tools(context)
+                agent = self._agent(
+                    context, settings, memory_context, composition, connector_tools
                 )
-            connector_tools = ConnectorTools((), ())
-            if self.connectors is not None:
-                connector_tools = await self.connectors.hosted_tools(context)
-            agent = self._agent(
-                context, settings, memory_context, composition, connector_tools
-            )
+                if self._queue.locked():
+                    log.info(
+                        "openai_run_queued",
+                        chat_id=context.chat_id,
+                        thread_id=context.thread_id,
+                    )
+                async with self._queue:
+                    if active.cancel.is_set():
+                        raise asyncio.CancelledError
+                    async with asyncio.timeout(self.config.skye_run_timeout_seconds):
+                        return await self._run_stream(
+                            agent, user_input, conversation_id, on_text, active, context
+                        )
+            finally:
+                self._active.pop(key, None)
+
+    def stop(self, chat_id: int, thread_id: int) -> bool:
+        active = self._active.get((chat_id, thread_id))
+        if active is None:
+            return False
+        active.cancel.set()
+        if active.stream is not None:
+            active.stream.cancel()
+        return True
+
+    async def _run_stream(
+        self,
+        agent: Agent[None],
+        user_input: str | list[TResponseInputItem],
+        conversation_id: str,
+        on_text: TextCallback,
+        active: _ActiveRun,
+        context: RequestContext,
+    ) -> RunOutput:
+        while True:
+            if active.cancel.is_set():
+                raise asyncio.CancelledError
             result = Runner.run_streamed(
                 agent,
                 user_input,
                 max_turns=self.config.skye_max_turns,
                 conversation_id=conversation_id,
             )
-            self._active[key] = result
+            active.stream = result
             text = ""
             try:
-                async with asyncio.timeout(self.config.skye_run_timeout_seconds):
-                    async for event in result.stream_events():
-                        if isinstance(event, RawResponsesStreamEvent) and isinstance(
-                            event.data, ResponseTextDeltaEvent
-                        ):
-                            text += event.data.delta
-                            await on_text(text)
+                async for event in result.stream_events():
+                    if active.cancel.is_set():
+                        result.cancel()
+                        raise asyncio.CancelledError
+                    if isinstance(event, RawResponsesStreamEvent) and isinstance(
+                        event.data, ResponseTextDeltaEvent
+                    ):
+                        text += event.data.delta
+                        await on_text(text)
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                delay = retry_after(error)
+                if delay is None:
+                    raise
+                log.info(
+                    "openai_run_retry",
+                    chat_id=context.chat_id,
+                    thread_id=context.thread_id,
+                    error=type(error).__name__,
+                    wait_seconds=round(delay, 3),
+                )
+                await self._delay(active, delay)
+                continue
             finally:
-                self._active.pop(key, None)
+                active.stream = None
 
             final = result.final_output if isinstance(result.final_output, str) else text
             return RunOutput(final.strip(), self._images(result))
 
-    def stop(self, chat_id: int, thread_id: int) -> bool:
-        result = self._active.get((chat_id, thread_id))
-        if result is None:
-            return False
-        result.cancel()
-        return True
+    async def _delay(self, active: _ActiveRun, seconds: float) -> None:
+        if active.cancel.is_set():
+            raise asyncio.CancelledError
+        try:
+            await asyncio.wait_for(active.cancel.wait(), timeout=seconds)
+        except TimeoutError:
+            return
+        raise asyncio.CancelledError
 
     def _agent(
         self,

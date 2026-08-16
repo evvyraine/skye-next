@@ -50,7 +50,7 @@ We do not own a model loop, a provider abstraction, billing, subscriptions, a we
 - All outbound Telegram text goes through the rich-message boundary. Stream drafts in private chats; placeholder + edit in groups. Throttle edits.
 - Bot copy: calm, short, sentence case. No "oops", no cheerleading, no corporate filler.
 - Assemble volatile context per run (identity, active agent, memories, tools that are actually attached). State each rule once. Never describe a tool that is not present. Keep the stable prompt prefix first.
-- Persist every Telegram `update_id` before work; replay `pending` after restart. Serialize runs per `(chat_id, thread_id)`. `/stop` cancels the active run.
+- Persist every Telegram `update_id` before work; replay `pending` after restart. Serialize runs per `(chat_id, thread_id)`. OpenAI runs wait in one process-wide queue and retry rate limits and conversation locks until the run timeout. `/stop` cancels the active run.
 - Logs are structured JSON. Redact tokens, prompts, memory contents, and file bodies. Tracing is opt-in. Send a privacy-preserving `safety_identifier` derived with HMAC from the Telegram user id — never the raw id.
 - `/reset` replaces working conversation state and keeps long-term memories. Memory deletion is a separate destructive action.
 

@@ -1,5 +1,7 @@
 from unittest.mock import AsyncMock
 
+import pytest
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import (
     Chat,
     InputMediaPhoto,
@@ -228,3 +230,42 @@ async def test_send_ignores_reply_only_thread_id_but_still_replies() -> None:
     kwargs = bot.send_rich_message.await_args.kwargs
     assert kwargs["message_thread_id"] is None
     assert kwargs["reply_parameters"].message_id == 21
+
+
+async def test_edit_ignores_unchanged_content() -> None:
+    bot = AsyncMock()
+    bot.edit_message_text.side_effect = TelegramBadRequest(
+        method=AsyncMock(),
+        message=(
+            "Bad Request: message is not modified: specified new message content "
+            "and reply markup are exactly the same as a current content and reply "
+            "markup of the message"
+        ),
+    )
+    incoming = Message(
+        message_id=8,
+        date=0,
+        chat=Chat(id=-100, type="supergroup", title="Skye Lab"),
+        from_user=User(id=42, is_bot=False, first_name="Alice"),
+        text="Thinking…",
+    )
+
+    await RichMessages(bot).edit(incoming, "Thinking…")
+
+
+async def test_edit_still_raises_other_bad_requests() -> None:
+    bot = AsyncMock()
+    bot.edit_message_text.side_effect = TelegramBadRequest(
+        method=AsyncMock(),
+        message="Bad Request: message to edit not found",
+    )
+    incoming = Message(
+        message_id=8,
+        date=0,
+        chat=Chat(id=-100, type="supergroup", title="Skye Lab"),
+        from_user=User(id=42, is_bot=False, first_name="Alice"),
+        text="Thinking…",
+    )
+
+    with pytest.raises(TelegramBadRequest):
+        await RichMessages(bot).edit(incoming, "Done.")
