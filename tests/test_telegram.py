@@ -9,6 +9,7 @@ from aiogram.types import (
     Chat,
     InlineKeyboardMarkup,
     InputRichBlockTable,
+    InputRichMessage,
     LinkPreviewOptions,
     Message,
     PhotoSize,
@@ -266,6 +267,7 @@ async def test_deliver_sends_container_files_after_the_text() -> None:
         output=RichMessages.output,
         send=AsyncMock(),
         edit=AsyncMock(),
+        send_images=AsyncMock(),
         send_documents=AsyncMock(),
     )
     incoming = private_message("make a file")
@@ -275,6 +277,25 @@ async def test_deliver_sends_container_files_after_the_text() -> None:
 
     app.rich.send.assert_awaited_once()
     app.rich.send_documents.assert_awaited_once_with(incoming, files)
+
+
+async def test_deliver_sends_generated_images_after_the_text() -> None:
+    app = telegram_app()
+    app.rich = SimpleNamespace(
+        output=RichMessages.output,
+        send=AsyncMock(),
+        edit=AsyncMock(),
+        send_images=AsyncMock(),
+        send_documents=AsyncMock(),
+    )
+    incoming = private_message("make an image")
+    images = (b"png",)
+
+    await app._deliver(incoming, None, RunOutput("Here it is.", images))
+
+    app.rich.send.assert_awaited_once_with(incoming, InputRichMessage(markdown="Here it is."))
+    app.rich.send_images.assert_awaited_once_with(incoming, images)
+    app.rich.send_documents.assert_not_awaited()
 
 
 def private_message(

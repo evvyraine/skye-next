@@ -1032,10 +1032,12 @@ class TelegramApp:
     ) -> None:
         chunks = self._chunks(output.text)
         chunks = chunks or [""]
-        first = self.rich.output(chunks[0], output.images)
+        first = self.rich.output(chunks[0])
         await self._finish(target, placeholder, first)
         for chunk in chunks[1:]:
             await self.rich.send(target, self.rich.output(chunk))
+        if output.images:
+            await self.rich.send_images(target, output.images)
         if output.files:
             await self.rich.send_documents(target, output.files)
 

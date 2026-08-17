@@ -9,14 +9,12 @@ from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import (
     BufferedInputFile,
     InlineKeyboardMarkup,
-    InputMediaPhoto,
     InputRichBlockParagraph,
     InputRichBlockSectionHeading,
     InputRichBlockTable,
     InputRichBlockThinking,
     InputRichBlockUnion,
     InputRichMessage,
-    InputRichMessageMedia,
     Message,
     RichBlockTableCell,
 )
@@ -84,6 +82,15 @@ class RichMessages:
                 document=BufferedInputFile(item.data, filename=item.filename),
                 reply_parameters=reply_parameters(target),
                 disable_content_type_detection=True,
+            )
+
+    async def send_images(self, target: Message, images: Sequence[bytes]) -> None:
+        for index, image in enumerate(images, start=1):
+            await self.bot.send_photo(
+                chat_id=target.chat.id,
+                message_thread_id=api_thread_id(target),
+                photo=BufferedInputFile(image, filename=f"skye-{index}.png"),
+                reply_parameters=reply_parameters(target),
             )
 
     async def draft(self, target: Message, text: str | None = None) -> None:
@@ -617,22 +624,8 @@ class RichMessages:
         return InputRichMessage(blocks=blocks)
 
     @staticmethod
-    def output(markdown: str, images: Sequence[bytes] = ()) -> InputRichMessage:
-        media = [
-            InputRichMessageMedia(
-                id=f"image_{index}",
-                media=InputMediaPhoto(
-                    media=BufferedInputFile(image, filename=f"skye-{index}.png")
-                ),
-            )
-            for index, image in enumerate(images, start=1)
-        ]
-        image_blocks = "\n\n".join(
-            f"![Generated image {index}](tg://photo?id=image_{index})"
-            for index in range(1, len(media) + 1)
-        )
-        body = "\n\n".join(part for part in (markdown.strip(), image_blocks) if part) or "Done."
-        return InputRichMessage(markdown=body, media=media or None)
+    def output(markdown: str) -> InputRichMessage:
+        return InputRichMessage(markdown=markdown.strip() or "Done.")
 
     @staticmethod
     def _content(content: str | InputRichMessage) -> InputRichMessage:

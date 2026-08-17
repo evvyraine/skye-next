@@ -5,7 +5,6 @@ from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import (
     BufferedInputFile,
     Chat,
-    InputMediaPhoto,
     InputRichBlockParagraph,
     InputRichBlockSectionHeading,
     InputRichBlockTable,
@@ -30,14 +29,10 @@ from skye.models import (
 from skye.rich import RichMessages
 
 
-def test_output_keeps_markdown_and_embeds_images() -> None:
-    output = RichMessages.output("# Result\n\n**Ready**", [b"png"])
+def test_output_keeps_markdown_without_media() -> None:
+    output = RichMessages.output("# Result\n\n**Ready**")
 
-    assert output.markdown == (
-        "# Result\n\n**Ready**\n\n![Generated image 1](tg://photo?id=image_1)"
-    )
-    assert output.media and output.media[0].id == "image_1"
-    assert isinstance(output.media[0].media, InputMediaPhoto)
+    assert output == InputRichMessage(markdown="# Result\n\n**Ready**")
 
 
 def test_settings_use_a_native_rich_table() -> None:
@@ -229,6 +224,30 @@ async def test_send_documents_uploads_container_files() -> None:
     document = kwargs["document"]
     assert isinstance(document, BufferedInputFile)
     assert document.filename == "Архитектура.md"
+
+
+async def test_send_images_uploads_each_image_as_a_photo() -> None:
+    bot = AsyncMock()
+    incoming = Message(
+        message_id=17,
+        date=0,
+        chat=Chat(id=42, type="private", first_name="Alice"),
+        from_user=User(id=42, is_bot=False, first_name="Alice"),
+        text="Hello",
+    )
+
+    await RichMessages(bot).send_images(incoming, (b"first", b"second"))
+
+    assert bot.send_photo.await_count == 2
+    first = bot.send_photo.await_args_list[0].kwargs
+    second = bot.send_photo.await_args_list[1].kwargs
+    assert isinstance(first["photo"], BufferedInputFile)
+    assert first["photo"].filename == "skye-1.png"
+    assert second["photo"].filename == "skye-2.png"
+    assert first["reply_parameters"] == ReplyParameters(
+        message_id=17,
+        allow_sending_without_reply=True,
+    )
 
 
 async def test_send_replies_to_the_triggering_message() -> None:
