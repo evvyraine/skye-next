@@ -1,13 +1,15 @@
+from io import BytesIO
 from pathlib import Path
 from typing import Any, cast
 from unittest.mock import AsyncMock
 
 import pytest
+from PIL import Image
 
 from skye.config import Settings
 from skye.db import Database
 from skye.models import ChatSettings, RequestContext
-from skye.projects import ProjectService
+from skye.projects import ProjectService, file_payload
 from skye.runtime import AgentRuntime, describe_tool_event, telegram_run_key, web_run_key
 
 
@@ -62,6 +64,32 @@ async def test_search_is_scoped_to_the_user(database: Database, tmp_path: Path) 
     assert all(project.user_id == 1 for project, _ in messages)
 
 
+async def test_image_files_get_cached_bounded_thumbnails(
+    database: Database, tmp_path: Path
+) -> None:
+    projects = service(database, tmp_path)
+    project = await projects.create(1, name="Images")
+    source = BytesIO()
+    Image.new("RGB", (1800, 1200), (40, 80, 120)).save(source, format="PNG")
+    saved = await projects.save_file(
+        1,
+        project.id,
+        filename="photo.png",
+        mime="image/png",
+        data=source.getvalue(),
+        kind="image",
+    )
+
+    thumbnail = projects.thumbnail_bytes(1, saved.id)
+    assert thumbnail is not None
+    with Image.open(BytesIO(thumbnail)) as image:
+        assert image.format == "WEBP"
+        assert image.width <= 640
+        assert image.height <= 640
+    assert projects.thumbnail_bytes(1, saved.id) == thumbnail
+    assert file_payload(saved)["thumbnail_url"] == f"/api/files/{saved.id}/thumbnail"
+
+
 async def test_extra_instructions_append_after_the_base_prompt() -> None:
     runtime = AgentRuntime(
         Settings(
@@ -101,8 +129,11 @@ def test_describe_tool_event_hides_payloads() -> None:
                 (),
                 {
                     "title": None,
-                    "raw_item": type("Raw", (), {"name": "remember", "call_id": "c1",
-                                                 "arguments": "secret memory"})(),
+                    "raw_item": type(
+                        "Raw",
+                        (),
+                        {"name": "remember", "call_id": "c1", "arguments": "secret memory"},
+                    )(),
                 },
             )(),
         },

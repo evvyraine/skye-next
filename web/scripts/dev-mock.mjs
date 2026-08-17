@@ -60,13 +60,13 @@ const messages = new Map([
       message(
         "general",
         "assistant",
-        "## Welcome back\n\nThis local instance renders **Markdown**, including:\n\n- Lists\n- `inline code`\n- [Links](https://ai.skye-bot.com/)",
+        "## Welcome back\n\nThis local instance renders **Markdown**, including:\n\n- Lists\n- `inline code`\n- [Links](https://ai.skye-bot.com/)"
       ),
       message("general", "user", "Keep my messages on the **right**."),
       message(
         "general",
         "assistant",
-        "Done. Assistant messages stay on the left, with fully rounded bubbles.",
+        "Done. Assistant messages stay on the left, with fully rounded bubbles."
       ),
     ],
   ],
@@ -76,12 +76,13 @@ const messages = new Map([
       message(
         "frontend",
         "assistant",
-        "The sidebar can be resized with a pointer or the keyboard.",
+        "The sidebar can be resized with a pointer or the keyboard."
       ),
     ],
   ],
   ["work", []],
 ])
+const uploadedFiles = new Map()
 
 function message(projectId, role, text) {
   return {
@@ -159,7 +160,9 @@ const server = createServer(async (request, response) => {
   try {
     if (method === "GET" && url.pathname === "/api/me") {
       json(response, loggedIn ? 200 : 401, {
-        user: loggedIn ? { id: 1, name: "Evelyn Raine", username: "evelyn" } : null,
+        user: loggedIn
+          ? { id: 1, name: "Evelyn Raine", username: "evelyn" }
+          : null,
         allowed: loggedIn,
       })
       return
@@ -183,7 +186,7 @@ const server = createServer(async (request, response) => {
         projects: [...projects].sort(
           (a, b) =>
             Number(b.pinned) - Number(a.pinned) ||
-            (b.last_message_at ?? "").localeCompare(a.last_message_at ?? ""),
+            (b.last_message_at ?? "").localeCompare(a.last_message_at ?? "")
         ),
       })
       return
@@ -214,7 +217,9 @@ const server = createServer(async (request, response) => {
     if (method === "GET" && url.pathname === "/api/search") {
       const query = (url.searchParams.get("q") ?? "").trim().toLowerCase()
       const matchingProjects = projects.filter((project) =>
-        `${project.name} ${project.last_message_preview}`.toLowerCase().includes(query),
+        `${project.name} ${project.last_message_preview}`
+          .toLowerCase()
+          .includes(query)
       )
       const matchingMessages = []
       for (const [projectId, items] of messages) {
@@ -226,7 +231,10 @@ const server = createServer(async (request, response) => {
           }
         }
       }
-      json(response, 200, { projects: matchingProjects, messages: matchingMessages })
+      json(response, 200, {
+        projects: matchingProjects,
+        messages: matchingMessages,
+      })
       return
     }
 
@@ -236,7 +244,26 @@ const server = createServer(async (request, response) => {
       return
     }
 
-    const projectRoute = url.pathname.match(/^\/api\/projects\/([^/]+)(?:\/([^/]+))?$/)
+    const fileRoute = url.pathname.match(
+      /^\/api\/mock-files\/([^/]+)(?:\/thumbnail)?$/
+    )
+    if (method === "GET" && fileRoute) {
+      const file = uploadedFiles.get(fileRoute[1])
+      if (!file) {
+        text(response, 404, "File not found.")
+        return
+      }
+      response.writeHead(200, {
+        "Content-Type": file.mime,
+        "Cache-Control": "private, max-age=3600",
+      })
+      response.end(file.data)
+      return
+    }
+
+    const projectRoute = url.pathname.match(
+      /^\/api\/projects\/([^/]+)(?:\/([^/]+))?$/
+    )
     if (projectRoute) {
       const [, projectId, action] = projectRoute
       const project = projectById(projectId)
@@ -284,18 +311,47 @@ const server = createServer(async (request, response) => {
       }
 
       if (method === "GET" && action === "messages") {
-        json(response, 200, { messages: messages.get(projectId) ?? [], files: [] })
+        json(response, 200, {
+          messages: messages.get(projectId) ?? [],
+          files: [...uploadedFiles.values()]
+            .filter((file) => file.project_id === projectId)
+            .map(({ data: _data, ...file }) => file),
+        })
         return
       }
 
       if (method === "POST" && action === "messages") {
         const form = await formBody(request)
-        const prompt = String(form.get("text") ?? "").trim() || "Shared an attachment."
+        const prompt =
+          String(form.get("text") ?? "").trim() || "Shared an attachment."
         const userMessage = message(projectId, "user", prompt)
+        const savedFiles = []
+        for (const entry of form.getAll("files")) {
+          if (typeof entry === "string") continue
+          const id = randomUUID()
+          const mime = entry.type || "application/octet-stream"
+          const file = {
+            id,
+            project_id: projectId,
+            filename: entry.name || "file",
+            mime,
+            size: entry.size,
+            kind: mime.startsWith("image/") ? "image" : "upload",
+            url: `/api/mock-files/${id}`,
+            thumbnail_url: mime.startsWith("image/")
+              ? `/api/mock-files/${id}/thumbnail`
+              : null,
+            created_at: now(),
+            data: Buffer.from(await entry.arrayBuffer()),
+          }
+          uploadedFiles.set(id, file)
+          savedFiles.push(file)
+          userMessage.file_ids.push(id)
+        }
         const assistantMessage = message(
           projectId,
           "assistant",
-          `This is a **mocked response** to:\n\n> ${prompt}`,
+          `This is a **mocked response** to:\n\n> ${prompt}`
         )
         const items = messages.get(projectId) ?? []
         items.push(userMessage, assistantMessage)
@@ -307,11 +363,16 @@ const server = createServer(async (request, response) => {
           "Cache-Control": "no-cache",
           Connection: "keep-alive",
         })
+        for (const { data: _data, ...file } of savedFiles) {
+          response.write(`event: file\ndata: ${JSON.stringify(file)}\n\n`)
+        }
         response.write(`event: user\ndata: ${JSON.stringify(userMessage)}\n\n`)
         response.write(
-          `event: delta\ndata: ${JSON.stringify({ text: assistantMessage.text })}\n\n`,
+          `event: delta\ndata: ${JSON.stringify({ text: assistantMessage.text })}\n\n`
         )
-        response.write(`event: done\ndata: ${JSON.stringify(assistantMessage)}\n\n`)
+        response.write(
+          `event: done\ndata: ${JSON.stringify(assistantMessage)}\n\n`
+        )
         response.end()
         return
       }
@@ -338,9 +399,11 @@ server.listen(apiPort, host, () => {
 })
 
 const vite = spawn(
-  process.platform === "win32" ? "node_modules\\.bin\\vite.cmd" : "node_modules/.bin/vite",
+  process.platform === "win32"
+    ? "node_modules\\.bin\\vite.cmd"
+    : "node_modules/.bin/vite",
   ["--host", host],
-  { stdio: "inherit" },
+  { stdio: "inherit" }
 )
 
 function shutdown(signal) {

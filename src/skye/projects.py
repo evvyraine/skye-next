@@ -3,11 +3,13 @@ from __future__ import annotations
 import secrets
 import uuid
 from datetime import UTC, datetime, timedelta
+from io import BytesIO
 from pathlib import Path
 from typing import cast
 
 import structlog
 from openai import AsyncOpenAI
+from PIL import Image, ImageOps, UnidentifiedImageError
 
 from .db import Database
 from .models import (
@@ -57,6 +59,8 @@ PROJECT_COLORS: tuple[str, ...] = (
 )
 MAX_PROJECTS = 50
 SESSION_DAYS = 30
+THUMBNAIL_SIZE = (640, 640)
+THUMBNAIL_QUALITY = 78
 
 
 def new_id() -> str:
@@ -172,6 +176,7 @@ class ProjectService:
         for item in await self.database.list_web_files(user_id, project_id):
             path = self._file_path(user_id, item.id)
             path.unlink(missing_ok=True)
+            self._thumbnail_path(user_id, item.id).unlink(missing_ok=True)
         return project
 
     async def reset(self, user_id: int, project_id: str) -> WebProject:
@@ -253,6 +258,32 @@ class ProjectService:
             return None
         return path.read_bytes()
 
+    def thumbnail_bytes(self, user_id: int, file_id: str) -> bytes | None:
+        thumbnail = self._thumbnail_path(user_id, file_id)
+        if thumbnail.is_file():
+            return thumbnail.read_bytes()
+        source = self._file_path(user_id, file_id)
+        if not source.is_file():
+            return None
+        try:
+            with Image.open(source) as opened:
+                image = ImageOps.exif_transpose(opened)
+                image.thumbnail(THUMBNAIL_SIZE, Image.Resampling.LANCZOS)
+                if image.mode not in {"RGB", "RGBA"}:
+                    image = image.convert("RGBA" if "transparency" in image.info else "RGB")
+                output = BytesIO()
+                image.save(
+                    output,
+                    format="WEBP",
+                    quality=THUMBNAIL_QUALITY,
+                    method=6,
+                )
+        except OSError, UnidentifiedImageError:
+            return None
+        data = output.getvalue()
+        thumbnail.write_bytes(data)
+        return data
+
     def session_cookie(self, origin: str | None) -> dict[str, object]:
         secure = bool(origin and origin.startswith("https://"))
         return {
@@ -291,6 +322,9 @@ class ProjectService:
 
     def _file_path(self, user_id: int, file_id: str) -> Path:
         return self.files_path / str(user_id) / file_id
+
+    def _thumbnail_path(self, user_id: int, file_id: str) -> Path:
+        return self.files_path / str(user_id) / f"{file_id}.thumbnail.webp"
 
     @staticmethod
     def _name(name: str) -> str:
@@ -358,5 +392,8 @@ def file_payload(file: WebFile) -> dict[str, object]:
         "size": file.size,
         "kind": file.kind,
         "url": f"/api/files/{file.id}",
+        "thumbnail_url": f"/api/files/{file.id}/thumbnail"
+        if file.mime.startswith("image/")
+        else None,
         "created_at": file.created_at,
     }

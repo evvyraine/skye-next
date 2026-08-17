@@ -32,6 +32,7 @@ export type ChatFile = {
   size: number
   kind: "upload" | "image" | "document"
   url: string
+  thumbnail_url: string | null
   created_at: string
 }
 

@@ -1,7 +1,12 @@
-import { useRef, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { ArrowLeft, Mic, Paperclip, Send, Square, Wrench } from "lucide-react"
 import { AnimatePresence, motion } from "motion/react"
 import { toast } from "sonner"
+import {
+  AttachmentDeck,
+  AttachmentPreview,
+  type AttachmentItem,
+} from "@/components/attachment-card"
 import { Bubble, BubbleContent } from "@/components/ui/bubble"
 import { Button } from "@/components/ui/button"
 import {
@@ -32,6 +37,10 @@ type ToolRow = {
   status: string
 }
 
+type PendingAttachment = AttachmentItem & {
+  file: File
+}
+
 export function ChatView({
   project,
   messages,
@@ -50,28 +59,92 @@ export function ChatView({
   onStop?: () => void
 }) {
   const [draft, setDraft] = useState("")
-  const [attachments, setAttachments] = useState<File[]>([])
+  const [attachments, setAttachments] = useState<PendingAttachment[]>([])
+  const [sendingAttachments, setSendingAttachments] = useState<
+    PendingAttachment[]
+  >([])
+  const [preview, setPreview] = useState<AttachmentItem | null>(null)
   const [streaming, setStreaming] = useState(false)
   const [pendingText, setPendingText] = useState("")
   const [tools, setTools] = useState<ToolRow[]>([])
   const [listening, setListening] = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
   const recorder = useRef<MediaRecorder | null>(null)
+  const objectUrls = useRef<Set<string>>(new Set())
+
+  useEffect(() => {
+    const urls = objectUrls.current
+    return () => {
+      urls.forEach((url) => URL.revokeObjectURL(url))
+      urls.clear()
+    }
+  }, [])
+
+  function release(items: PendingAttachment[]) {
+    for (const item of items) {
+      URL.revokeObjectURL(item.url)
+      objectUrls.current.delete(item.url)
+    }
+  }
+
+  function removeAttachment(id: string) {
+    setAttachments((current) => {
+      const removed = current.find((item) => item.id === id)
+      if (removed) {
+        release([removed])
+      }
+      return current.filter((item) => item.id !== id)
+    })
+  }
+
+  function addAttachments(selected: File[]) {
+    const next = selected.map((file) => {
+      const url = URL.createObjectURL(file)
+      objectUrls.current.add(url)
+      return {
+        id: crypto.randomUUID(),
+        filename: file.name,
+        mime: file.type || "application/octet-stream",
+        size: file.size,
+        url,
+        thumbnailUrl: url,
+        file,
+      }
+    })
+    setAttachments((current) => [...current, ...next])
+  }
 
   async function send() {
     const text = draft.trim()
     if ((!text && attachments.length === 0) || streaming) {
       return
     }
+    const localAttachments = attachments
+    const localFiles = localAttachments.map((item) => item.file)
+    let accepted = false
+    let nextMessages = messages
+    let nextFiles = files
     setDraft("")
+    setPreview(null)
     setAttachments([])
+    setSendingAttachments(
+      localAttachments.map((item) => ({ ...item, uploading: true }))
+    )
     setStreaming(true)
     setPendingText("")
     setTools([])
-    const localFiles = attachments
     try {
       await sendMessage(project.id, text, localFiles, {
-        onUser: (message) => onMessages([...messages, message], files),
+        onUser: (message) => {
+          accepted = true
+          nextMessages = [
+            ...nextMessages.filter((item) => item.id !== message.id),
+            message,
+          ]
+          onMessages(nextMessages, nextFiles)
+          release(localAttachments)
+          setSendingAttachments([])
+        },
         onDelta: setPendingText,
         onTool: (tool) => {
           setTools((current) => {
@@ -80,8 +153,14 @@ export function ChatView({
             return next
           })
         },
-        onImage: (file) => onMessages(messages, [...files, file]),
-        onFile: (file) => onMessages(messages, [...files, file]),
+        onImage: (file) => {
+          nextFiles = [...nextFiles.filter((item) => item.id !== file.id), file]
+          onMessages(nextMessages, nextFiles)
+        },
+        onFile: (file) => {
+          nextFiles = [...nextFiles.filter((item) => item.id !== file.id), file]
+          onMessages(nextMessages, nextFiles)
+        },
         onDone: async () => {
           const payload = await listMessages(project.id)
           onMessages(payload.messages, payload.files)
@@ -91,6 +170,10 @@ export function ChatView({
         onError: (message) => toast.error(message),
       })
     } catch (error) {
+      if (!accepted) {
+        setAttachments(localAttachments)
+        setSendingAttachments([])
+      }
       toast.error(
         error instanceof Error ? error.message : "Could not send that."
       )
@@ -168,72 +251,68 @@ export function ChatView({
       <MessageScrollerProvider>
         <MessageScroller className="min-h-0 flex-1">
           <MessageScrollerViewport>
-            <MessageScrollerContent className="gap-4 px-4 pt-20 pb-6 md:py-6">
+            <MessageScrollerContent className="mx-auto w-full max-w-3xl gap-4 px-4 pt-20 pb-6 md:py-6">
               <AnimatePresence initial={false}>
-                {messages.map((message) => (
-                  <MessageScrollerItem key={message.id}>
-                    <motion.div
-                      layout
-                      className={cn(
-                        "flex w-full",
-                        message.role === "user"
-                          ? "justify-end"
-                          : "justify-start"
-                      )}
-                      initial={{ opacity: 0, y: 10, filter: "blur(5px)" }}
-                      animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
-                      exit={{ opacity: 0, y: -8, filter: "blur(4px)" }}
-                      transition={{ duration: 0.22, ease: "easeOut" }}
-                    >
-                      {message.role === "tool" ? (
-                        <Marker>
-                          <MarkerIcon>
-                            <Wrench />
-                          </MarkerIcon>
-                          <MarkerContent>
-                            <MessageMarkdown>{message.text}</MessageMarkdown>
-                          </MarkerContent>
-                        </Marker>
-                      ) : (
-                        <Bubble
-                          variant={
-                            message.role === "user" ? "default" : "muted"
-                          }
-                          align={message.role === "user" ? "end" : "start"}
-                        >
-                          <BubbleContent className="rounded-3xl px-4 py-2.5">
-                            <MessageMarkdown>{message.text}</MessageMarkdown>
-                            {message.file_ids.map((id) => {
-                              const file = fileMap[id]
-                              if (!file) {
-                                return null
-                              }
-                              if (file.mime.startsWith("image/")) {
-                                return (
-                                  <img
-                                    key={id}
-                                    src={file.url}
-                                    alt={file.filename}
-                                    className="mt-2 max-w-full rounded-2xl outline-1 -outline-offset-1 outline-black/10 dark:outline-white/10"
-                                  />
-                                )
-                              }
-                              return (
-                                <a
-                                  key={id}
-                                  href={file.url}
-                                  className="mt-2 block font-medium underline underline-offset-3"
-                                >
-                                  {file.filename}
-                                </a>
-                              )
-                            })}
-                          </BubbleContent>
-                        </Bubble>
-                      )}
-                    </motion.div>
-                  </MessageScrollerItem>
-                ))}
+                {messages.map((message) => {
+                  const messageFiles = message.file_ids
+                    .map((id) => fileMap[id])
+                    .filter((file): file is ChatFile => Boolean(file))
+                    .map(fileItem)
+                  const user = message.role === "user"
+                  return (
+                    <MessageScrollerItem key={message.id}>
+                      <motion.div
+                        layout
+                        className={cn(
+                          "flex w-full",
+                          user ? "justify-end" : "justify-start"
+                        )}
+                        initial={{ opacity: 0, y: 10, filter: "blur(5px)" }}
+                        animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
+                        exit={{ opacity: 0, y: -8, filter: "blur(4px)" }}
+                        transition={{ duration: 0.22, ease: "easeOut" }}
+                      >
+                        {message.role === "tool" ? (
+                          <Marker>
+                            <MarkerIcon>
+                              <Wrench />
+                            </MarkerIcon>
+                            <MarkerContent>
+                              <MessageMarkdown>{message.text}</MessageMarkdown>
+                            </MarkerContent>
+                          </Marker>
+                        ) : (
+                          <div
+                            className={cn(
+                              "flex max-w-full min-w-0 flex-col",
+                              user ? "items-end" : "items-start"
+                            )}
+                          >
+                            {message.text ? (
+                              <Bubble
+                                variant={user ? "default" : "muted"}
+                                align={user ? "end" : "start"}
+                              >
+                                <BubbleContent className="rounded-3xl px-4 py-2.5">
+                                  <MessageMarkdown>
+                                    {message.text}
+                                  </MessageMarkdown>
+                                </BubbleContent>
+                              </Bubble>
+                            ) : null}
+                            {messageFiles.length ? (
+                              <AttachmentDeck
+                                items={messageFiles}
+                                align={user ? "end" : "start"}
+                                onOpen={setPreview}
+                              />
+                            ) : null}
+                          </div>
+                        )}
+                      </motion.div>
+                    </MessageScrollerItem>
+                  )
+                })}
                 {tools.map((tool) => (
                   <MessageScrollerItem key={tool.id}>
                     <motion.div
@@ -285,15 +364,27 @@ export function ChatView({
         }}
       >
         <AnimatePresence initial={false}>
-          {attachments.length ? (
-            <motion.p
+          {attachments.length || sendingAttachments.length ? (
+            <motion.div
               initial={{ opacity: 0, y: 6 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: 4 }}
-              className="mx-auto mb-2 max-w-3xl truncate px-3 text-xs text-muted-foreground"
+              className="relative z-10 mx-auto mb-2 max-w-3xl px-2"
             >
-              {attachments.map((item) => item.name).join(", ")}
-            </motion.p>
+              {sendingAttachments.length ? (
+                <AttachmentDeck
+                  items={sendingAttachments}
+                  onOpen={setPreview}
+                />
+              ) : null}
+              {attachments.length ? (
+                <AttachmentDeck
+                  items={attachments}
+                  onOpen={setPreview}
+                  onRemove={removeAttachment}
+                />
+              ) : null}
+            </motion.div>
           ) : null}
         </AnimatePresence>
         <InputGroup className="mx-auto h-14 max-w-3xl rounded-full border-border/80 bg-background shadow-[0_8px_30px_oklch(0_0_0/0.08)]">
@@ -368,11 +459,26 @@ export function ChatView({
           multiple
           className="hidden"
           onChange={(event) => {
-            setAttachments(Array.from(event.target.files ?? []))
+            addAttachments(Array.from(event.target.files ?? []))
             event.target.value = ""
           }}
         />
       </form>
+      <AttachmentPreview
+        item={preview}
+        onOpenChange={(open) => !open && setPreview(null)}
+      />
     </div>
   )
+}
+
+function fileItem(file: ChatFile): AttachmentItem {
+  return {
+    id: file.id,
+    filename: file.filename,
+    mime: file.mime,
+    size: file.size,
+    url: file.url,
+    thumbnailUrl: file.thumbnail_url,
+  }
 }

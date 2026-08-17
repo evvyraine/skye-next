@@ -18,7 +18,7 @@ from .attachments import (
 from .auth import COOKIE_NAME, OIDC_COOKIE, AuthError, TelegramAuth
 from .config import Settings
 from .db import Database
-from .models import RequestContext, WebSession
+from .models import RequestContext, WebFile, WebSession
 from .projects import (
     PROJECT_COLORS,
     PROJECT_ICONS,
@@ -78,6 +78,7 @@ class WebApp:
         add("GET", "/api/search", self.search)
         add("POST", "/api/transcribe", self.transcribe)
         add("GET", "/api/files/{id}", self.get_file)
+        add("GET", "/api/files/{id}/thumbnail", self.get_thumbnail)
         add("GET", "/api/meta", self.meta)
 
     @web.middleware
@@ -273,6 +274,7 @@ class WebApp:
         settings = await self.database.get_settings(context.scope)
         content: list[dict[str, Any]] = []
         file_ids: list[str] = []
+        uploaded_files: list[WebFile] = []
         preview_bits = [text] if text else []
         if text:
             content.append({"type": "input_text", "text": text})
@@ -302,6 +304,7 @@ class WebApp:
                 kind="image" if kind == "image" else "upload",
             )
             file_ids.append(saved.id)
+            uploaded_files.append(saved)
             content.extend(openai_file_parts(filename, mime, data, transcript))
             preview_bits.append(filename)
         user_message = await self.projects.add_message(
@@ -321,9 +324,11 @@ class WebApp:
             },
         )
         await response.prepare(request)
+        for saved in uploaded_files:
+            await self._sse(response, "file", file_payload(saved))
         await self._sse(response, "user", message_payload(user_message))
         assistant_text = ""
-        image_ids: list[str] = []
+        assistant_file_ids: list[str] = []
         seen_tools: set[str] = set()
 
         async def on_text(_text: str) -> None:
@@ -361,7 +366,7 @@ class WebApp:
                     data=event.image,
                     kind="image",
                 )
-                image_ids.append(saved.id)
+                assistant_file_ids.append(saved.id)
                 await self._sse(response, "image", file_payload(saved))
 
         try:
@@ -383,7 +388,7 @@ class WebApp:
                     project_id,
                     role="assistant",
                     text=assistant_text.strip(),
-                    file_ids=tuple(image_ids),
+                    file_ids=tuple(assistant_file_ids),
                 )
             await self._sse(response, "error", {"message": "Stopped."})
             await response.write_eof()
@@ -403,6 +408,7 @@ class WebApp:
                 data=generated.data,
                 kind="document",
             )
+            assistant_file_ids.append(saved.id)
             await self._sse(response, "file", file_payload(saved))
         final_text = output.text or assistant_text
         assistant = await self.projects.add_message(
@@ -410,7 +416,7 @@ class WebApp:
             project_id,
             role="assistant",
             text=final_text,
-            file_ids=tuple(image_ids),
+            file_ids=tuple(assistant_file_ids),
         )
         await self._sse(response, "done", message_payload(assistant))
         await response.write_eof()
@@ -454,6 +460,20 @@ class WebApp:
             body=data,
             content_type=meta.mime,
             headers={"Cache-Control": "private, max-age=3600"},
+        )
+
+    async def get_thumbnail(self, request: web.Request) -> web.StreamResponse:
+        session = await self._require_user(request)
+        meta = await self.database.web_file(session.user_id, request.match_info["id"])
+        if meta is None or not meta.mime.startswith("image/"):
+            raise web.HTTPNotFound(text="Thumbnail not found.")
+        data = await asyncio.to_thread(self.projects.thumbnail_bytes, session.user_id, meta.id)
+        if data is None:
+            raise web.HTTPNotFound(text="Thumbnail not found.")
+        return web.Response(
+            body=data,
+            content_type="image/webp",
+            headers={"Cache-Control": "private, max-age=31536000, immutable"},
         )
 
     async def _require_user(self, request: web.Request) -> WebSession:
