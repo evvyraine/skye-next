@@ -29,6 +29,17 @@ jobs:
       - run: uv run mypy
       - run: uv run pytest
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - run: npm ci
+        working-directory: web
+      - run: npm run build
+        working-directory: web
+
   deploy:
     name: Deploy to Vilnius
     needs: check
@@ -36,6 +47,17 @@ jobs:
     environment: production
     steps:
       - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - run: npm ci
+        working-directory: web
+      - run: npm run build
+        working-directory: web
 
       - name: Configure SSH
         env:
@@ -71,6 +93,7 @@ jobs:
             --exclude '.mypy_cache/' \
             --exclude '.pytest_cache/' \
             --exclude '.ruff_cache/' \
+            --exclude 'web/node_modules/' \
             --exclude '.DS_Store' \
             ./ vilnius:/opt/skye-next/
           ssh vilnius "GITHUB_SHA='$GITHUB_SHA' bash /opt/skye-next/scripts/deploy-remote.sh"

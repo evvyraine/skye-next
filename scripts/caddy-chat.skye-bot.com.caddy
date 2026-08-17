@@ -1,0 +1,42 @@
+# --- skye-next chat.skye-bot.com (managed) ---
+chat.skye-bot.com {
+	encode zstd gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Cross-Origin-Opener-Policy "same-origin-allow-popups"
+		Permissions-Policy "camera=(), microphone=(self), geolocation=()"
+		-Server
+		-X-Powered-By
+	}
+
+	handle /api* {
+		reverse_proxy 127.0.0.1:18780 {
+			flush_interval -1
+		}
+	}
+
+	handle /auth* {
+		reverse_proxy 127.0.0.1:18780 {
+			flush_interval -1
+		}
+	}
+
+	root * /var/www/chat.skye-bot.com/current
+
+	@assets path /assets/*
+	handle @assets {
+		header Cache-Control "public, max-age=31536000, immutable"
+		file_server
+	}
+
+	handle {
+		header Cache-Control "no-cache"
+		try_files {path} /index.html
+		file_server
+	}
+}
+# --- end skye-next chat.skye-bot.com ---

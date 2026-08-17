@@ -10,6 +10,11 @@ services:
       - .env
     environment:
       SKYE_DATABASE_PATH: /data/skye.db
+      SKYE_WEB_HOST: 0.0.0.0
+      SKYE_WEB_PORT: 8080
+      SKYE_WEB_FILES_PATH: /data/web
+    ports:
+      - "127.0.0.1:18780:8080"
     volumes:
       - skye-data:/data
     init: true

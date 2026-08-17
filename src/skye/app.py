@@ -1,5 +1,9 @@
+from __future__ import annotations
+
 import asyncio
+import contextlib
 import logging
+import signal
 from importlib.resources import files
 from pathlib import Path
 
@@ -11,6 +15,7 @@ from pydantic import ValidationError
 
 from .access import AccessService
 from .attachments import AttachmentService
+from .auth import TelegramAuth
 from .config import Settings
 from .connectors import ComposioClient, ConnectorService
 from .conversations import ConversationService
@@ -18,9 +23,11 @@ from .custom_agents import CustomAgentService
 from .db import Database
 from .group_context import GroupContextService
 from .memory import MemoryService
+from .projects import ProjectService
 from .runtime import OPENAI_MAX_RETRIES, AgentRuntime
 from .skills import SkillService
 from .telegram import COMMANDS, TelegramApp, UpdateMiddleware
+from .web import WebApp, serve_web
 
 log = structlog.get_logger()
 
@@ -83,6 +90,9 @@ async def run() -> None:
         client,
         skills,
     )
+    projects = ProjectService(database, client, config.skye_web_files_path)
+    auth = TelegramAuth(config, database, projects)
+    web_app = WebApp(config, database, access, runtime, projects, auth, client)
     telegram = TelegramApp(
         config,
         bot,
@@ -112,13 +122,28 @@ async def run() -> None:
         if dropped:
             log.info("pending_updates_dropped", count=dropped)
         await bot.delete_webhook(drop_pending_updates=True)
-        await dispatcher.start_polling(
-            bot,
-            allowed_updates=sorted(
-                set(dispatcher.resolve_used_update_types()) | {"message", "edited_message"}
-            ),
-            handle_signals=True,
+        runner = await serve_web(web_app)
+        stop = asyncio.Event()
+        loop = asyncio.get_running_loop()
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            with contextlib.suppress(NotImplementedError):
+                loop.add_signal_handler(sig, stop.set)
+        polling = asyncio.create_task(
+            dispatcher.start_polling(
+                bot,
+                allowed_updates=sorted(
+                    set(dispatcher.resolve_used_update_types()) | {"message", "edited_message"}
+                ),
+                handle_signals=False,
+            )
         )
+        try:
+            await stop.wait()
+        finally:
+            polling.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await polling
+            await runner.cleanup()
     finally:
         await connectors.aclose()
         await client.close()

@@ -54,7 +54,7 @@ class AttachmentService:
                 {"type": "input_text", "text": f"{label} image:"},
                 {
                     "type": "input_image",
-                    "image_url": self._data_url("image/jpeg", data),
+                    "image_url": data_url("image/jpeg", data),
                     "detail": "auto",
                 },
             ]
@@ -78,15 +78,13 @@ class AttachmentService:
         )
         kind = "video message" if isinstance(audio, VideoNote) else "audio"
         data = await self._download(audio, audio.file_size, kind)
-        transcript = await self.client.audio.transcriptions.create(
-            model=self.config.skye_transcription_model,
-            file=(filename, data),
-            response_format="json",
+        transcript = await transcribe_audio(
+            self.client, self.config.skye_transcription_model, filename, data
         )
         content.append(
             {
                 "type": "input_text",
-                "text": f"{label} {kind} transcript ({filename}):\n{transcript.text}",
+                "text": f"{label} {kind} transcript ({filename}):\n{transcript}",
             }
         )
 
@@ -105,15 +103,13 @@ class AttachmentService:
         data = await self._download(document, document.file_size, "document")
         extension = Path(filename).suffix.lower()
         if mime.startswith("audio/") or extension in AUDIO_EXTENSIONS:
-            transcript = await self.client.audio.transcriptions.create(
-                model=self.config.skye_transcription_model,
-                file=(filename, data),
-                response_format="json",
+            transcript = await transcribe_audio(
+                self.client, self.config.skye_transcription_model, filename, data
             )
             content.append(
                 {
                     "type": "input_text",
-                    "text": f"{label} audio transcript ({filename}):\n{transcript.text}",
+                    "text": f"{label} audio transcript ({filename}):\n{transcript}",
                 }
             )
             return
@@ -123,7 +119,7 @@ class AttachmentService:
                 {
                     "type": "input_file",
                     "filename": filename,
-                    "file_data": self._data_url(mime, data),
+                    "file_data": data_url(mime, data),
                     **({"detail": "auto"} if extension == ".pdf" else {}),
                 },
             ]
@@ -142,7 +138,7 @@ class AttachmentService:
 
     @staticmethod
     def _data_url(mime: str, data: bytes) -> str:
-        return f"data:{mime};base64,{base64.b64encode(data).decode()}"
+        return data_url(mime, data)
 
     @staticmethod
     def _new(file_unique_id: str, seen: set[str]) -> bool:
@@ -150,3 +146,52 @@ class AttachmentService:
             return False
         seen.add(file_unique_id)
         return True
+
+
+IMAGE_MIMES = {"image/jpeg", "image/jpg", "image/png", "image/gif", "image/webp"}
+
+
+async def transcribe_audio(client: AsyncOpenAI, model: str, filename: str, data: bytes) -> str:
+    result = await client.audio.transcriptions.create(
+        model=model,
+        file=(filename, data),
+        response_format="json",
+    )
+    return str(result.text).strip()
+
+
+def data_url(mime: str, data: bytes) -> str:
+    return f"data:{mime};base64,{base64.b64encode(data).decode()}"
+
+
+def openai_file_parts(
+    filename: str, mime: str, data: bytes, transcript: str | None = None
+) -> list[dict[str, Any]]:
+    extension = Path(filename).suffix.lower()
+    if mime.startswith("image/") or mime in IMAGE_MIMES:
+        return [
+            {"type": "input_text", "text": f"Attached image ({filename}):"},
+            {"type": "input_image", "image_url": data_url(mime or "image/jpeg", data),
+             "detail": "auto"},
+        ]
+    if transcript is not None:
+        return [
+            {
+                "type": "input_text",
+                "text": f"Attached audio transcript ({filename}):\n{transcript}",
+            }
+        ]
+    return [
+        {"type": "input_text", "text": f"Attached document ({filename}):"},
+        {
+            "type": "input_file",
+            "filename": filename,
+            "file_data": data_url(mime or "application/octet-stream", data),
+            **({"detail": "auto"} if extension == ".pdf" else {}),
+        },
+    ]
+
+
+def is_audio_upload(filename: str, mime: str) -> bool:
+    extension = Path(filename).suffix.lower()
+    return mime.startswith("audio/") or extension in AUDIO_EXTENSIONS

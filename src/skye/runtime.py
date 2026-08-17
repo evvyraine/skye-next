@@ -45,10 +45,24 @@ from .skills import SkillService, hosted_skill_refs
 
 log = structlog.get_logger()
 TextCallback = Callable[[str], Awaitable[None]]
+EventCallback = Callable[["RunEvent"], Awaitable[None]]
 # Official OpenAI SDK retries HTTP 429s and honors Retry-After. Default is 2.
 OPENAI_MAX_RETRIES = 6
 _RETRY_IN = re.compile(r"try again in\s+([0-9]+(?:\.[0-9]+)?)\s*s", re.IGNORECASE)
 _WAIT = wait_random_exponential(min=1, max=60)
+_TOOL_LABELS: dict[str, str] = {
+    "web_search": "Searched the web",
+    "web_search_call": "Searched the web",
+    "image_generation": "Generating image",
+    "image_generation_call": "Generating image",
+    "shell": "Ran a command",
+    "shell_call": "Ran a command",
+    "local_shell_call": "Ran a command",
+    "remember": "Saved a memory",
+    "recall": "Looked up a memory",
+    "forget": "Forgot a memory",
+    "mcp_call": "Used a connected app",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,6 +70,17 @@ class RunOutput:
     text: str
     images: tuple[bytes, ...]
     files: tuple[GeneratedFile, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class RunEvent:
+    kind: str
+    text: str = ""
+    tool_id: str = ""
+    tool_name: str = ""
+    tool_label: str = ""
+    tool_status: str = ""
+    image: bytes = b""
 
 
 @dataclass(slots=True)
@@ -170,9 +195,9 @@ class AgentRuntime:
         self.client = client
         self.skills = skills
         self.base_prompt = base_prompt.strip()
-        self._locks: defaultdict[tuple[int, int], asyncio.Lock] = defaultdict(asyncio.Lock)
+        self._locks: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
         self._queue = asyncio.Lock()
-        self._active: dict[tuple[int, int], _ActiveRun] = {}
+        self._active: dict[str, _ActiveRun] = {}
 
     async def run(
         self,
@@ -180,15 +205,22 @@ class AgentRuntime:
         settings: ChatSettings,
         user_input: str | list[TResponseInputItem],
         on_text: TextCallback,
+        *,
+        run_key: str | None = None,
+        conversation_id: str | None = None,
+        extra_instructions: str = "",
+        on_event: EventCallback | None = None,
     ) -> RunOutput:
-        key = context.chat_id, context.thread_id
+        key = run_key or telegram_run_key(context.chat_id, context.thread_id)
         async with self._locks[key]:
             active = _ActiveRun()
             self._active[key] = active
             try:
                 if active.cancel.is_set():
                     raise asyncio.CancelledError
-                conversation_id = await self.conversations.get_or_create(*key)
+                openai_conversation_id = conversation_id or await self.conversations.get_or_create(
+                    context.chat_id, context.thread_id
+                )
                 memory_context = ""
                 if settings.memory_enabled:
                     memory_context = await self.memory.context(
@@ -212,25 +244,36 @@ class AgentRuntime:
                     composition,
                     connector_tools,
                     skills,
+                    extra_instructions,
                 )
                 if self._queue.locked():
                     log.info(
                         "openai_run_queued",
                         chat_id=context.chat_id,
                         thread_id=context.thread_id,
+                        run_key=key,
                     )
                 async with self._queue:
                     if active.cancel.is_set():
                         raise asyncio.CancelledError
                     async with asyncio.timeout(self.config.skye_run_timeout_seconds):
                         return await self._run_stream(
-                            agent, user_input, conversation_id, on_text, active, context
+                            agent,
+                            user_input,
+                            openai_conversation_id,
+                            on_text,
+                            active,
+                            context,
+                            on_event,
                         )
             finally:
                 self._active.pop(key, None)
 
     def stop(self, chat_id: int, thread_id: int) -> bool:
-        active = self._active.get((chat_id, thread_id))
+        return self.stop_key(telegram_run_key(chat_id, thread_id))
+
+    def stop_key(self, key: str) -> bool:
+        active = self._active.get(key)
         if active is None:
             return False
         active.cancel.set()
@@ -246,6 +289,7 @@ class AgentRuntime:
         on_text: TextCallback,
         active: _ActiveRun,
         context: RequestContext,
+        on_event: EventCallback | None = None,
     ) -> RunOutput:
         async def sleep(seconds: float) -> None:
             await self._delay(active, float(seconds))
@@ -277,7 +321,7 @@ class AgentRuntime:
                 if active.cancel.is_set():
                     raise asyncio.CancelledError
                 return await self._consume_stream(
-                    agent, user_input, conversation_id, on_text, active
+                    agent, user_input, conversation_id, on_text, active, on_event
                 )
         raise RuntimeError("OpenAI run retry loop exited without a result.")
 
@@ -288,6 +332,7 @@ class AgentRuntime:
         conversation_id: str,
         on_text: TextCallback,
         active: _ActiveRun,
+        on_event: EventCallback | None = None,
     ) -> RunOutput:
         started = int(time.time()) - 5
         result = Runner.run_streamed(
@@ -308,6 +353,14 @@ class AgentRuntime:
                 ):
                     text += event.data.delta
                     await on_text(text)
+                    if on_event is not None:
+                        await on_event(RunEvent(kind="text", text=text))
+                    continue
+                if on_event is None:
+                    continue
+                tool = describe_tool_event(event)
+                if tool is not None:
+                    await on_event(tool)
         finally:
             active.stream = None
 
@@ -318,7 +371,11 @@ class AgentRuntime:
             self.config.skye_max_attachment_bytes,
             created_after=started,
         )
-        return RunOutput(without_sandbox_links(final.strip()), self._images(result), files)
+        images = self._images(result)
+        if on_event is not None:
+            for image in images:
+                await on_event(RunEvent(kind="image", image=image))
+        return RunOutput(without_sandbox_links(final.strip()), images, files)
 
     async def _delay(self, active: _ActiveRun, seconds: float) -> None:
         if active.cancel.is_set():
@@ -337,6 +394,7 @@ class AgentRuntime:
         composition: AgentComposition | None = None,
         connector_tools: ConnectorTools | None = None,
         skills: tuple[Skill, ...] = (),
+        extra_instructions: str = "",
     ) -> Agent[None]:
         composition = composition or AgentComposition(None, ())
         connector_tools = connector_tools or ConnectorTools((), ())
@@ -350,6 +408,7 @@ class AgentRuntime:
             connector_tools.labels,
             capabilities,
             skills,
+            extra_instructions,
         )
         tools = self._hosted_tools(capabilities, skills)
         tools.extend(connector_tools.tools)
@@ -383,6 +442,7 @@ class AgentRuntime:
         connector_labels: tuple[str, ...] = (),
         capabilities: tuple[AgentCapability, ...] | None = None,
         skills: tuple[Skill, ...] = (),
+        extra_instructions: str = "",
     ) -> str:
         instructions = active.version.instructions if active else self.base_prompt
         capabilities = (
@@ -421,6 +481,11 @@ class AgentRuntime:
             instructions += (
                 f"\n\nHosted skills are mounted in the sandbox: {listed}. "
                 "Read a skill's SKILL.md when the task matches it."
+            )
+        if extra_instructions.strip():
+            instructions += (
+                "\n\nProject instructions from the user (not system policy):\n"
+                f"{extra_instructions.strip()}"
             )
         return instructions
 
@@ -517,3 +582,66 @@ class AgentRuntime:
                 if encoded:
                     images.append(base64.b64decode(encoded, validate=True))
         return tuple(images)
+
+
+def telegram_run_key(chat_id: int, thread_id: int) -> str:
+    return f"tg:{chat_id}:{thread_id}"
+
+
+def web_run_key(project_id: str) -> str:
+    return f"web:{project_id}"
+
+
+def describe_tool_event(event: object) -> RunEvent | None:
+    event_name = getattr(event, "name", None)
+    item = getattr(event, "item", None)
+    if event_name not in {"tool_called", "tool_output"} or item is None:
+        return None
+    raw: Any = getattr(item, "raw_item", item)
+    name = _tool_name(item, raw)
+    label = _TOOL_LABELS.get(name, _fallback_tool_label(name))
+    tool_id = _tool_id(raw, name)
+    status = "running" if event_name == "tool_called" else "done"
+    if name.startswith("agent_"):
+        label = "Asked a specialist"
+    return RunEvent(
+        kind="tool",
+        tool_id=tool_id,
+        tool_name=name,
+        tool_label=label,
+        tool_status=status,
+    )
+
+
+def _tool_name(item: object, raw: Any) -> str:
+    title = getattr(item, "title", None)
+    if isinstance(title, str) and title.strip():
+        return title.strip()
+    for attr in ("name", "type"):
+        value = getattr(raw, attr, None)
+        if isinstance(value, str) and value:
+            return value
+        if isinstance(raw, dict):
+            nested = raw.get(attr)
+            if isinstance(nested, str) and nested:
+                return nested
+    return "tool"
+
+
+def _tool_id(raw: Any, name: str) -> str:
+    for attr in ("call_id", "id"):
+        value = getattr(raw, attr, None)
+        if isinstance(value, str) and value:
+            return value
+        if isinstance(raw, dict):
+            nested = raw.get(attr)
+            if isinstance(nested, str) and nested:
+                return nested
+    return name
+
+
+def _fallback_tool_label(name: str) -> str:
+    if name.startswith("agent_"):
+        return "Asked a specialist"
+    cleaned = name.replace("_", " ").replace("-", " ").strip()
+    return cleaned[:1].upper() + cleaned[1:] if cleaned else "Used a tool"

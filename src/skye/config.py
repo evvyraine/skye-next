@@ -82,11 +82,35 @@ class Settings(BaseSettings):
     skye_group_context_messages: int = Field(default=20, ge=1, le=100)
     skye_sandbox_allowed_domains: SandboxDomains = Field(default=SANDBOX_DOMAINS, min_length=1)
     skye_tracing: bool = False
+    skye_web_origin: str | None = None
+    skye_web_host: str = "127.0.0.1"
+    skye_web_port: int = Field(default=8080, ge=1, le=65535)
+    skye_web_files_path: Path = Path("data/web")
+    telegram_login_client_id: str | None = None
+    telegram_login_client_secret: str | None = None
 
     @field_validator("composio_api_key", mode="before")
     @classmethod
     def _empty_key(cls, value: object) -> object:
         return _clean_secret(value)
+
+    @field_validator(
+        "skye_web_origin",
+        "telegram_login_client_id",
+        "telegram_login_client_secret",
+        mode="before",
+    )
+    @classmethod
+    def _empty_web(cls, value: object) -> object:
+        return _clean_secret(value)
+
+    @property
+    def web_enabled(self) -> bool:
+        return bool(
+            self.skye_web_origin
+            and self.telegram_login_client_id
+            and self.telegram_login_client_secret
+        )
 
 
 def _clean_secret(value: object) -> object:

@@ -27,9 +27,17 @@ from .models import (
     KnownGroup,
     Memory,
     MemoryCategory,
+    ProjectKind,
     Scope,
     ScopeKind,
     Skill,
+    ToolStatus,
+    WebFile,
+    WebFileKind,
+    WebMessage,
+    WebMessageRole,
+    WebProject,
+    WebSession,
 )
 
 SCHEMA = """
@@ -227,6 +235,67 @@ CREATE TABLE IF NOT EXISTS skills (
 CREATE INDEX IF NOT EXISTS skills_scope
 ON skills(scope_kind, scope_id, created_at);
 
+CREATE TABLE IF NOT EXISTS web_sessions (
+    id TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    display_name TEXT NOT NULL DEFAULT '',
+    username TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    expires_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS web_sessions_user ON web_sessions(user_id, expires_at);
+
+CREATE TABLE IF NOT EXISTS web_projects (
+    id TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('skye', 'custom')),
+    name TEXT NOT NULL,
+    instructions TEXT NOT NULL DEFAULT '',
+    icon TEXT NOT NULL,
+    color TEXT NOT NULL,
+    pinned INTEGER NOT NULL DEFAULT 0,
+    openai_conversation_id TEXT,
+    last_message_preview TEXT NOT NULL DEFAULT '',
+    last_message_at TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS web_projects_user
+ON web_projects(user_id, pinned DESC, last_message_at DESC);
+
+CREATE UNIQUE INDEX IF NOT EXISTS web_projects_skye
+ON web_projects(user_id) WHERE kind = 'skye';
+
+CREATE TABLE IF NOT EXISTS web_messages (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES web_projects(id) ON DELETE CASCADE,
+    user_id INTEGER NOT NULL,
+    role TEXT NOT NULL CHECK (role IN ('user', 'assistant', 'tool', 'system')),
+    text TEXT NOT NULL DEFAULT '',
+    tool_name TEXT,
+    tool_status TEXT,
+    file_ids TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS web_messages_project
+ON web_messages(project_id, created_at, id);
+
+CREATE TABLE IF NOT EXISTS web_files (
+    id TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    project_id TEXT NOT NULL REFERENCES web_projects(id) ON DELETE CASCADE,
+    filename TEXT NOT NULL,
+    mime TEXT NOT NULL,
+    size INTEGER NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('upload', 'image', 'document')),
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS web_files_project ON web_files(project_id, created_at);
+
 CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
     content,
     category,
@@ -250,6 +319,28 @@ CREATE TRIGGER IF NOT EXISTS memories_au AFTER UPDATE ON memories BEGIN
     VALUES ('delete', old.id, old.content, old.category);
     INSERT INTO memories_fts(rowid, content, category)
     VALUES (new.id, new.content, new.category);
+END;
+
+CREATE VIRTUAL TABLE IF NOT EXISTS web_messages_fts USING fts5(
+    text,
+    content='web_messages',
+    content_rowid='rowid',
+    tokenize='unicode61'
+);
+
+CREATE TRIGGER IF NOT EXISTS web_messages_ai AFTER INSERT ON web_messages BEGIN
+    INSERT INTO web_messages_fts(rowid, text) VALUES (new.rowid, new.text);
+END;
+
+CREATE TRIGGER IF NOT EXISTS web_messages_ad AFTER DELETE ON web_messages BEGIN
+    INSERT INTO web_messages_fts(web_messages_fts, rowid, text)
+    VALUES ('delete', old.rowid, old.text);
+END;
+
+CREATE TRIGGER IF NOT EXISTS web_messages_au AFTER UPDATE ON web_messages BEGIN
+    INSERT INTO web_messages_fts(web_messages_fts, rowid, text)
+    VALUES ('delete', old.rowid, old.text);
+    INSERT INTO web_messages_fts(rowid, text) VALUES (new.rowid, new.text);
 END;
 """
 
@@ -1381,3 +1472,356 @@ class Database:
     @staticmethod
     def encode_payload(payload: dict[str, Any]) -> str:
         return json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
+
+    async def create_web_session(self, session: WebSession) -> WebSession:
+        await self._write(
+            """INSERT INTO web_sessions (id, user_id, display_name, username, expires_at)
+               VALUES (?, ?, ?, ?, ?)""",
+            (
+                session.id,
+                session.user_id,
+                session.display_name,
+                session.username,
+                session.expires_at,
+            ),
+        )
+        return session
+
+    async def web_session(self, session_id: str) -> WebSession | None:
+        cursor = await self.conn.execute(
+            """SELECT * FROM web_sessions
+               WHERE id = ? AND expires_at > CURRENT_TIMESTAMP""",
+            (session_id,),
+        )
+        row = await cursor.fetchone()
+        return self._web_session(row) if row else None
+
+    async def delete_web_session(self, session_id: str) -> None:
+        await self._write("DELETE FROM web_sessions WHERE id = ?", (session_id,))
+
+    async def purge_web_sessions(self) -> None:
+        await self._write("DELETE FROM web_sessions WHERE expires_at <= CURRENT_TIMESTAMP")
+
+    @staticmethod
+    def _web_session(row: aiosqlite.Row) -> WebSession:
+        return WebSession(
+            id=cast(str, row["id"]),
+            user_id=int(row["user_id"]),
+            display_name=cast(str, row["display_name"]),
+            username=cast(str | None, row["username"]),
+            created_at=cast(str, row["created_at"]),
+            expires_at=cast(str, row["expires_at"]),
+        )
+
+    async def create_web_project(self, project: WebProject) -> WebProject:
+        await self._write(
+            """INSERT INTO web_projects (
+                   id, user_id, kind, name, instructions, icon, color, pinned,
+                   openai_conversation_id, last_message_preview, last_message_at
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                project.id,
+                project.user_id,
+                project.kind,
+                project.name,
+                project.instructions,
+                project.icon,
+                project.color,
+                int(project.pinned),
+                project.openai_conversation_id,
+                project.last_message_preview,
+                project.last_message_at,
+            ),
+        )
+        saved = await self.web_project(project.user_id, project.id)
+        if saved is None:
+            raise RuntimeError("Project was not created")
+        return saved
+
+    async def web_project(self, user_id: int, project_id: str) -> WebProject | None:
+        cursor = await self.conn.execute(
+            "SELECT * FROM web_projects WHERE id = ? AND user_id = ?",
+            (project_id, user_id),
+        )
+        row = await cursor.fetchone()
+        return self._web_project(row) if row else None
+
+    async def skye_web_project(self, user_id: int) -> WebProject | None:
+        cursor = await self.conn.execute(
+            "SELECT * FROM web_projects WHERE user_id = ? AND kind = 'skye'",
+            (user_id,),
+        )
+        row = await cursor.fetchone()
+        return self._web_project(row) if row else None
+
+    async def list_web_projects(self, user_id: int) -> list[WebProject]:
+        cursor = await self.conn.execute(
+            """SELECT * FROM web_projects WHERE user_id = ?
+               ORDER BY pinned DESC,
+                        COALESCE(last_message_at, created_at) DESC,
+                        created_at DESC""",
+            (user_id,),
+        )
+        return [self._web_project(row) for row in await cursor.fetchall()]
+
+    async def update_web_project(
+        self,
+        user_id: int,
+        project_id: str,
+        *,
+        name: str | None = None,
+        instructions: str | None = None,
+        icon: str | None = None,
+        color: str | None = None,
+        pinned: bool | None = None,
+    ) -> WebProject | None:
+        current = await self.web_project(user_id, project_id)
+        if current is None:
+            return None
+        updated = WebProject(
+            id=current.id,
+            user_id=current.user_id,
+            kind=current.kind,
+            name=current.name if name is None else name,
+            instructions=current.instructions if instructions is None else instructions,
+            icon=current.icon if icon is None else icon,
+            color=current.color if color is None else color,
+            pinned=current.pinned if pinned is None else pinned,
+            openai_conversation_id=current.openai_conversation_id,
+            last_message_preview=current.last_message_preview,
+            last_message_at=current.last_message_at,
+            created_at=current.created_at,
+            updated_at=current.updated_at,
+        )
+        await self._write(
+            """UPDATE web_projects
+               SET name = ?, instructions = ?, icon = ?, color = ?, pinned = ?,
+                   updated_at = CURRENT_TIMESTAMP
+               WHERE id = ? AND user_id = ?""",
+            (
+                updated.name,
+                updated.instructions,
+                updated.icon,
+                updated.color,
+                int(updated.pinned),
+                project_id,
+                user_id,
+            ),
+        )
+        return await self.web_project(user_id, project_id)
+
+    async def set_web_conversation(
+        self, user_id: int, project_id: str, conversation_id: str | None
+    ) -> None:
+        await self._write(
+            """UPDATE web_projects
+               SET openai_conversation_id = ?, updated_at = CURRENT_TIMESTAMP
+               WHERE id = ? AND user_id = ?""",
+            (conversation_id, project_id, user_id),
+        )
+
+    async def touch_web_project(self, user_id: int, project_id: str, preview: str) -> None:
+        await self._write(
+            """UPDATE web_projects
+               SET last_message_preview = ?, last_message_at = CURRENT_TIMESTAMP,
+                   updated_at = CURRENT_TIMESTAMP
+               WHERE id = ? AND user_id = ?""",
+            (preview[:240], project_id, user_id),
+        )
+
+    async def delete_web_project(self, user_id: int, project_id: str) -> WebProject | None:
+        current = await self.web_project(user_id, project_id)
+        if current is None:
+            return None
+        if current.kind == "skye":
+            raise PermissionError("The Skye project cannot be deleted.")
+        await self._write(
+            "DELETE FROM web_projects WHERE id = ? AND user_id = ? AND kind = 'custom'",
+            (project_id, user_id),
+        )
+        return current
+
+    @staticmethod
+    def _web_project(row: aiosqlite.Row) -> WebProject:
+        return WebProject(
+            id=cast(str, row["id"]),
+            user_id=int(row["user_id"]),
+            kind=cast(ProjectKind, row["kind"]),
+            name=cast(str, row["name"]),
+            instructions=cast(str, row["instructions"]),
+            icon=cast(str, row["icon"]),
+            color=cast(str, row["color"]),
+            pinned=bool(row["pinned"]),
+            openai_conversation_id=cast(str | None, row["openai_conversation_id"]),
+            last_message_preview=cast(str, row["last_message_preview"]),
+            last_message_at=cast(str | None, row["last_message_at"]),
+            created_at=cast(str, row["created_at"]),
+            updated_at=cast(str, row["updated_at"]),
+        )
+
+    async def add_web_message(self, message: WebMessage) -> WebMessage:
+        await self._write(
+            """INSERT INTO web_messages (
+                   id, project_id, user_id, role, text, tool_name, tool_status, file_ids
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                message.id,
+                message.project_id,
+                message.user_id,
+                message.role,
+                message.text,
+                message.tool_name,
+                message.tool_status,
+                json.dumps(list(message.file_ids), separators=(",", ":")),
+            ),
+        )
+        saved = await self.web_message(message.user_id, message.id)
+        if saved is None:
+            raise RuntimeError("Message was not saved")
+        return saved
+
+    async def web_message(self, user_id: int, message_id: str) -> WebMessage | None:
+        cursor = await self.conn.execute(
+            "SELECT * FROM web_messages WHERE id = ? AND user_id = ?",
+            (message_id, user_id),
+        )
+        row = await cursor.fetchone()
+        return self._web_message(row) if row else None
+
+    async def list_web_messages(
+        self, user_id: int, project_id: str, *, after_id: str | None = None, limit: int = 200
+    ) -> list[WebMessage]:
+        if after_id:
+            cursor = await self.conn.execute(
+                """SELECT * FROM web_messages
+                   WHERE project_id = ? AND user_id = ? AND created_at >= (
+                       SELECT created_at FROM web_messages WHERE id = ?
+                   ) AND id != ?
+                   ORDER BY created_at, id LIMIT ?""",
+                (project_id, user_id, after_id, after_id, limit),
+            )
+        else:
+            cursor = await self.conn.execute(
+                """SELECT * FROM web_messages
+                   WHERE project_id = ? AND user_id = ?
+                   ORDER BY created_at, id LIMIT ?""",
+                (project_id, user_id, limit),
+            )
+        return [self._web_message(row) for row in await cursor.fetchall()]
+
+    async def clear_web_messages(self, user_id: int, project_id: str) -> None:
+        await self._write(
+            "DELETE FROM web_messages WHERE project_id = ? AND user_id = ?",
+            (project_id, user_id),
+        )
+
+    async def search_web(
+        self, user_id: int, query: str, limit: int = 20
+    ) -> tuple[list[WebProject], list[tuple[WebProject, WebMessage]]]:
+        terms = re.findall(r"\w+", query.casefold(), flags=re.UNICODE)[:12]
+        if not terms:
+            return [], []
+        like = "%" + "%".join(terms[:4]) + "%"
+        cursor = await self.conn.execute(
+            """SELECT * FROM web_projects
+               WHERE user_id = ? AND name LIKE ? COLLATE NOCASE
+               ORDER BY pinned DESC, COALESCE(last_message_at, created_at) DESC LIMIT ?""",
+            (user_id, like, limit),
+        )
+        projects = [self._web_project(row) for row in await cursor.fetchall()]
+        match = " OR ".join(f'"{term}"' for term in terms)
+        cursor = await self.conn.execute(
+            """SELECT m.*, p.id AS p_id, p.user_id AS p_user_id, p.kind, p.name AS p_name,
+                      p.instructions, p.icon, p.color, p.pinned, p.openai_conversation_id,
+                      p.last_message_preview, p.last_message_at, p.created_at AS p_created_at,
+                      p.updated_at AS p_updated_at
+               FROM web_messages_fts
+               JOIN web_messages AS m ON m.rowid = web_messages_fts.rowid
+               JOIN web_projects AS p ON p.id = m.project_id
+               WHERE web_messages_fts MATCH ? AND m.user_id = ? AND p.user_id = ?
+               ORDER BY bm25(web_messages_fts), m.created_at DESC LIMIT ?""",
+            (match, user_id, user_id, limit),
+        )
+        messages: list[tuple[WebProject, WebMessage]] = []
+        for row in await cursor.fetchall():
+            project = WebProject(
+                id=cast(str, row["p_id"]),
+                user_id=int(row["p_user_id"]),
+                kind=cast(ProjectKind, row["kind"]),
+                name=cast(str, row["p_name"]),
+                instructions=cast(str, row["instructions"]),
+                icon=cast(str, row["icon"]),
+                color=cast(str, row["color"]),
+                pinned=bool(row["pinned"]),
+                openai_conversation_id=cast(str | None, row["openai_conversation_id"]),
+                last_message_preview=cast(str, row["last_message_preview"]),
+                last_message_at=cast(str | None, row["last_message_at"]),
+                created_at=cast(str, row["p_created_at"]),
+                updated_at=cast(str, row["p_updated_at"]),
+            )
+            messages.append((project, self._web_message(row)))
+        return projects, messages
+
+    @staticmethod
+    def _web_message(row: aiosqlite.Row) -> WebMessage:
+        raw_ids = json.loads(cast(str, row["file_ids"] or "[]"))
+        file_ids = tuple(str(item) for item in raw_ids if isinstance(item, str))
+        status = cast(str | None, row["tool_status"])
+        return WebMessage(
+            id=cast(str, row["id"]),
+            project_id=cast(str, row["project_id"]),
+            user_id=int(row["user_id"]),
+            role=cast(WebMessageRole, row["role"]),
+            text=cast(str, row["text"]),
+            tool_name=cast(str | None, row["tool_name"]),
+            tool_status=cast(ToolStatus | None, status if status in {"running", "done"} else None),
+            file_ids=file_ids,
+            created_at=cast(str, row["created_at"]),
+        )
+
+    async def add_web_file(self, file: WebFile) -> WebFile:
+        await self._write(
+            """INSERT INTO web_files (id, user_id, project_id, filename, mime, size, kind)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (
+                file.id,
+                file.user_id,
+                file.project_id,
+                file.filename,
+                file.mime,
+                file.size,
+                file.kind,
+            ),
+        )
+        saved = await self.web_file(file.user_id, file.id)
+        if saved is None:
+            raise RuntimeError("File was not saved")
+        return saved
+
+    async def web_file(self, user_id: int, file_id: str) -> WebFile | None:
+        cursor = await self.conn.execute(
+            "SELECT * FROM web_files WHERE id = ? AND user_id = ?",
+            (file_id, user_id),
+        )
+        row = await cursor.fetchone()
+        return self._web_file(row) if row else None
+
+    async def list_web_files(self, user_id: int, project_id: str) -> list[WebFile]:
+        cursor = await self.conn.execute(
+            "SELECT * FROM web_files WHERE user_id = ? AND project_id = ? ORDER BY created_at",
+            (user_id, project_id),
+        )
+        return [self._web_file(row) for row in await cursor.fetchall()]
+
+    @staticmethod
+    def _web_file(row: aiosqlite.Row) -> WebFile:
+        return WebFile(
+            id=cast(str, row["id"]),
+            user_id=int(row["user_id"]),
+            project_id=cast(str, row["project_id"]),
+            filename=cast(str, row["filename"]),
+            mime=cast(str, row["mime"]),
+            size=int(row["size"]),
+            kind=cast(WebFileKind, row["kind"]),
+            created_at=cast(str, row["created_at"]),
+        )

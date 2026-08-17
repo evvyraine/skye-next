@@ -10,7 +10,7 @@ PRs, issues, commit messages, reviews, user communication, README, docs, comment
 
 ## What this is
 
-Skye Next is a private, allowlisted Telegram bot: a thin host around one OpenAI-powered agent. Users talk to Skye in Telegram; Skye talks to OpenAI.
+Skye Next is a private, allowlisted OpenAI agent host. Users talk to Skye in Telegram or at `chat.skye-bot.com`; Skye talks to OpenAI.
 
 The product should expose OpenAI's native capabilities with as little application code as possible.
 
@@ -19,20 +19,21 @@ Skye's voice is calm, short, warm, and grounded. She is female. Identity and ton
 ## What we own
 
 - Telegram identity, permissions, updates, buttons, streaming, and files
-- Durable product data: settings, allowlist, memories, custom agents, connectors, skills
+- Web chat at `chat.skye-bot.com`: Telegram Login, private projects, streaming, and files
+- Durable product data: settings, allowlist, memories, custom agents, connectors, skills, web projects
 - Safe composition of the active agent and its tools
 - Reliability, observability, and lifecycle
 
-We do not own a model loop, a provider abstraction, billing, subscriptions, a web panel, or a plugin framework.
+We do not own a model loop, a provider abstraction, billing, subscriptions, an admin web panel, or a plugin framework.
 
 ## Core decisions
 
 - **One provider.** OpenAI Responses API through `openai-agents`. Every normal chat turn is `Agent` + `Runner.run_streamed()`. Use the official `openai` client only for resource lifecycle (conversations, files, skills). No Chat Completions fallback. No second-provider interface until a second real provider exists.
 - **Small model catalog**, code-owned: Luna (`gpt-5.6-luna`, default), Terra (`gpt-5.6-terra`), Sol (`gpt-5.6-sol`).
-- **No Mini App.** Settings and management are inline-keyboard messages edited in place. Callback data is a short action plus an opaque id — never JSON, never trusted client state.
+- **No Mini App.** Telegram settings stay inline-keyboard messages edited in place. Callback data is a short action plus an opaque id — never JSON, never trusted client state. The web app at `chat.skye-bot.com` is a second transport for private project chats, not a Mini App and not an admin panel.
 - **Connectors are per user.** Hosted apps connect through Composio; custom HTTPS MCP is stored locally. A group run receives a connector only after the owner explicitly shares that one item with that group. The owner or a group admin can revoke the share.
 - **Explicit composition.** One typed app container, one startup function. Features expose services; they do not register themselves.
-- **Two memories, never mixed.** OpenAI `conversation_id` is the working context for a Telegram thread — send only the new turn; `/reset` starts a new conversation. Skye memories are small, inspectable, scoped facts (`remember` / `recall` / `forget`). Private memories are `scope=user`. Group memories are `scope=chat`. A group run never sees a participant's private memories. Never combine an Agents SDK `Session` with `conversation_id` on the same run. The local database stores the OpenAI conversation id, not a duplicate transcript.
+- **Two memories, never mixed.** OpenAI `conversation_id` is the working context for a Telegram thread or a web project — send only the new turn; `/reset` (or web reset) starts a new conversation. Skye memories are small, inspectable, scoped facts (`remember` / `recall` / `forget`). Private memories are `scope=user`. Group memories are `scope=chat`. A group run never sees a participant's private memories. Never combine an Agents SDK `Session` with `conversation_id` on the same run. Telegram stores the OpenAI conversation id, not a duplicate transcript. The web UI may keep a display/search event log; that log is never sent back as model history. Web projects never share a conversation id with a Telegram DM.
 - **Hosted execution only.** Shell never runs on the bot host. `ShellTool` uses `container_auto` with a request-level domain allowlist (`SKYE_SANDBOX_ALLOWED_DOMAINS`; must be a subset of the org allow list). Never pass bot secrets into that container. Web search and image generation/editing are native hosted tools; users ask in natural language.
 - **Skills are data.** Users upload a zip bundle or a `SKILL.md` file; every file in the zip is stored locally and sent together to OpenAI `/v1/skills`. Mount them on hosted shell as `skill_reference`. Delete removes both the local copy and the OpenAI skill. Skills are scoped like memories: private skills stay `scope=user`, group skills stay `scope=chat`.
 - **Custom agents are data**, not Python: name, description, instructions, optional model, hosted capabilities, visibility. Users cannot upload function tools. Sharing pins an immutable published version; later edits never change an imported install. Default orchestration is manager-style: Skye is the root, specialists are `Agent.as_tool()`. Selecting an agent as active makes that profile the root.
@@ -51,14 +52,14 @@ We do not own a model loop, a provider abstraction, billing, subscriptions, a we
 - All outbound Telegram text goes through the rich-message boundary. Stream drafts in private chats; placeholder + edit in groups. Throttle edits.
 - Bot copy: calm, short, sentence case. No "oops", no cheerleading, no corporate filler.
 - Assemble volatile context per run (identity, active agent, memories, tools that are actually attached). State each rule once. Never describe a tool that is not present. Keep the stable prompt prefix first.
-- Persist every Telegram `update_id` before work; drop `pending` on startup. Serialize runs per `(chat_id, thread_id)`. OpenAI runs wait in one process-wide queue. Rate limits and conversation locks are retried with the official SDK and Tenacity exponential backoff. `/stop` cancels the active run.
+- Persist every Telegram `update_id` before work; drop `pending` on startup. Serialize Telegram runs per `(chat_id, thread_id)` and web runs per `web:{project_id}`. OpenAI runs wait in one process-wide queue. Rate limits and conversation locks are retried with the official SDK and Tenacity exponential backoff. `/stop` (or the web stop endpoint) cancels the active run.
 - Logs are structured JSON. Redact tokens, prompts, memory contents, and file bodies. Tracing is opt-in. Send a privacy-preserving `safety_identifier` derived with HMAC from the Telegram user id — never the raw id.
 - `/reset` replaces working conversation state and keeps long-term memories. Memory deletion is a separate destructive action.
 
 ## Do not add
 
 - A second model provider
-- A Mini App or any web UI
+- A Mini App or an admin web panel
 - Billing, token quotas, or product tiers
 - Local shell, Daytona, or host-side code execution
 - Dynamic module discovery
@@ -95,6 +96,6 @@ Line length 100. Ruff selects `E`, `F`, `I`, `UP`, `B`, `SIM`.
 Test the boundaries: scope isolation, allowlist precedence, callback parsing, prompt/tool composition, Telegram rendering, SQLite repositories, and fake-runtime events. Prefer focused tests over mocks of the universe.
 
 Required env: `TELEGRAM_BOT_TOKEN`, `OPENAI_API_KEY`, `SKYE_OWNER_IDS`.
-Optional: `COMPOSIO_API_KEY` for hosted app connections.
+Optional: `COMPOSIO_API_KEY` for hosted app connections. Web chat also needs `SKYE_WEB_ORIGIN`, `TELEGRAM_LOGIN_CLIENT_ID`, and `TELEGRAM_LOGIN_CLIENT_SECRET`.
 
 `ARCHITECTURE.md` is the product and system design. This file is the short operating brief — follow both, and do not re-litigate settled decisions.
