@@ -12,6 +12,9 @@ from aiogram.types import (
     InputRichMessage,
     Message,
     ReplyParameters,
+    RichTextBold,
+    RichTextCode,
+    RichTextUrl,
     User,
 )
 
@@ -57,8 +60,11 @@ def test_access_screen_lists_entries_and_group_status() -> None:
         AccessEntry(Scope("user", 42), "allow", 1, "now"),
         AccessEntry(Scope("chat", -100), "ban", 1, "now"),
     ]
+    target = Scope("user", 42)
 
-    message = RichMessages.access(entries, notice="Allowed user `42`.", in_group=True)
+    message = RichMessages.access(
+        entries, notice=RichMessages.access_change("Allowed", target), in_group=True
+    )
 
     assert message.blocks
     notice = message.blocks[1]
@@ -66,15 +72,90 @@ def test_access_screen_lists_entries_and_group_status() -> None:
     table = message.blocks[3]
     assert isinstance(notice, InputRichBlockParagraph)
     assert isinstance(status, InputRichBlockParagraph)
-    assert notice.text == "Allowed user `42`."
+    assert notice.text == ["Allowed user ", RichTextCode(text="42"), "."]
     assert status.text == "This group is not allowlisted."
     assert isinstance(table, InputRichBlockTable)
     assert table.cells[1][0].text == "user"
-    assert table.cells[1][1].text == "42"
+    assert table.cells[1][1].text == RichTextCode(text="42")
     assert table.cells[1][2].text == "allow"
-    assert all(
-        "Owner-only allowlist" not in getattr(block, "text", "") for block in message.blocks
+    assert all("Owner-only allowlist" not in getattr(block, "text", "") for block in message.blocks)
+
+
+def test_connector_share_confirm_bolds_the_connector_name() -> None:
+    message = RichMessages.connector_share_confirm("Work **CRM**", "Skye Lab", sensitive=True)
+
+    assert message.blocks
+    heading = message.blocks[0]
+    body = message.blocks[1]
+    assert isinstance(heading, InputRichBlockSectionHeading)
+    assert heading.text == "Share Work **CRM**"
+    assert isinstance(body, InputRichBlockParagraph)
+    assert body.text == [
+        "Share ",
+        RichTextBold(text="Work **CRM**"),
+        " with Skye Lab? Anyone there can ask Skye to use it. "
+        "Replies that use this app will be visible to everyone in the group.",
+    ]
+
+
+def test_settings_prompts_use_native_headings_and_inline_rich_text() -> None:
+    memory = RichMessages.memory_clear_confirm()
+    skill = RichMessages.skill_upload_prompt()
+    share = RichMessages.agent_share_link("https://t.me/skye_bot?start=agent_abc")
+    admin = RichMessages.admin_prompt("allow")
+
+    assert memory.blocks
+    assert isinstance(memory.blocks[0], InputRichBlockSectionHeading)
+    assert memory.blocks[0].text == "Delete all memories?"
+    assert skill.blocks
+    assert isinstance(skill.blocks[1], InputRichBlockParagraph)
+    assert skill.blocks[1].text == [
+        "Send a ",
+        RichTextCode(text=".zip"),
+        " skill bundle or a ",
+        RichTextCode(text="SKILL.md"),
+        " file. Every file in the zip is stored and uploaded together.",
+    ]
+    assert share.blocks
+    assert isinstance(share.blocks[2], InputRichBlockParagraph)
+    assert share.blocks[2].text == RichTextUrl(
+        text="Install this agent", url="https://t.me/skye_bot?start=agent_abc"
     )
+    assert admin.blocks
+    assert isinstance(admin.blocks[0], InputRichBlockSectionHeading)
+    assert admin.blocks[0].text == "Allow"
+
+
+def test_settings_menus_send_native_blocks_instead_of_markdown() -> None:
+    screens = [
+        RichMessages.settings(ChatSettings(model="gpt-5.6-luna", reasoning="medium")),
+        RichMessages.choose_model("gpt-5.6-luna"),
+        RichMessages.choose_reasoning("medium"),
+        RichMessages.agents((), None),
+        RichMessages.access(
+            (), notice=RichMessages.access_change("Allowed", Scope("chat", -1002206813481))
+        ),
+        RichMessages.memory([], enabled=True),
+        RichMessages.memory_clear_confirm(),
+        RichMessages.skill_upload_prompt(),
+        RichMessages.skill_delete_confirm("basic-math"),
+        RichMessages.connector_share_confirm("Gmail", "Skye Lab", sensitive=False),
+        RichMessages.connector_remove_confirm("Work CRM"),
+        RichMessages.connector_search_prompt(),
+        RichMessages.connector_edit_prompt("name", "Work CRM"),
+        RichMessages.admin_prompt("allow"),
+        RichMessages.agent_name_prompt("Helper"),
+        RichMessages.agent_share_link("https://t.me/bot?start=agent_1"),
+        RichMessages.agent_installed("Helper", 1, hint=True),
+    ]
+    for message in screens:
+        assert message.blocks
+        assert message.markdown is None
+        for block in message.blocks:
+            text = getattr(block, "text", None)
+            if isinstance(text, str):
+                assert "**" not in text
+                assert "`" not in text
 
 
 def test_access_screen_can_hide_entries() -> None:
@@ -197,6 +278,7 @@ def test_memory_screen_uses_plain_rich_cells() -> None:
     assert message.blocks
     table = message.blocks[1]
     assert isinstance(table, InputRichBlockTable)
+    assert table.cells[1][0].text == RichTextCode(text="1")
     assert table.cells[1][2].text == "Likes **literal** tea"
 
 

@@ -24,6 +24,7 @@ from aiogram.types import (
     InlineKeyboardMarkup,
     InputRichMessage,
     Message,
+    RichTextUnion,
     TelegramObject,
     Update,
     User,
@@ -190,14 +191,15 @@ class TelegramApp:
                     return
                 await self.rich.send(
                     message,
-                    f"Installed **{installed.version.name}** v{installed.version.version}. "
-                    "Use /agents to select or inspect it.",
+                    self.rich.agent_installed(
+                        installed.version.name, installed.version.version, hint=True
+                    ),
                 )
                 return
             await self.rich.send(
                 message,
                 "Hi. I'm Skye. Send a message, image, or task — "
-                "I'll use the right tools when needed."
+                "I'll use the right tools when needed.",
             )
         else:
             await self.rich.send(
@@ -223,9 +225,7 @@ class TelegramApp:
             return
         current = await self.database.get_settings(context.scope)
         editable = await self._can_edit(context)
-        agent_name = await self.custom_agents.active_name(
-            context.scope, current.active_agent_id
-        )
+        agent_name = await self.custom_agents.active_name(context.scope, current.active_agent_id)
         private = context.chat_type == "private"
         connector_count, skill_count = await self._settings_counts(context, private)
         await self.rich.send(
@@ -247,9 +247,7 @@ class TelegramApp:
         editable = await self._can_edit(context)
         action = callback.data.split(":")
         current = await self.database.get_settings(context.scope)
-        agent_name = await self.custom_agents.active_name(
-            context.scope, current.active_agent_id
-        )
+        agent_name = await self.custom_agents.active_name(context.scope, current.active_agent_id)
 
         if action == ["settings", "models"]:
             await self.rich.edit(
@@ -274,16 +272,12 @@ class TelegramApp:
             )
         elif action == ["settings", "connectors"]:
             try:
-                await self.connectors.show_home(
-                    callback.message, context, editable=editable
-                )
+                await self.connectors.show_home(callback.message, context, editable=editable)
             except ConnectorError as error:
                 await callback.answer(str(error), show_alert=True)
                 return
         elif action == ["settings", "skills"]:
-            await self.skill_panel.show_home(
-                callback.message, context, editable=editable
-            )
+            await self.skill_panel.show_home(callback.message, context, editable=editable)
         elif action == ["settings", "memory"]:
             memories = await self.database.memories(context.scope, 10)
             await self.rich.edit(
@@ -310,8 +304,7 @@ class TelegramApp:
                 return
             await self.rich.edit(
                 callback.message,
-                "## Delete all memories?\n\n"
-                "This cannot be undone. Conversation history is separate.",
+                self.rich.memory_clear_confirm(),
                 reply_markup=self._memory_clear_keyboard(),
             )
         elif action == ["settings", "memory", "confirm"]:
@@ -432,9 +425,7 @@ class TelegramApp:
             reply_markup=self._settings_keyboard(editable, private=private),
         )
 
-    async def _settings_counts(
-        self, context: RequestContext, private: bool
-    ) -> tuple[int, int]:
+    async def _settings_counts(self, context: RequestContext, private: bool) -> tuple[int, int]:
         connector_count = (
             await self.connector_service.connected_count(context.user_id)
             if private
@@ -452,12 +443,10 @@ class TelegramApp:
         parts = (message.text or "").split(maxsplit=2)
         if len(parts) >= 2 and parts[1].lower() == "import":
             if not editable:
-                await self.rich.send(
-                    message, "Only chat administrators can install an agent here."
-                )
+                await self.rich.send(message, "Only chat administrators can install an agent here.")
                 return
             if len(parts) != 3:
-                await self.rich.send(message, "Use `/agents import <share link or token>`.")
+                await self.rich.send(message, self.rich.agent_import_usage())
                 return
             try:
                 installed = await self.custom_agents.import_shared(
@@ -468,7 +457,7 @@ class TelegramApp:
                 return
             await self.rich.send(
                 message,
-                f"Installed **{installed.version.name}** v{installed.version.version}.",
+                self.rich.agent_installed(installed.version.name, installed.version.version),
             )
         await self._send_agents(message, context, editable)
 
@@ -493,7 +482,7 @@ class TelegramApp:
                 await state.set_data(
                     {"scope_kind": context.scope.kind, "scope_id": context.scope.id}
                 )
-                await self.rich.send(callback.message, "Send the agent name (up to 64 characters).")
+                await self.rich.send(callback.message, self.rich.agent_name_prompt())
             elif action == ["agents", "save"]:
                 await self._save_agent(callback.message, context, state, editable)
             elif action == ["agents", "cancel"]:
@@ -527,7 +516,7 @@ class TelegramApp:
                 )
                 await self.rich.send(
                     callback.message,
-                    f"Send a new name, or `.` to keep “{installed.version.name}”.",
+                    self.rich.agent_name_prompt(installed.version.name),
                 )
             elif len(action) == 3 and action[:2] == ["agents", "share"]:
                 token = await self.custom_agents.share(context.scope, action[2], context.user_id)
@@ -536,8 +525,7 @@ class TelegramApp:
                     raise RuntimeError("The bot needs a username to create a share link.")
                 await self.rich.send(
                     callback.message,
-                    "Immutable share link for this version:\n\n"
-                    f"[Install this agent](https://t.me/{username}?start=agent_{token})",
+                    self.rich.agent_share_link(f"https://t.me/{username}?start=agent_{token}"),
                 )
             elif len(action) == 3 and action[:2] == ["agents", "remove"]:
                 if not editable:
@@ -608,12 +596,8 @@ class TelegramApp:
             if not keep:
                 await state.update_data(name=value)
             await state.set_state(AgentWizard.description)
-            suffix = (
-                f", or `.` to keep “{data['description']}”" if "agent_id" in data else ""
-            )
-            await self.rich.send(
-                message, f"What is this agent good at? Send 1–240 characters{suffix}."
-            )
+            keep_description = cast(str, data["description"]) if "agent_id" in data else None
+            await self.rich.send(message, self.rich.agent_description_prompt(keep_description))
         elif current == AgentWizard.description.state:
             if not keep and not 1 <= len(" ".join(value.split())) <= 240:
                 await self.rich.send(message, "Description must be 1–240 characters.")
@@ -621,10 +605,8 @@ class TelegramApp:
             if not keep:
                 await state.update_data(description=value)
             await state.set_state(AgentWizard.instructions)
-            suffix = ", or `.` to keep the current instructions" if "agent_id" in data else ""
             await self.rich.send(
-                message,
-                "Send the agent instructions as text or a Markdown file" + suffix + ".",
+                message, self.rich.agent_instructions_prompt(keep="agent_id" in data)
             )
         elif current == AgentWizard.instructions.state:
             if not keep and not 1 <= len(value.strip()) <= 12_000:
@@ -694,9 +676,7 @@ class TelegramApp:
                 raise ValueError("The instructions file must be UTF-8.") from None
         raise ValueError("Send text for this step.")
 
-    async def _send_agents(
-        self, message: Message, context: RequestContext, editable: bool
-    ) -> None:
+    async def _send_agents(self, message: Message, context: RequestContext, editable: bool) -> None:
         settings = await self.database.get_settings(context.scope)
         installed = await self.custom_agents.list(context.scope)
         await self.rich.send(
@@ -705,9 +685,7 @@ class TelegramApp:
             reply_markup=self._agents_keyboard(installed, settings.active_agent_id, editable),
         )
 
-    async def _edit_agents(
-        self, message: Message, context: RequestContext, editable: bool
-    ) -> None:
+    async def _edit_agents(self, message: Message, context: RequestContext, editable: bool) -> None:
         settings = await self.database.get_settings(context.scope)
         installed = await self.custom_agents.list(context.scope)
         await self.rich.edit(
@@ -804,7 +782,7 @@ class TelegramApp:
                 )
                 await self.rich.edit(
                     callback.message,
-                    self._admin_prompt_text(prompt_action),
+                    RichMessages.admin_prompt(prompt_action),
                     reply_markup=self._admin_cancel_keyboard(),
                 )
             elif len(action) == 4 and action[:2] == ["admin", "open"]:
@@ -868,7 +846,7 @@ class TelegramApp:
         message: Message,
         context: RequestContext,
         *,
-        notice: str | None = None,
+        notice: RichTextUnion | None = None,
         reply_user: User | None = None,
         edit: bool = True,
     ) -> None:
@@ -882,7 +860,7 @@ class TelegramApp:
                 None,
             )
         visible = () if in_group else entries
-        content = self.rich.access(
+        content = RichMessages.access(
             visible,
             notice=notice,
             group_effect=group_effect,
@@ -905,24 +883,27 @@ class TelegramApp:
             return
         await self.rich.edit(
             message,
-            self.rich.access([entry], notice=f"{entry.scope.kind} `{entry.scope.id}`"),
+            RichMessages.access([entry], notice=RichMessages.access_target(entry.scope)),
             reply_markup=self._admin_entry_keyboard(entry),
         )
 
-    async def _apply_admin(self, actor_id: int, action: AdminAction, target: Scope) -> str:
+    async def _apply_admin(
+        self, actor_id: int, action: AdminAction, target: Scope
+    ) -> RichTextUnion:
         if (
             target.kind == "user"
             and self.access.is_owner(target.id)
             and action in {"ban", "remove"}
         ):
             raise PermissionError("The owner cannot be banned or removed.")
-        label = f"{target.kind} `{target.id}`"
         if action == "allow" or action == "ban":
             await self.database.set_access(target, action, actor_id)
-            return f"{action.title()}ed {label}."
+            return RichMessages.access_change(f"{action.title()}ed", target)
         if action == "remove":
             removed = await self.database.remove_access(target)
-            return f"Removed {label}." if removed else "No matching entry."
+            return (
+                RichMessages.access_change("Removed", target) if removed else "No matching entry."
+            )
         raise ValueError("Unknown admin action.")
 
     async def chat(self, message: Message) -> None:
@@ -1016,9 +997,7 @@ class TelegramApp:
                     f"<current_message>\n{identity}: {text}{reply_context}\n</current_message>"
                 )
             else:
-                text = (
-                    f"<current_message>\n{identity}: {text}{reply_context}\n</current_message>"
-                )
+                text = f"<current_message>\n{identity}: {text}{reply_context}\n</current_message>"
         has_attachments = any(
             (
                 source
@@ -1147,19 +1126,6 @@ class TelegramApp:
         return Scope(expected, telegram_id)
 
     @staticmethod
-    def _admin_prompt_text(action: str) -> str:
-        if action == "allow":
-            verb = "allow"
-        elif action == "ban":
-            verb = "ban"
-        else:
-            verb = "remove"
-        return (
-            f"Reply to this message with the numeric Telegram id to {verb}. "
-            "Negative ids are groups."
-        )
-
-    @staticmethod
     def _admin_home_keyboard(
         context: RequestContext,
         entries: Sequence[AccessEntry],
@@ -1177,9 +1143,7 @@ class TelegramApp:
                 )
             if group_effect != "allow":
                 group_row.append(
-                    InlineKeyboardButton(
-                        text="Allow this group", callback_data="admin:allow_group"
-                    )
+                    InlineKeyboardButton(text="Allow this group", callback_data="admin:allow_group")
                 )
             if group_row:
                 rows.append(group_row)
@@ -1260,9 +1224,7 @@ class TelegramApp:
         )
 
     @staticmethod
-    def _settings_keyboard(
-        editable: bool, *, private: bool = False
-    ) -> InlineKeyboardMarkup | None:
+    def _settings_keyboard(editable: bool, *, private: bool = False) -> InlineKeyboardMarkup | None:
         if not editable:
             return InlineKeyboardMarkup(
                 inline_keyboard=[
@@ -1293,8 +1255,7 @@ class TelegramApp:
         rows = [
             [
                 InlineKeyboardButton(
-                    text=("✓ " if item.profile.id == active_agent_id else "")
-                    + item.version.name,
+                    text=("✓ " if item.profile.id == active_agent_id else "") + item.version.name,
                     callback_data=f"agents:open:{item.profile.id}",
                 )
             ]
@@ -1359,9 +1320,7 @@ class TelegramApp:
             rows.extend(
                 [
                     [
-                        InlineKeyboardButton(
-                            text="Edit", callback_data=f"agents:edit:{agent_id}"
-                        ),
+                        InlineKeyboardButton(text="Edit", callback_data=f"agents:edit:{agent_id}"),
                         InlineKeyboardButton(
                             text="Share", callback_data=f"agents:share:{agent_id}"
                         ),
@@ -1419,11 +1378,7 @@ class TelegramApp:
             )
             if has_memories:
                 rows.append(
-                    [
-                        InlineKeyboardButton(
-                            text="Delete all", callback_data="settings:memory:clear"
-                        )
-                    ]
+                    [InlineKeyboardButton(text="Delete all", callback_data="settings:memory:clear")]
                 )
         rows.append([InlineKeyboardButton(text="‹ Back", callback_data="settings:back")])
         return InlineKeyboardMarkup(inline_keyboard=rows)
