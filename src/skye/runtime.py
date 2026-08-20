@@ -256,14 +256,16 @@ class GuardedResponsesModel(OpenAIResponsesModel):
     @staticmethod
     def _counting_file_part(part: dict[str, Any]) -> dict[str, Any]:
         counted: dict[str, Any] = {"type": "input_file"}
+        file_source: tuple[str, str] | None = None
         for key in ("file_id", "file_data", "file_url"):
             value = _nonempty_str(part.get(key))
             if value:
-                counted[key] = value
+                file_source = (key, value)
                 break
-        else:
-            filename = _nonempty_str(part.get("filename")) or "file"
-            return {"type": "input_text", "text": f"[{filename}]"}
+        if file_source is None:
+            label = _nonempty_str(part.get("filename")) or "file"
+            return {"type": "input_text", "text": f"[{label}]"}
+        counted[file_source[0]] = file_source[1]
         filename = _nonempty_str(part.get("filename"))
         if filename:
             counted["filename"] = filename
