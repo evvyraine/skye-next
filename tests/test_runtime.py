@@ -28,6 +28,7 @@ from skye.runtime import (
     GuardedResponsesModel,
     StreamStartedError,
     TokenRateLimiter,
+    _dump_conversation_item,
     is_transient,
     retry_after,
 )
@@ -611,6 +612,60 @@ async def test_guard_replaces_incomplete_images_in_conversation_snapshots() -> N
         {"type": "input_text", "text": "[notes.pdf]"},
     ]
     assert kwargs["input"][1] == {"role": "user", "content": "now"}
+
+
+async def test_guard_drops_image_generation_action_from_conversation_snapshots() -> None:
+    client = AsyncMock()
+    history = type(
+        "Item",
+        (),
+        {
+            "model_dump": lambda self, **_kwargs: {
+                "type": "image_generation_call",
+                "id": "ig_1",
+                "status": "completed",
+                "action": "edit",
+                "revised_prompt": "make it bluer",
+            }
+        },
+    )()
+    client.conversations.items.list.return_value = type(
+        "Page", (), {"data": [history], "has_next_page": lambda self: False}
+    )()
+    client.responses.input_tokens.count.return_value = type(
+        "Count", (), {"input_tokens": 100}
+    )()
+    limiter = AsyncMock()
+    model = GuardedResponsesModel("gpt-5.6-luna", client, limiter, 50_000, 4_000)
+
+    await model._admit("instructions", "now", ModelSettings(), [], [], "conv_1")
+
+    kwargs = client.responses.input_tokens.count.await_args.kwargs
+    assert kwargs["input"][0] == {
+        "type": "image_generation_call",
+        "id": "ig_1",
+        "status": "completed",
+    }
+    assert "action" not in kwargs["input"][0]
+
+
+def test_conversation_dump_keeps_only_declared_fields() -> None:
+    class StoredCall:
+        model_fields = {"id": object(), "status": object(), "type": object()}
+
+        def model_dump(self, **_kwargs: object) -> dict[str, object]:
+            return {
+                "type": "image_generation_call",
+                "id": "ig_1",
+                "status": "completed",
+                "action": "edit",
+            }
+
+    assert _dump_conversation_item(StoredCall()) == {
+        "type": "image_generation_call",
+        "id": "ig_1",
+        "status": "completed",
+    }
 
 
 async def test_run_strips_sandbox_links_and_attaches_files() -> None:

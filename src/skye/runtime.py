@@ -54,6 +54,7 @@ OPENAI_MAX_RETRIES = 0
 OPENAI_RUN_ATTEMPTS = 2
 _RETRY_IN = re.compile(r"try again in\s+([0-9]+(?:\.[0-9]+)?)\s*s", re.IGNORECASE)
 _WAIT = wait_random_exponential(min=1, max=60)
+_IMAGE_GENERATION_CALL_FIELDS = frozenset({"id", "type", "status", "result"})
 _TOOL_LABELS: dict[str, str] = {
     "web_search": "Searched the web",
     "web_search_call": "Searched the web",
@@ -209,7 +210,7 @@ class GuardedResponsesModel(OpenAIResponsesModel):
         while True:
             found_compaction = False
             for item in page.data:
-                dumped = item.model_dump(mode="json", exclude_none=True)
+                dumped = _dump_conversation_item(item)
                 newest_first.append(dumped)
                 if dumped.get("type") == "compaction":
                     found_compaction = True
@@ -235,6 +236,8 @@ class GuardedResponsesModel(OpenAIResponsesModel):
             return cls._counting_image_part(value)
         if part_type == "input_file":
             return cls._counting_file_part(value)
+        if part_type == "image_generation_call":
+            return cls._counting_image_generation_call(value)
         return {key: cls._counting_value(item) for key, item in value.items()}
 
     @staticmethod
@@ -272,6 +275,16 @@ class GuardedResponsesModel(OpenAIResponsesModel):
         detail = part.get("detail")
         if isinstance(detail, str) and detail:
             counted["detail"] = detail
+        return counted
+
+    @classmethod
+    def _counting_image_generation_call(cls, item: dict[str, Any]) -> dict[str, Any]:
+        counted = {
+            key: cls._counting_value(value)
+            for key, value in item.items()
+            if key in _IMAGE_GENERATION_CALL_FIELDS
+        }
+        counted["type"] = "image_generation_call"
         return counted
 
     @staticmethod
@@ -938,3 +951,11 @@ def _fallback_tool_label(name: str) -> str:
 
 def _nonempty_str(value: Any) -> str | None:
     return value if isinstance(value, str) and value else None
+
+
+def _dump_conversation_item(item: Any) -> Any:
+    dumped = item.model_dump(mode="json", exclude_none=True)
+    fields = getattr(type(item), "model_fields", None)
+    if not isinstance(dumped, dict) or not isinstance(fields, dict):
+        return dumped
+    return {key: value for key, value in dumped.items() if key in fields}
