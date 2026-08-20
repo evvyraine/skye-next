@@ -166,9 +166,14 @@ class GuardedResponsesModel(OpenAIResponsesModel):
             model=str(self.model),
             tool_choice=model_settings.tool_choice,
         )
+        current_input: list[Any]
+        if isinstance(input, str):
+            current_input = [{"role": "user", "content": input}]
+        else:
+            current_input = list(input)
+        history = await self._conversation_items(conversation_id)
         kwargs: dict[str, Any] = {
-            "conversation": conversation_id,
-            "input": input,
+            "input": [*history, *current_input],
             "instructions": system_instructions,
             "model": str(self.model),
             "tools": self._counting_tools(converted.tools),
@@ -178,7 +183,7 @@ class GuardedResponsesModel(OpenAIResponsesModel):
         requested = counted.input_tokens
         if requested > self._max_context_tokens:
             standalone = await self._client.responses.input_tokens.count(
-                **{**kwargs, "conversation": None}
+                **{**kwargs, "input": current_input}
             )
             if standalone.input_tokens > self._max_context_tokens:
                 raise ContextLimitError(
@@ -191,6 +196,29 @@ class GuardedResponsesModel(OpenAIResponsesModel):
                 admitted_tokens=requested,
             )
         await self._limiter.acquire(requested + self._output_reserve)
+
+    async def _conversation_items(self, conversation_id: str | None) -> list[Any]:
+        if conversation_id is None:
+            return []
+        newest_first: list[Any] = []
+        page = await self._client.conversations.items.list(
+            conversation_id,
+            limit=100,
+            order="desc",
+        )
+        while True:
+            found_compaction = False
+            for item in page.data:
+                dumped = item.model_dump(mode="json", exclude_none=True)
+                newest_first.append(dumped)
+                if dumped.get("type") == "compaction":
+                    found_compaction = True
+                    break
+            if found_compaction or not page.has_next_page():
+                break
+            page = await page.get_next_page()
+        newest_first.reverse()
+        return newest_first
 
     @staticmethod
     def _counting_tools(tools: list[Any]) -> list[Any]:

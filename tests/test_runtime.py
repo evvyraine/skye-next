@@ -499,6 +499,9 @@ async def test_token_rate_limiter_waits_for_the_rolling_budget() -> None:
 
 async def test_guard_rejects_a_current_request_above_50k() -> None:
     client = AsyncMock()
+    client.conversations.items.list.return_value = type(
+        "Page", (), {"data": [], "has_next_page": lambda self: False}
+    )()
     client.responses.input_tokens.count.side_effect = [
         type("Count", (), {"input_tokens": 80_000})(),
         type("Count", (), {"input_tokens": 51_000})(),
@@ -514,6 +517,9 @@ async def test_guard_rejects_a_current_request_above_50k() -> None:
 
 async def test_guard_reserves_50k_when_conversation_requires_compaction() -> None:
     client = AsyncMock()
+    client.conversations.items.list.return_value = type(
+        "Page", (), {"data": [], "has_next_page": lambda self: False}
+    )()
     client.responses.input_tokens.count.side_effect = [
         type("Count", (), {"input_tokens": 80_000})(),
         type("Count", (), {"input_tokens": 2_000})(),
@@ -524,6 +530,32 @@ async def test_guard_reserves_50k_when_conversation_requires_compaction() -> Non
     await model._admit("instructions", "hello", ModelSettings(), [], [], "conv_1")
 
     limiter.acquire.assert_awaited_once_with(54_000)
+
+
+async def test_guard_counts_a_snapshot_without_locking_the_conversation() -> None:
+    client = AsyncMock()
+    history = type(
+        "Item",
+        (),
+        {"model_dump": lambda self, **_kwargs: {"role": "user", "content": "earlier"}},
+    )()
+    client.conversations.items.list.return_value = type(
+        "Page", (), {"data": [history], "has_next_page": lambda self: False}
+    )()
+    client.responses.input_tokens.count.return_value = type(
+        "Count", (), {"input_tokens": 100}
+    )()
+    limiter = AsyncMock()
+    model = GuardedResponsesModel("gpt-5.6-luna", client, limiter, 50_000, 4_000)
+
+    await model._admit("instructions", "now", ModelSettings(), [], [], "conv_1")
+
+    kwargs = client.responses.input_tokens.count.await_args.kwargs
+    assert "conversation" not in kwargs
+    assert kwargs["input"] == [
+        {"role": "user", "content": "earlier"},
+        {"role": "user", "content": "now"},
+    ]
 
 
 async def test_run_strips_sandbox_links_and_attaches_files() -> None:
