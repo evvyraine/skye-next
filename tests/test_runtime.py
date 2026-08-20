@@ -558,6 +558,61 @@ async def test_guard_counts_a_snapshot_without_locking_the_conversation() -> Non
     ]
 
 
+async def test_guard_replaces_incomplete_images_in_conversation_snapshots() -> None:
+    client = AsyncMock()
+    history = type(
+        "Item",
+        (),
+        {
+            "model_dump": lambda self, **_kwargs: {
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": "look"},
+                    {"type": "input_text", "text": "Attached image:"},
+                    {"type": "input_image", "detail": "auto"},
+                    {
+                        "type": "input_image",
+                        "file_id": "file_123",
+                        "image_url": None,
+                        "detail": "high",
+                    },
+                    {
+                        "type": "input_image",
+                        "image_url": "data:image/png;base64,abc",
+                        "detail": "auto",
+                    },
+                    {
+                        "type": "input_file",
+                        "filename": "notes.pdf",
+                        "detail": "auto",
+                    },
+                ],
+            }
+        },
+    )()
+    client.conversations.items.list.return_value = type(
+        "Page", (), {"data": [history], "has_next_page": lambda self: False}
+    )()
+    client.responses.input_tokens.count.return_value = type(
+        "Count", (), {"input_tokens": 100}
+    )()
+    limiter = AsyncMock()
+    model = GuardedResponsesModel("gpt-5.6-luna", client, limiter, 50_000, 4_000)
+
+    await model._admit("instructions", "now", ModelSettings(), [], [], "conv_1")
+
+    kwargs = client.responses.input_tokens.count.await_args.kwargs
+    assert kwargs["input"][0]["content"] == [
+        {"type": "input_text", "text": "look"},
+        {"type": "input_text", "text": "Attached image:"},
+        {"type": "input_text", "text": "[image]"},
+        {"type": "input_image", "file_id": "file_123", "detail": "high"},
+        {"type": "input_image", "image_url": "data:image/png;base64,abc", "detail": "auto"},
+        {"type": "input_text", "text": "[notes.pdf]"},
+    ]
+    assert kwargs["input"][1] == {"role": "user", "content": "now"}
+
+
 async def test_run_strips_sandbox_links_and_attaches_files() -> None:
     runtime = runtime_for_run()
     files = (GeneratedFile("notes.md", b"hi"),)

@@ -173,7 +173,7 @@ class GuardedResponsesModel(OpenAIResponsesModel):
             current_input = list(input)
         history = await self._conversation_items(conversation_id)
         kwargs: dict[str, Any] = {
-            "input": [*history, *current_input],
+            "input": self._counting_input([*history, *current_input]),
             "instructions": system_instructions,
             "model": str(self.model),
             "tools": self._counting_tools(converted.tools),
@@ -183,7 +183,7 @@ class GuardedResponsesModel(OpenAIResponsesModel):
         requested = counted.input_tokens
         if requested > self._max_context_tokens:
             standalone = await self._client.responses.input_tokens.count(
-                **{**kwargs, "input": current_input}
+                **{**kwargs, "input": self._counting_input(current_input)}
             )
             if standalone.input_tokens > self._max_context_tokens:
                 raise ContextLimitError(
@@ -219,6 +219,60 @@ class GuardedResponsesModel(OpenAIResponsesModel):
             page = await page.get_next_page()
         newest_first.reverse()
         return newest_first
+
+    @classmethod
+    def _counting_input(cls, items: list[Any]) -> list[Any]:
+        return [cls._counting_value(item) for item in items]
+
+    @classmethod
+    def _counting_value(cls, value: Any) -> Any:
+        if isinstance(value, list):
+            return [cls._counting_value(item) for item in value]
+        if not isinstance(value, dict):
+            return value
+        part_type = value.get("type")
+        if part_type == "input_image":
+            return cls._counting_image_part(value)
+        if part_type == "input_file":
+            return cls._counting_file_part(value)
+        return {key: cls._counting_value(item) for key, item in value.items()}
+
+    @staticmethod
+    def _counting_image_part(part: dict[str, Any]) -> dict[str, Any]:
+        file_id = _nonempty_str(part.get("file_id"))
+        image_url = _nonempty_str(part.get("image_url"))
+        counted: dict[str, Any] = {"type": "input_image"}
+        if file_id and not image_url:
+            counted["file_id"] = file_id
+        elif image_url and not file_id:
+            counted["image_url"] = image_url
+        else:
+            return {"type": "input_text", "text": "[image]"}
+        detail = part.get("detail")
+        if isinstance(detail, str) and detail:
+            counted["detail"] = detail
+        return counted
+
+    @staticmethod
+    def _counting_file_part(part: dict[str, Any]) -> dict[str, Any]:
+        counted: dict[str, Any] = {"type": "input_file"}
+        file_source: tuple[str, str] | None = None
+        for key in ("file_id", "file_data", "file_url"):
+            value = _nonempty_str(part.get(key))
+            if value:
+                file_source = (key, value)
+                break
+        if file_source is None:
+            label = _nonempty_str(part.get("filename")) or "file"
+            return {"type": "input_text", "text": f"[{label}]"}
+        counted[file_source[0]] = file_source[1]
+        filename = _nonempty_str(part.get("filename"))
+        if filename:
+            counted["filename"] = filename
+        detail = part.get("detail")
+        if isinstance(detail, str) and detail:
+            counted["detail"] = detail
+        return counted
 
     @staticmethod
     def _counting_tools(tools: list[Any]) -> list[Any]:
@@ -880,3 +934,7 @@ def _fallback_tool_label(name: str) -> str:
         return "Asked a specialist"
     cleaned = name.replace("_", " ").replace("-", " ").strip()
     return cleaned[:1].upper() + cleaned[1:] if cleaned else "Used a tool"
+
+
+def _nonempty_str(value: Any) -> str | None:
+    return value if isinstance(value, str) and value else None
