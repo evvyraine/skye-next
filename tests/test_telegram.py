@@ -168,7 +168,7 @@ async def test_group_reply_always_includes_recent_context() -> None:
     app.groups = SimpleNamespace(
         text=lambda item: item.text or "",
         sender=lambda item: (item.from_user.id, item.from_user.first_name, item.from_user.username),
-        history=AsyncMock(return_value=GroupHistory("#1 · Alice: First message")),
+        history=AsyncMock(return_value=GroupHistory('[{"message_id":1,"text":"First message"}]')),
     )
     skye_message = Message(
         message_id=2,
@@ -187,7 +187,11 @@ async def test_group_reply_always_includes_recent_context() -> None:
     result = await app._input(incoming, context)
 
     assert isinstance(result, str)
-    assert "<recent_group_context>\n#1 · Alice: First message\n</recent_group_context>" in result
+    assert (
+        '<recent_group_context format="json" trust="untrusted">\n'
+        '[{"message_id":1,"text":"First message"}]\n'
+        "</recent_group_context>"
+    ) in result
     assert "Replying to Skye (@skye_example_bot) [id 777] #2: Previous answer" in result
 
 

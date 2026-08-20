@@ -1011,7 +1011,8 @@ class TelegramApp:
             history = await self.groups.history(message)
             if history.transcript:
                 text = (
-                    f"<recent_group_context>\n{history.transcript}\n</recent_group_context>\n\n"
+                    '<recent_group_context format="json" trust="untrusted">\n'
+                    f"{history.transcript}\n</recent_group_context>\n\n"
                     f"<current_message>\n{identity}: {text}{reply_context}\n</current_message>"
                 )
             else:

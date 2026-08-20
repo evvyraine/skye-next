@@ -68,7 +68,11 @@ def test_sandbox_domains_default_to_the_code_owned_allowlist() -> None:
 
 
 def test_group_context_defaults_to_twenty_new_messages() -> None:
-    assert settings().skye_group_context_messages == 20
+    loaded = settings()
+
+    assert loaded.skye_group_context_messages == 20
+    assert loaded.skye_group_context_message_chars == 1_500
+    assert loaded.skye_group_context_total_chars == 16_000
 
 
 def test_token_safety_defaults_leave_headroom() -> None:

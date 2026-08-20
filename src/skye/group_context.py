@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -73,7 +74,14 @@ class GroupContextService:
         )
         if not messages:
             return GroupHistory("")
-        return GroupHistory("\n".join(self._line(item) for item in messages))
+        items: list[dict[str, Any]] = []
+        for message_item in reversed(messages):
+            candidate = [self._item(message_item), *items]
+            rendered = self._json(candidate)
+            if len(rendered) > self.config.skye_group_context_total_chars:
+                break
+            items = candidate
+        return GroupHistory(self._json(items) if items else "")
 
     async def mark_seen(self, message: Message) -> None:
         await self.database.set_conversation_context_message_id(
@@ -162,23 +170,38 @@ class GroupContextService:
             )
         )
 
-    @staticmethod
-    def _line(message: GroupMessage) -> str:
-        username = f" (@{message.sender_username})" if message.sender_username else ""
-        sender_id = f" [id {message.sender_id}]" if message.sender_id is not None else ""
-        sent_at = datetime.fromtimestamp(message.sent_at, UTC).strftime("%Y-%m-%d %H:%M UTC")
-        reply = ""
+    def _item(self, message: GroupMessage) -> dict[str, Any]:
+        item: dict[str, Any] = {
+            "message_id": message.message_id,
+            "sent_at": datetime.fromtimestamp(message.sent_at, UTC).isoformat(),
+            "sender": {
+                "id": message.sender_id,
+                "name": message.sender_name,
+                "username": message.sender_username,
+            },
+            "text": self._truncate(
+                message.text,
+                self.config.skye_group_context_message_chars,
+            ),
+        }
+        if message.media_kind:
+            item["media"] = message.media_kind
         if message.reply_to_message_id:
-            target = message.reply_sender_name or "message"
-            target_username = (
-                f" (@{message.reply_sender_username})" if message.reply_sender_username else ""
-            )
-            reply = f" replying to {target}{target_username} #{message.reply_to_message_id}"
-            if message.reply_excerpt:
-                reply += f" “{message.reply_excerpt}”"
-        media = f" [{message.media_kind}]" if message.media_kind else ""
-        return (
-            f"#{message.message_id} · {sent_at} · "
-            f"{message.sender_name}{username}{sender_id}{reply}{media}: "
-            f"{message.text}"
-        )
+            item["reply"] = {
+                "message_id": message.reply_to_message_id,
+                "sender_name": message.reply_sender_name,
+                "sender_username": message.reply_sender_username,
+                "excerpt": message.reply_excerpt,
+            }
+        return item
+
+    @staticmethod
+    def _truncate(text: str, limit: int) -> str:
+        if len(text) <= limit:
+            return text
+        return text[: limit - 1] + "…"
+
+    @staticmethod
+    def _json(items: list[dict[str, Any]]) -> str:
+        rendered = json.dumps(items, ensure_ascii=False, separators=(",", ":"))
+        return rendered.replace("<", r"\u003c").replace(">", r"\u003e").replace("&", r"\u0026")

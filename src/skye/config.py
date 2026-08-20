@@ -84,6 +84,8 @@ class Settings(BaseSettings):
     skye_max_attachment_bytes: int = Field(default=25 * 1024 * 1024, ge=1)
     skye_transcription_model: str = "gpt-transcribe"
     skye_group_context_messages: int = Field(default=20, ge=1, le=100)
+    skye_group_context_message_chars: int = Field(default=1_500, ge=100, le=4_096)
+    skye_group_context_total_chars: int = Field(default=16_000, ge=500, le=50_000)
     skye_sandbox_allowed_domains: SandboxDomains = Field(default=SANDBOX_DOMAINS, min_length=1)
     skye_tracing: bool = False
     skye_web_origin: str | None = None
@@ -92,6 +94,14 @@ class Settings(BaseSettings):
     skye_web_files_path: Path = Path("data/web")
     telegram_login_client_id: str | None = None
     telegram_login_client_secret: str | None = None
+
+    @field_validator("skye_group_context_total_chars")
+    @classmethod
+    def _group_total_covers_one_message(cls, value: int, info: ValidationInfo) -> int:
+        message_chars = info.data.get("skye_group_context_message_chars", 1_500)
+        if value <= message_chars:
+            raise ValueError("must be greater than skye_group_context_message_chars")
+        return value
 
     @field_validator("skye_max_context_tokens")
     @classmethod
