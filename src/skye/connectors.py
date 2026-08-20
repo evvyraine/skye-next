@@ -282,11 +282,7 @@ class ComposioClient:
             "workbench": {"enable": False},
             "mcp": True,
         }
-        pinned = {
-            slug: [account_id]
-            for slug, account_id in (accounts or {}).items()
-            if account_id
-        }
+        pinned = {slug: [account_id] for slug, account_id in (accounts or {}).items() if account_id}
         if pinned:
             body["connected_accounts"] = pinned
         try:
@@ -694,9 +690,7 @@ class ConnectorService:
         slugs = [item.slug for item in connected]
         if slugs and self.client is not None:
             try:
-                url, headers = await self._session_url(
-                    user_id, slugs, _account_map(connected)
-                )
+                url, headers = await self._session_url(user_id, slugs, _account_map(connected))
                 tools.append(
                     _composio_tool(url, "composio", "Connected apps for this user.", headers)
                 )
@@ -817,9 +811,7 @@ class ConnectorService:
             session_id, url, headers = await self.client.create_session(
                 composio_user_key(user_id), slugs, accounts
             )
-            await self.database.save_composio_session(
-                user_id, session_id, url, key, headers
-            )
+            await self.database.save_composio_session(user_id, session_id, url, key, headers)
             return url, headers
 
 
@@ -1062,9 +1054,7 @@ def group_connectors_keyboard(
 ) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
     if editable:
-        rows.append(
-            [InlineKeyboardButton(text="Attach one of mine", callback_data="conn:mine")]
-        )
+        rows.append([InlineKeyboardButton(text="Attach one of mine", callback_data="conn:mine")])
     rows.extend(
         [
             InlineKeyboardButton(
@@ -1078,9 +1068,7 @@ def group_connectors_keyboard(
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def group_share_keyboard(
-    share: ConnectorShare, *, can_revoke: bool
-) -> InlineKeyboardMarkup:
+def group_share_keyboard(share: ConnectorShare, *, can_revoke: bool) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
     if can_revoke:
         rows.append(
@@ -1195,7 +1183,7 @@ class ConnectorPanel:
             await state.set_state(ConnectorWizard.search)
             await self.rich.edit(
                 message,
-                "Send the app name to search, then pick a result.",
+                self.rich.connector_search_prompt(),
                 reply_markup=cancel_keyboard(),
             )
         elif action == ["new"]:
@@ -1203,7 +1191,7 @@ class ConnectorPanel:
             await state.set_data({"user_id": user_id, "panel_message_id": message.message_id})
             await self.rich.edit(
                 message,
-                "Send a short name for this MCP server.",
+                self.rich.connector_name_prompt(),
                 reply_markup=cancel_keyboard(),
             )
         elif action == ["save"]:
@@ -1229,15 +1217,11 @@ class ConnectorPanel:
                     "panel_message_id": message.message_id,
                 }
             )
-            prompt = {
-                "name": f"Send a new name, or `.` to keep “{connector.name}”.",
-                "url": "Send the new https:// URL, or `.` to keep the current one.",
-                "headers": (
-                    "Send headers as `Name: value` lines, JSON, `.` to keep them, "
-                    "or `-` to clear them."
-                ),
-            }[field]
-            await self.rich.edit(message, prompt, reply_markup=cancel_keyboard())
+            await self.rich.edit(
+                message,
+                self.rich.connector_edit_prompt(field, connector.name),
+                reply_markup=cancel_keyboard(),
+            )
         elif len(action) == 2 and action[0] == "tog":
             current = await self.service.require_custom(user_id, action[1])
             connector = await self.service.update_custom(
@@ -1248,7 +1232,7 @@ class ConnectorPanel:
             connector = await self.service.require_custom(user_id, action[1])
             await self.rich.edit(
                 message,
-                f"Remove **{connector.name}**? Skye will stop using this server.",
+                self.rich.connector_remove_confirm(connector.name),
                 reply_markup=custom_keyboard(connector, confirm=True),
             )
         elif len(action) == 2 and action[0] == "yes":
@@ -1357,7 +1341,7 @@ class ConnectorPanel:
                 await state.set_state(ConnectorWizard.mcp_url)
                 await self.rich.send(
                     message,
-                    "Send the public https:// MCP URL.",
+                    self.rich.connector_url_prompt(),
                     reply_markup=cancel_keyboard(),
                 )
             elif current == ConnectorWizard.mcp_url.state:
@@ -1365,7 +1349,7 @@ class ConnectorPanel:
                 await state.set_state(ConnectorWizard.mcp_headers)
                 await self.rich.send(
                     message,
-                    "Optional headers, one `Name: value` per line. Send `.` to skip.",
+                    self.rich.connector_headers_prompt(skip=True),
                     reply_markup=cancel_keyboard(),
                 )
             elif current == ConnectorWizard.mcp_headers.state:
@@ -1450,9 +1434,7 @@ class ConnectorPanel:
     async def _show_app(self, message: Message, user_id: int, slug: str) -> None:
         app = await self.service.app(user_id, slug)
         shares = (
-            await self.service.shares_for(user_id, "app", slug)
-            if app.status == "connected"
-            else []
+            await self.service.shares_for(user_id, "app", slug) if app.status == "connected" else []
         )
         await self.rich.edit(
             message,

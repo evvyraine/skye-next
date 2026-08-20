@@ -17,6 +17,10 @@ from aiogram.types import (
     InputRichMessage,
     Message,
     RichBlockTableCell,
+    RichTextBold,
+    RichTextCode,
+    RichTextUnion,
+    RichTextUrl,
 )
 
 from .artifacts import GeneratedFile
@@ -32,6 +36,7 @@ from .models import (
     InstalledAgent,
     KnownGroup,
     Memory,
+    Scope,
     Skill,
 )
 from .telegram_threads import api_thread_id, reply_parameters
@@ -169,9 +174,7 @@ class RichMessages:
         )
 
     @staticmethod
-    def agents(
-        agents: Sequence[InstalledAgent], active_agent_id: str | None
-    ) -> InputRichMessage:
+    def agents(agents: Sequence[InstalledAgent], active_agent_id: str | None) -> InputRichMessage:
         blocks: list[InputRichBlockUnion] = [
             InputRichBlockSectionHeading(text="Agents", size=2),
             InputRichBlockParagraph(
@@ -248,17 +251,94 @@ class RichMessages:
         )
 
     @staticmethod
+    def agent_name_prompt(current: str | None = None) -> InputRichMessage:
+        if current is None:
+            body: RichTextUnion = "Send the agent name (up to 64 characters)."
+        else:
+            body = ["Send a new name, or ", _code("."), f" to keep “{current}”."]
+        return RichMessages.prompt("Agent name", body)
+
+    @staticmethod
+    def agent_description_prompt(current: str | None = None) -> InputRichMessage:
+        body: list[RichTextUnion] = ["What is this agent good at? Send 1–240 characters"]
+        if current is not None:
+            body.extend([", or ", _code("."), f" to keep “{current}”"])
+        body.append(".")
+        return RichMessages.prompt("Agent description", body)
+
+    @staticmethod
+    def agent_instructions_prompt(*, keep: bool = False) -> InputRichMessage:
+        body: list[RichTextUnion] = ["Send the agent instructions as text or a Markdown file"]
+        if keep:
+            body.extend([", or ", _code("."), " to keep the current instructions"])
+        body.append(".")
+        return RichMessages.prompt("Instructions", body)
+
+    @staticmethod
+    def agent_import_usage() -> InputRichMessage:
+        return RichMessages.prompt(
+            "Import an agent",
+            ["Use ", _code("/agents import <share link or token>"), "."],
+        )
+
+    @staticmethod
+    def agent_installed(name: str, version: int, *, hint: bool = False) -> InputRichMessage:
+        body: list[RichTextUnion] = ["Installed ", _bold(name), f" v{version}."]
+        if hint:
+            body.append(" Use /agents to select or inspect it.")
+        return InputRichMessage(blocks=[InputRichBlockParagraph(text=body)])
+
+    @staticmethod
+    def agent_share_link(url: str) -> InputRichMessage:
+        return InputRichMessage(
+            blocks=[
+                InputRichBlockSectionHeading(text="Share this version", size=2),
+                InputRichBlockParagraph(text="Immutable share link for this version."),
+                InputRichBlockParagraph(text=RichTextUrl(text="Install this agent", url=url)),
+            ]
+        )
+
+    @staticmethod
+    def prompt(title: str, body: RichTextUnion) -> InputRichMessage:
+        return InputRichMessage(
+            blocks=[
+                InputRichBlockSectionHeading(text=title, size=2),
+                InputRichBlockParagraph(text=body),
+            ]
+        )
+
+    @staticmethod
+    def access_target(target: Scope) -> list[RichTextUnion]:
+        return [f"{target.kind} ", _code(str(target.id))]
+
+    @staticmethod
+    def access_change(verb: str, target: Scope) -> list[RichTextUnion]:
+        return [f"{verb} {target.kind} ", _code(str(target.id)), "."]
+
+    @staticmethod
+    def admin_prompt(action: str) -> InputRichMessage:
+        if action == "allow":
+            title, verb = "Allow", "allow"
+        elif action == "ban":
+            title, verb = "Ban", "ban"
+        else:
+            title, verb = "Remove", "remove"
+        return RichMessages.prompt(
+            title,
+            f"Reply to this message with the numeric Telegram id to {verb}. "
+            "Negative ids are groups.",
+        )
+
+    @staticmethod
     def access(
         entries: Sequence[AccessEntry],
         *,
-        notice: str | None = None,
+        notice: RichTextUnion | None = None,
         group_effect: AccessEffect | None = None,
         in_group: bool = False,
         show_entries: bool = True,
     ) -> InputRichMessage:
-        blocks: list[InputRichBlockUnion] = [
-            InputRichBlockSectionHeading(text="Access", size=2)
-        ]
+        blocks: list[InputRichBlockUnion] = [InputRichBlockSectionHeading(text="Access", size=2)]
         if notice:
             blocks.append(InputRichBlockParagraph(text=notice))
         if in_group:
@@ -275,7 +355,7 @@ class RichMessages:
             blocks.append(InputRichBlockParagraph(text="The allowlist is empty."))
             return InputRichMessage(blocks=blocks)
 
-        def cell(text: str, *, header: bool = False) -> RichBlockTableCell:
+        def cell(text: RichTextUnion, *, header: bool = False) -> RichBlockTableCell:
             return RichBlockTableCell(
                 text=text,
                 is_header=header or None,
@@ -293,7 +373,7 @@ class RichMessages:
         rows.extend(
             [
                 cell(entry.scope.kind),
-                cell(str(entry.scope.id)),
+                cell(_code(str(entry.scope.id))),
                 cell(entry.effect),
             ]
             for entry in entries
@@ -472,32 +552,87 @@ class RichMessages:
 
     @staticmethod
     def connector_picker(name: str, groups: Sequence[KnownGroup]) -> InputRichMessage:
-        body = (
-            "Pick a group. Skye only lists allowlisted groups where you have written."
-            if groups
-            else (
-                "Skye only knows groups where you have written while the bot is allowlisted. "
-                "In a group, open /settings and tap Attach one of mine."
+        if groups:
+            body: RichTextUnion = (
+                "Pick a group. Skye only lists allowlisted groups where you have written."
             )
-        )
+        else:
+            body = [
+                "Skye only knows groups where you have written while the bot is allowlisted. "
+                "In a group, open ",
+                _code("/settings"),
+                " and tap Attach one of mine.",
+            ]
+        return RichMessages.prompt(f"Share {name}", body)
+
+    @staticmethod
+    def connector_share_confirm(name: str, group: str, *, sensitive: bool) -> InputRichMessage:
+        suffix = f" with {group}? Anyone there can ask Skye to use it."
+        if sensitive:
+            suffix += " Replies that use this app will be visible to everyone in the group."
         return InputRichMessage(
             blocks=[
                 InputRichBlockSectionHeading(text=f"Share {name}", size=2),
-                InputRichBlockParagraph(text=body),
+                InputRichBlockParagraph(text=["Share ", _bold(name), suffix]),
             ]
         )
 
     @staticmethod
-    def connector_share_confirm(name: str, group: str, *, sensitive: bool) -> InputRichMessage:
-        body = f"Share **{name}** with {group}? Anyone there can ask Skye to use it."
-        if sensitive:
-            body += " Replies that use this app will be visible to everyone in the group."
-        return InputRichMessage(
-            blocks=[
-                InputRichBlockSectionHeading(text=f"Share {name}", size=2),
-                InputRichBlockParagraph(text=body),
-            ]
+    def connector_remove_confirm(name: str) -> InputRichMessage:
+        return RichMessages.prompt(
+            "Remove connector",
+            ["Remove ", _bold(name), "? Skye will stop using this server."],
         )
+
+    @staticmethod
+    def connector_search_prompt() -> InputRichMessage:
+        return RichMessages.prompt(
+            "Search apps", "Send the app name to search, then pick a result."
+        )
+
+    @staticmethod
+    def connector_name_prompt() -> InputRichMessage:
+        return RichMessages.prompt("Custom MCP", "Send a short name for this MCP server.")
+
+    @staticmethod
+    def connector_url_prompt() -> InputRichMessage:
+        return RichMessages.prompt("Custom MCP", "Send the public https:// MCP URL.")
+
+    @staticmethod
+    def connector_headers_prompt(*, skip: bool = False) -> InputRichMessage:
+        if skip:
+            body: RichTextUnion = [
+                "Optional headers, one ",
+                _code("Name: value"),
+                " per line. Send ",
+                _code("."),
+                " to skip.",
+            ]
+        else:
+            body = [
+                "Send headers as ",
+                _code("Name: value"),
+                " lines, JSON, ",
+                _code("."),
+                " to keep them, or ",
+                _code("-"),
+                " to clear them.",
+            ]
+        return RichMessages.prompt("Headers", body)
+
+    @staticmethod
+    def connector_edit_prompt(field: str, name: str) -> InputRichMessage:
+        if field == "name":
+            return RichMessages.prompt(
+                "Rename",
+                ["Send a new name, or ", _code("."), f" to keep “{name}”."],
+            )
+        if field == "url":
+            return RichMessages.prompt(
+                "Change URL",
+                ["Send the new https:// URL, or ", _code("."), " to keep the current one."],
+            )
+        return RichMessages.connector_headers_prompt()
 
     @staticmethod
     def connector_share(share: ConnectorShare) -> InputRichMessage:
@@ -598,16 +733,38 @@ class RichMessages:
         )
 
     @staticmethod
+    def skill_delete_confirm(name: str) -> InputRichMessage:
+        return RichMessages.prompt(
+            "Delete skill",
+            [
+                "Delete ",
+                _bold(name),
+                "? This removes it from this chat and from OpenAI.",
+            ],
+        )
+
+    @staticmethod
+    def skill_upload_prompt() -> InputRichMessage:
+        return RichMessages.prompt(
+            "Add a skill",
+            [
+                "Send a ",
+                _code(".zip"),
+                " skill bundle or a ",
+                _code("SKILL.md"),
+                " file. Every file in the zip is stored and uploaded together.",
+            ],
+        )
+
+    @staticmethod
     def memory(memories: list[Memory], enabled: bool) -> InputRichMessage:
         heading = f"Memory · {'On' if enabled else 'Off'}"
-        blocks: list[InputRichBlockUnion] = [
-            InputRichBlockSectionHeading(text=heading, size=2)
-        ]
+        blocks: list[InputRichBlockUnion] = [InputRichBlockSectionHeading(text=heading, size=2)]
         if not memories:
             blocks.append(InputRichBlockParagraph(text="No memories saved yet."))
             return InputRichMessage(blocks=blocks)
 
-        def cell(text: str, *, header: bool = False) -> RichBlockTableCell:
+        def cell(text: RichTextUnion, *, header: bool = False) -> RichBlockTableCell:
             return RichBlockTableCell(
                 text=text,
                 is_header=header or None,
@@ -617,11 +774,18 @@ class RichMessages:
 
         rows = [[cell("ID", header=True), cell("Kind", header=True), cell("Memory", header=True)]]
         rows.extend(
-            [cell(str(memory.id)), cell(memory.category.title()), cell(memory.content)]
+            [cell(_code(str(memory.id))), cell(memory.category.title()), cell(memory.content)]
             for memory in memories
         )
         blocks.append(InputRichBlockTable(cells=rows, is_bordered=True, is_striped=True))
         return InputRichMessage(blocks=blocks)
+
+    @staticmethod
+    def memory_clear_confirm() -> InputRichMessage:
+        return RichMessages.prompt(
+            "Delete all memories?",
+            "This cannot be undone. Conversation history is separate.",
+        )
 
     @staticmethod
     def output(markdown: str) -> InputRichMessage:
@@ -632,6 +796,14 @@ class RichMessages:
         if isinstance(content, InputRichMessage):
             return content
         return InputRichMessage(markdown=content)
+
+
+def _bold(text: str) -> RichTextBold:
+    return RichTextBold(text=text)
+
+
+def _code(text: str) -> RichTextCode:
+    return RichTextCode(text=text)
 
 
 def _safe_url(url: str) -> str:

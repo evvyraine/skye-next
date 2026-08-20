@@ -448,9 +448,8 @@ async def test_admin_callback_asks_for_an_id() -> None:
 
     state.set_state.assert_awaited_once_with(AdminPrompt.target)
     state.set_data.assert_awaited_once_with({"action": "allow", "prompt_message_id": 1})
-    assert "Reply to this message with the numeric Telegram id to allow" in (
-        app.rich.edit.await_args.args[1]
-    )
+    content = app.rich.edit.await_args.args[1]
+    assert content == RichMessages.admin_prompt("allow")
     assert button_data(app.rich.edit.await_args.kwargs["reply_markup"]) == ["admin:cancel"]
     callback.answer.assert_awaited_once()
 

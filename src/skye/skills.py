@@ -221,9 +221,7 @@ class SkillService:
     async def mounted(self, scope: Scope) -> tuple[Skill, ...]:
         return tuple(await self.database.list_skills(scope))
 
-    async def upload(
-        self, scope: Scope, created_by: int, filename: str, data: bytes
-    ) -> Skill:
+    async def upload(self, scope: Scope, created_by: int, filename: str, data: bytes) -> Skill:
         existing = await self.database.list_skills(scope)
         if len(existing) >= MAX_SKILLS:
             raise SkillError(f"You can add at most {MAX_SKILLS} skills here.")
@@ -320,9 +318,7 @@ def skill_keyboard(skill: Skill, *, editable: bool, confirm: bool = False) -> In
         )
     rows: list[list[InlineKeyboardButton]] = []
     if editable:
-        rows.append(
-            [InlineKeyboardButton(text="Delete", callback_data=f"skill:del:{skill.id}")]
-        )
+        rows.append([InlineKeyboardButton(text="Delete", callback_data=f"skill:del:{skill.id}")])
     rows.append([InlineKeyboardButton(text="‹ Back", callback_data="skill:home")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -381,8 +377,7 @@ class SkillPanel:
             )
             await self.rich.edit(
                 message,
-                "Send a `.zip` skill bundle or a `SKILL.md` file. "
-                "Every file in the zip is stored and uploaded together.",
+                self.rich.skill_upload_prompt(),
                 reply_markup=cancel_keyboard(),
             )
             return
@@ -396,7 +391,7 @@ class SkillPanel:
             skill = await self.service.require(context.scope, action[1])
             await self.rich.edit(
                 message,
-                f"Delete **{skill.name}**? This removes it from this chat and from OpenAI.",
+                self.rich.skill_delete_confirm(skill.name),
                 reply_markup=skill_keyboard(skill, editable=True, confirm=True),
             )
             return
@@ -450,7 +445,4 @@ class SkillPanel:
 
 
 def hosted_skill_refs(skills: Sequence[Skill]) -> list[dict[str, str]]:
-    return [
-        {"type": "skill_reference", "skill_id": item.openai_skill_id}
-        for item in skills
-    ]
+    return [{"type": "skill_reference", "skill_id": item.openai_skill_id} for item in skills]
