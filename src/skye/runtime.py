@@ -171,7 +171,7 @@ class GuardedResponsesModel(OpenAIResponsesModel):
             "input": input,
             "instructions": system_instructions,
             "model": str(self.model),
-            "tools": converted.tools,
+            "tools": self._counting_tools(converted.tools),
             "truncation": "disabled",
         }
         counted = await self._client.responses.input_tokens.count(**kwargs)
@@ -191,6 +191,18 @@ class GuardedResponsesModel(OpenAIResponsesModel):
                 admitted_tokens=requested,
             )
         await self._limiter.acquire(requested + self._output_reserve)
+
+    @staticmethod
+    def _counting_tools(tools: list[Any]) -> list[Any]:
+        counting: list[Any] = []
+        for tool in tools:
+            if isinstance(tool, dict) and tool.get("type") == "image_generation":
+                sanitized = dict(tool)
+                sanitized.pop("partial_images", None)
+                counting.append(sanitized)
+            else:
+                counting.append(tool)
+        return counting
 
     async def stream_response(
         self,

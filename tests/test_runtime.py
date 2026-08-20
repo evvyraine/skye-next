@@ -153,6 +153,21 @@ def test_generated_images_are_extracted() -> None:
     assert AgentRuntime._images(result) == (b"png",)
 
 
+def test_counting_tools_remove_streaming_only_image_options() -> None:
+    tools = [
+        {
+            "type": "image_generation",
+            "model": "gpt-image-2",
+            "partial_images": 1,
+        }
+    ]
+
+    counted = GuardedResponsesModel._counting_tools(cast(Any, tools))
+
+    assert counted == [{"type": "image_generation", "model": "gpt-image-2"}]
+    assert tools[0]["partial_images"] == 1
+
+
 def test_shell_file_note_follows_capabilities() -> None:
     memory = MemoryService(cast(Any, None))
     runtime = AgentRuntime(config(), cast(Any, None), memory, "You are Skye.")
