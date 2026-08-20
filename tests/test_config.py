@@ -71,6 +71,28 @@ def test_group_context_defaults_to_twenty_new_messages() -> None:
     assert settings().skye_group_context_messages == 20
 
 
+def test_token_safety_defaults_leave_headroom() -> None:
+    loaded = settings()
+
+    assert loaded.skye_compaction_threshold_tokens == 40_000
+    assert loaded.skye_max_context_tokens == 50_000
+    assert loaded.skye_max_output_tokens == 4_000
+    assert loaded.skye_tpm_budget == 160_000
+
+
+def test_context_limit_must_exceed_compaction_threshold() -> None:
+    with pytest.raises(ValidationError):
+        settings(
+            skye_compaction_threshold_tokens=50_000,
+            skye_max_context_tokens=50_000,
+        )
+
+
+def test_tpm_budget_must_cover_one_maximum_request() -> None:
+    with pytest.raises(ValidationError):
+        settings(skye_tpm_budget=53_999)
+
+
 def test_sandbox_domains_are_parsed_from_env(tmp_path: Path) -> None:
     env_file = tmp_path / ".env"
     env_file.write_text(

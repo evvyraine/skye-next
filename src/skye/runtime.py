@@ -6,8 +6,8 @@ import hashlib
 import hmac
 import re
 import time
-from collections import defaultdict
-from collections.abc import Awaitable, Callable
+from collections import defaultdict, deque
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any, cast
 
@@ -16,12 +16,15 @@ from agents import (
     Agent,
     ImageGenerationTool,
     ModelSettings,
+    RunConfig,
     Runner,
     ShellTool,
     Tool,
     WebSearchTool,
 )
 from agents.items import TResponseInputItem
+from agents.models.interface import Model, ModelProvider
+from agents.models.openai_responses import Converter, OpenAIResponsesModel
 from agents.result import RunResultStreaming
 from agents.stream_events import RawResponsesStreamEvent
 from openai import APIError, AsyncOpenAI, RateLimitError
@@ -46,8 +49,9 @@ from .skills import SkillService, hosted_skill_refs
 log = structlog.get_logger()
 TextCallback = Callable[[str], Awaitable[None]]
 EventCallback = Callable[["RunEvent"], Awaitable[None]]
-# Official OpenAI SDK retries HTTP 429s and honors Retry-After. Default is 2.
-OPENAI_MAX_RETRIES = 6
+# Keep transport retries small; the runtime owns the visible retry policy.
+OPENAI_MAX_RETRIES = 0
+OPENAI_RUN_ATTEMPTS = 2
 _RETRY_IN = re.compile(r"try again in\s+([0-9]+(?:\.[0-9]+)?)\s*s", re.IGNORECASE)
 _WAIT = wait_random_exponential(min=1, max=60)
 _TOOL_LABELS: dict[str, str] = {
@@ -89,7 +93,166 @@ class _ActiveRun:
     stream: RunResultStreaming | None = None
 
 
+class ContextLimitError(RuntimeError):
+    pass
+
+
+class StreamStartedError(RuntimeError):
+    pass
+
+
+class TokenRateLimiter:
+    def __init__(
+        self,
+        capacity: int,
+        window_seconds: float = 60.0,
+        *,
+        clock: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    ) -> None:
+        self.capacity = capacity
+        self.window_seconds = window_seconds
+        self._clock = clock
+        self._sleep = sleep
+        self._entries: deque[tuple[float, int]] = deque()
+        self._lock = asyncio.Lock()
+
+    async def acquire(self, tokens: int) -> None:
+        if tokens > self.capacity:
+            raise ContextLimitError("A single request exceeds the token-per-minute budget.")
+        while True:
+            async with self._lock:
+                now = self._clock()
+                self._discard_expired(now)
+                used = sum(item[1] for item in self._entries)
+                if used + tokens <= self.capacity:
+                    self._entries.append((now, tokens))
+                    return
+                wait = self.window_seconds - (now - self._entries[0][0])
+            await self._sleep(max(wait, 0.001))
+
+    def _discard_expired(self, now: float) -> None:
+        while self._entries and now - self._entries[0][0] >= self.window_seconds:
+            self._entries.popleft()
+
+
+class GuardedResponsesModel(OpenAIResponsesModel):
+    def __init__(
+        self,
+        model: str,
+        client: AsyncOpenAI,
+        limiter: TokenRateLimiter,
+        max_context_tokens: int,
+        output_reserve: int,
+    ) -> None:
+        super().__init__(model, client)
+        self._client = client
+        self._limiter = limiter
+        self._max_context_tokens = max_context_tokens
+        self._output_reserve = output_reserve
+
+    async def _admit(
+        self,
+        system_instructions: str | None,
+        input: str | list[TResponseInputItem],
+        model_settings: ModelSettings,
+        tools: list[Tool],
+        handoffs: list[Any],
+        conversation_id: str | None,
+    ) -> None:
+        converted = Converter.convert_tools(
+            tools,
+            handoffs,
+            model=str(self.model),
+            tool_choice=model_settings.tool_choice,
+        )
+        kwargs: dict[str, Any] = {
+            "conversation": conversation_id,
+            "input": input,
+            "instructions": system_instructions,
+            "model": str(self.model),
+            "tools": converted.tools,
+            "truncation": "disabled",
+        }
+        counted = await self._client.responses.input_tokens.count(**kwargs)
+        requested = counted.input_tokens
+        if requested > self._max_context_tokens:
+            standalone = await self._client.responses.input_tokens.count(
+                **{**kwargs, "conversation": None}
+            )
+            if standalone.input_tokens > self._max_context_tokens:
+                raise ContextLimitError(
+                    "The current request is too large. Reduce the text, files, or connected tools."
+                )
+            requested = self._max_context_tokens
+            log.info(
+                "openai_context_compaction_required",
+                counted_tokens=counted.input_tokens,
+                admitted_tokens=requested,
+            )
+        await self._limiter.acquire(requested + self._output_reserve)
+
+    async def stream_response(
+        self,
+        system_instructions: str | None,
+        input: str | list[TResponseInputItem],
+        model_settings: ModelSettings,
+        tools: list[Tool],
+        output_schema: Any,
+        handoffs: list[Any],
+        tracing: Any,
+        previous_response_id: str | None = None,
+        conversation_id: str | None = None,
+        prompt: Any = None,
+    ) -> AsyncIterator[Any]:
+        await self._admit(
+            system_instructions,
+            input,
+            model_settings,
+            tools,
+            handoffs,
+            conversation_id,
+        )
+        async for event in super().stream_response(
+            system_instructions,
+            input,
+            model_settings,
+            tools,
+            output_schema,
+            handoffs,
+            tracing,
+            previous_response_id=previous_response_id,
+            conversation_id=conversation_id,
+            prompt=prompt,
+        ):
+            yield event
+
+
+class GuardedModelProvider(ModelProvider):
+    def __init__(self, config: Settings, client: AsyncOpenAI, limiter: TokenRateLimiter) -> None:
+        self.config = config
+        self.client = client
+        self.limiter = limiter
+        self._models: dict[str, Model] = {}
+
+    def get_model(self, model_name: str | None) -> Model:
+        name = model_name or self.config.skye_default_model
+        model = self._models.get(name)
+        if model is None:
+            model = GuardedResponsesModel(
+                name,
+                self.client,
+                self.limiter,
+                self.config.skye_max_context_tokens,
+                self.config.skye_max_output_tokens,
+            )
+            self._models[name] = model
+        return model
+
+
 def is_transient(error: BaseException) -> bool:
+    if isinstance(error, StreamStartedError):
+        return False
     current: BaseException | None = error
     seen: set[int] = set()
     while current is not None and id(current) not in seen:
@@ -198,6 +361,15 @@ class AgentRuntime:
         self._locks: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
         self._queue = asyncio.Lock()
         self._active: dict[str, _ActiveRun] = {}
+        self._model_provider = (
+            GuardedModelProvider(
+                config,
+                client,
+                TokenRateLimiter(config.skye_tpm_budget),
+            )
+            if client is not None
+            else None
+        )
 
     async def run(
         self,
@@ -312,7 +484,7 @@ class AgentRuntime:
         async for attempt in AsyncRetrying(
             sleep=sleep,
             wait=wait_openai,
-            stop=stop_after_attempt(OPENAI_MAX_RETRIES),
+            stop=stop_after_attempt(OPENAI_RUN_ATTEMPTS),
             retry=retry_if_exception(is_transient),
             before_sleep=before_sleep,
             reraise=True,
@@ -335,14 +507,21 @@ class AgentRuntime:
         on_event: EventCallback | None = None,
     ) -> RunOutput:
         started = int(time.time()) - 5
+        run_config = (
+            RunConfig(model_provider=self._model_provider)
+            if self._model_provider is not None
+            else None
+        )
         result = Runner.run_streamed(
             agent,
             user_input,
             max_turns=self.config.skye_max_turns,
             conversation_id=conversation_id,
+            run_config=run_config,
         )
         active.stream = result
         text = ""
+        started_streaming = False
         try:
             async for event in result.stream_events():
                 if active.cancel.is_set():
@@ -351,6 +530,7 @@ class AgentRuntime:
                 if isinstance(event, RawResponsesStreamEvent) and isinstance(
                     event.data, ResponseTextDeltaEvent
                 ):
+                    started_streaming = True
                     text += event.data.delta
                     await on_text(text)
                     if on_event is not None:
@@ -360,7 +540,14 @@ class AgentRuntime:
                     continue
                 tool = describe_tool_event(event)
                 if tool is not None:
+                    started_streaming = True
                     await on_event(tool)
+        except Exception as error:
+            if started_streaming:
+                raise StreamStartedError(
+                    "The stream failed after producing visible output."
+                ) from error
+            raise
         finally:
             active.stream = None
 
@@ -557,6 +744,14 @@ class AgentRuntime:
             reasoning={"effort": settings.reasoning},
             verbosity="low",
             store=True,
+            truncation="disabled",
+            max_tokens=self.config.skye_max_output_tokens,
+            context_management=[
+                {
+                    "type": "compaction",
+                    "compact_threshold": self.config.skye_compaction_threshold_tokens,
+                }
+            ],
             extra_body={"safety_identifier": safety_id},
         )
 

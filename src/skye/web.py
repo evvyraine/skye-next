@@ -395,6 +395,14 @@ class WebApp:
             return response
         except Exception:
             log.exception("web_run_failed", project_id=project_id)
+            if assistant_text.strip():
+                await self.projects.add_message(
+                    session.user_id,
+                    project_id,
+                    role="assistant",
+                    text=assistant_text.strip(),
+                    file_ids=tuple(assistant_file_ids),
+                )
             await self._sse(response, "error", {"message": "Something went wrong. Try again."})
             await response.write_eof()
             return response

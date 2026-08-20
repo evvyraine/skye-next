@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
-from agents import FunctionTool, ImageGenerationTool, ShellTool, WebSearchTool
+from agents import FunctionTool, ImageGenerationTool, ModelSettings, ShellTool, WebSearchTool
 from openai import APIError, BadRequestError, RateLimitError
 
 from skye.artifacts import GeneratedFile
@@ -22,7 +22,15 @@ from skye.models import (
     Scope,
     Skill,
 )
-from skye.runtime import AgentRuntime, is_transient, retry_after
+from skye.runtime import (
+    AgentRuntime,
+    ContextLimitError,
+    GuardedResponsesModel,
+    StreamStartedError,
+    TokenRateLimiter,
+    is_transient,
+    retry_after,
+)
 
 
 def config() -> Settings:
@@ -299,6 +307,17 @@ class FakeStream:
             yield
 
 
+class PartialStream(FakeStream):
+    def __init__(self, event: object, error: Exception) -> None:
+        super().__init__()
+        self.event = event
+        self.error = error
+
+    async def stream_events(self) -> Any:
+        yield self.event
+        raise self.error
+
+
 def runtime_for_run() -> AgentRuntime:
     conversations = AsyncMock()
     conversations.get_or_create.return_value = "conv_1"
@@ -387,6 +406,109 @@ async def test_run_retries_rate_limits_then_answers() -> None:
 
     assert output.text == "Queued answer"
     assert delays[0] == pytest.approx(4.628)
+
+
+async def test_run_does_not_retry_after_streaming_started() -> None:
+    runtime = runtime_for_run()
+    event = cast(
+        Any,
+        __import__("agents.stream_events", fromlist=["RawResponsesStreamEvent"]),
+    ).RawResponsesStreamEvent(
+        data=__import__(
+            "openai.types.responses.response_text_delta_event",
+            fromlist=["ResponseTextDeltaEvent"],
+        ).ResponseTextDeltaEvent(
+            content_index=0,
+            delta="partial",
+            item_id="msg_1",
+            logprobs=[],
+            output_index=0,
+            sequence_number=1,
+            type="response.output_text.delta",
+        )
+    )
+    callback = AsyncMock()
+
+    with (
+        patch(
+            "skye.runtime.Runner.run_streamed",
+            side_effect=[
+                PartialStream(event, rate_limit_error("Rate limit reached")),
+                FakeStream(output="replacement"),
+            ],
+        ) as run_streamed,
+        pytest.raises(StreamStartedError),
+    ):
+        await runtime.run(
+            RequestContext(1, "private", 1),
+            ChatSettings("gpt-5.6-luna", "medium", memory_enabled=False),
+            "hello",
+            callback,
+        )
+
+    callback.assert_awaited_once_with("partial")
+    assert run_streamed.call_count == 1
+
+
+def test_model_settings_enable_compaction_and_disable_implicit_truncation() -> None:
+    runtime = runtime_for_run()
+    settings = runtime._model_settings(
+        RequestContext(1, "private", 1),
+        ChatSettings("gpt-5.6-luna", "medium", memory_enabled=False),
+    )
+
+    assert settings.context_management == [
+        {"type": "compaction", "compact_threshold": 40_000}
+    ]
+    assert settings.truncation == "disabled"
+
+
+async def test_token_rate_limiter_waits_for_the_rolling_budget() -> None:
+    now = 0.0
+    waits: list[float] = []
+
+    def clock() -> float:
+        return now
+
+    async def sleep(seconds: float) -> None:
+        nonlocal now
+        waits.append(seconds)
+        now += seconds
+
+    limiter = TokenRateLimiter(100, 60.0, clock=clock, sleep=sleep)
+    await limiter.acquire(60)
+    await limiter.acquire(60)
+
+    assert waits == [pytest.approx(60.0)]
+
+
+async def test_guard_rejects_a_current_request_above_50k() -> None:
+    client = AsyncMock()
+    client.responses.input_tokens.count.side_effect = [
+        type("Count", (), {"input_tokens": 80_000})(),
+        type("Count", (), {"input_tokens": 51_000})(),
+    ]
+    limiter = AsyncMock()
+    model = GuardedResponsesModel("gpt-5.6-luna", client, limiter, 50_000, 4_000)
+
+    with pytest.raises(ContextLimitError):
+        await model._admit("instructions", "large input", ModelSettings(), [], [], "conv_1")
+
+    limiter.acquire.assert_not_awaited()
+
+
+async def test_guard_reserves_50k_when_conversation_requires_compaction() -> None:
+    client = AsyncMock()
+    client.responses.input_tokens.count.side_effect = [
+        type("Count", (), {"input_tokens": 80_000})(),
+        type("Count", (), {"input_tokens": 2_000})(),
+    ]
+    limiter = AsyncMock()
+    model = GuardedResponsesModel("gpt-5.6-luna", client, limiter, 50_000, 4_000)
+
+    await model._admit("instructions", "hello", ModelSettings(), [], [], "conv_1")
+
+    limiter.acquire.assert_awaited_once_with(54_000)
 
 
 async def test_run_strips_sandbox_links_and_attaches_files() -> None:

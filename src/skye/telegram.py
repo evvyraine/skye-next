@@ -50,7 +50,7 @@ from .models import (
     ScopeKind,
 )
 from .rich import RichMessages
-from .runtime import AgentRuntime, RunOutput
+from .runtime import AgentRuntime, ContextLimitError, RunOutput, StreamStartedError
 from .skills import SkillError, SkillPanel, SkillService, SkillWizard
 from .telegram_threads import thread_id
 
@@ -945,9 +945,11 @@ class TelegramApp:
         else:
             placeholder = await self.rich.send(message, "Thinking…")
         last_edit = 0.0
+        streamed_text = ""
 
         async def on_text(text: str) -> None:
-            nonlocal last_edit
+            nonlocal last_edit, streamed_text
+            streamed_text = text
             now = time.monotonic()
             if now - last_edit < 0.8:
                 return
@@ -967,6 +969,15 @@ class TelegramApp:
             await self._finish(message, placeholder, "This took too long, so I stopped it.")
         except asyncio.CancelledError:
             await self._finish(message, placeholder, "Stopped.")
+        except ContextLimitError as error:
+            await self._finish(message, placeholder, str(error))
+        except StreamStartedError:
+            content = streamed_text.strip()
+            if content:
+                content += "\n\n_Response interrupted. Please continue with a new message._"
+                await self._finish(message, placeholder, self.rich.output(content))
+            else:
+                await self._finish(message, placeholder, "The response was interrupted. Try again.")
         except Exception as error:
             log.exception(
                 "agent_run_failed",
