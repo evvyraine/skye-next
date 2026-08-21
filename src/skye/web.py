@@ -14,6 +14,7 @@ from .attachments import (
     is_audio_upload,
     openai_file_parts,
     transcribe_audio,
+    upload_openai_file,
 )
 from .auth import COOKIE_NAME, OIDC_COOKIE, AuthError, TelegramAuth
 from .config import Settings
@@ -305,7 +306,8 @@ class WebApp:
             )
             file_ids.append(saved.id)
             uploaded_files.append(saved)
-            content.extend(openai_file_parts(filename, mime, data, transcript))
+            openai_id = await upload_openai_file(self.client, filename, mime, data)
+            content.extend(openai_file_parts(filename, mime, data, transcript, openai_id))
             preview_bits.append(filename)
         user_message = await self.projects.add_message(
             session.user_id,

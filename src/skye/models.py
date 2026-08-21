@@ -268,3 +268,21 @@ class GroupMessage:
     reply_sender_username: str | None
     reply_excerpt: str | None
     sent_at: int
+
+
+@dataclass(frozen=True, slots=True)
+class MediaGroupItem:
+    chat_id: int
+    media_group_id: str
+    message_id: int
+    thread_id: int
+    media_kind: str
+    file_id: str
+    file_unique_id: str
+    file_name: str | None
+    mime_type: str | None
+    file_size: int | None
+    width: int | None
+    height: int | None
+    caption: str | None
+    sent_at: int

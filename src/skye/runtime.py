@@ -516,6 +516,7 @@ class AgentRuntime:
                 skills: tuple[Skill, ...] = ()
                 if self.skills is not None:
                     skills = await self.skills.mounted(context.scope)
+                input_file_ids = _input_file_ids(user_input)
                 agent = self._agent(
                     context,
                     settings,
@@ -524,6 +525,7 @@ class AgentRuntime:
                     connector_tools,
                     skills,
                     extra_instructions,
+                    input_file_ids,
                 )
                 if self._queue.locked():
                     log.info(
@@ -689,6 +691,7 @@ class AgentRuntime:
         connector_tools: ConnectorTools | None = None,
         skills: tuple[Skill, ...] = (),
         extra_instructions: str = "",
+        input_file_ids: tuple[str, ...] = (),
     ) -> Agent[None]:
         composition = composition or AgentComposition(None, ())
         connector_tools = connector_tools or ConnectorTools((), ())
@@ -704,12 +707,14 @@ class AgentRuntime:
             skills,
             extra_instructions,
         )
-        tools = self._hosted_tools(capabilities, skills)
+        tools = self._hosted_tools(capabilities, skills, input_file_ids)
         tools.extend(connector_tools.tools)
         if settings.memory_enabled:
             tools.extend(self.memory.tools(context.scope))
         tools.extend(
-            self._specialist(item, context, settings, memory_context, skills).as_tool(
+            self._specialist(
+                item, context, settings, memory_context, skills, input_file_ids
+            ).as_tool(
                 tool_name=f"agent_{item.profile.id}",
                 tool_description=(
                     f"Ask the {item.version.name} specialist for help when the task benefits "
@@ -767,6 +772,7 @@ class AgentRuntime:
         if "shell" in capabilities:
             instructions += (
                 "\n\nThe hosted sandbox can reach the public internet. "
+                "Files attached to the current turn are available there by their original names. "
                 "Files you write under /mnt/data are sent to the user as Telegram documents. "
                 "Put a folder there, or a zip, when they want more than one file."
             )
@@ -787,6 +793,7 @@ class AgentRuntime:
         self,
         capabilities: tuple[AgentCapability, ...],
         skills: tuple[Skill, ...] = (),
+        input_file_ids: tuple[str, ...] = (),
     ) -> list[Tool]:
         tools: list[Tool] = []
         if "web" in capabilities:
@@ -816,6 +823,8 @@ class AgentRuntime:
             }
             if skills:
                 environment["skills"] = hosted_skill_refs(skills)
+            if input_file_ids:
+                environment["file_ids"] = list(input_file_ids)
             tools.append(ShellTool(environment=cast(Any, environment)))
         return tools
 
@@ -826,11 +835,12 @@ class AgentRuntime:
         settings: ChatSettings,
         memory_context: str,
         skills: tuple[Skill, ...] = (),
+        input_file_ids: tuple[str, ...] = (),
     ) -> Agent[None]:
         instructions = self._instructions(
             context, settings, memory_context, installed, skills=skills
         )
-        tools = self._hosted_tools(installed.version.capabilities, skills)
+        tools = self._hosted_tools(installed.version.capabilities, skills, input_file_ids)
         return Agent(
             name=installed.version.name,
             instructions=instructions,
@@ -892,6 +902,29 @@ def telegram_run_key(chat_id: int, thread_id: int) -> str:
 
 def web_run_key(project_id: str) -> str:
     return f"web:{project_id}"
+
+
+def _input_file_ids(user_input: str | list[TResponseInputItem]) -> tuple[str, ...]:
+    if isinstance(user_input, str):
+        return ()
+    found: list[str] = []
+
+    def visit(value: Any) -> None:
+        if isinstance(value, list):
+            for item in value:
+                visit(item)
+            return
+        if not isinstance(value, dict):
+            return
+        if value.get("type") in {"input_file", "input_image"}:
+            file_id = value.get("file_id")
+            if isinstance(file_id, str) and file_id and file_id not in found:
+                found.append(file_id)
+        for item in value.values():
+            visit(item)
+
+    visit(user_input)
+    return tuple(found)
 
 
 def describe_tool_event(event: object) -> RunEvent | None:

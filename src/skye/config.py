@@ -83,6 +83,7 @@ class Settings(BaseSettings):
     skye_tpm_budget: int = Field(default=160_000, ge=1)
     skye_max_attachment_bytes: int = Field(default=25 * 1024 * 1024, ge=1)
     skye_transcription_model: str = "gpt-transcribe"
+    skye_media_group_settle_seconds: float = Field(default=0.75, ge=0.1, le=5.0)
     skye_group_context_messages: int = Field(default=20, ge=1, le=100)
     skye_group_context_message_chars: int = Field(default=1_500, ge=100, le=4_096)
     skye_group_context_total_chars: int = Field(default=16_000, ge=500, le=50_000)

@@ -39,6 +39,7 @@ from .conversations import ConversationService
 from .custom_agents import AGENT_CAPABILITIES, CustomAgentService
 from .db import Database
 from .group_context import GroupContextService
+from .media_groups import MediaGroupService
 from .memory import MemoryService
 from .models import (
     AccessEffect,
@@ -47,6 +48,7 @@ from .models import (
     ChatSettings,
     ChatType,
     InstalledAgent,
+    MediaGroupItem,
     RequestContext,
     Scope,
     ScopeKind,
@@ -87,9 +89,12 @@ class AdminPrompt(StatesGroup):
 
 
 class UpdateMiddleware(BaseMiddleware):
-    def __init__(self, database: Database, groups: GroupContextService) -> None:
+    def __init__(
+        self, database: Database, groups: GroupContextService, media_groups: MediaGroupService
+    ) -> None:
         self.database = database
         self.groups = groups
+        self.media_groups = media_groups
 
     async def __call__(
         self,
@@ -105,6 +110,7 @@ class UpdateMiddleware(BaseMiddleware):
         try:
             incoming = event.message or event.edited_message
             if incoming:
+                await self.media_groups.capture(incoming)
                 await self.groups.capture(incoming)
             result = await handler(event, data)
         except Exception as error:
@@ -126,6 +132,7 @@ class TelegramApp:
         custom_agents: CustomAgentService,
         connectors: ConnectorService,
         groups: GroupContextService,
+        media_groups: MediaGroupService,
         attachments: AttachmentService,
         runtime: AgentRuntime,
         skills: SkillService,
@@ -140,6 +147,7 @@ class TelegramApp:
         self.custom_agents = custom_agents
         self.connector_service = connectors
         self.groups = groups
+        self.media_groups = media_groups
         self.attachments = attachments
         self.runtime = runtime
         self.skill_service = skills
@@ -1068,8 +1076,14 @@ class TelegramApp:
             return
         if not await self._require_access(message, context):
             return
+        media_groups = getattr(self, "media_groups", None)
+        album: tuple[MediaGroupItem, ...] = ()
+        if media_groups is not None:
+            album = await media_groups.resolve(message)
+            if message.media_group_id is not None and not await media_groups.claim(message):
+                return
         try:
-            user_input = await self._input(message, context)
+            user_input = await self._input(message, context, album=album)
         except ValueError as error:
             await self.rich.send(message, str(error))
             return
@@ -1156,8 +1170,15 @@ class TelegramApp:
             await self._finish(message, placeholder, "Something went wrong. Please try again.")
 
     async def _input(
-        self, message: Message, context: RequestContext
+        self,
+        message: Message,
+        context: RequestContext,
+        *,
+        album: Sequence[MediaGroupItem] | None = None,
     ) -> str | list[TResponseInputItem]:
+        if album is None:
+            media_groups = getattr(self, "media_groups", None)
+            album = await media_groups.resolve(message) if media_groups is not None else ()
         text = self.groups.text(message)
         if context.chat_type != "private":
             identity = context.display_name
@@ -1192,16 +1213,17 @@ class TelegramApp:
                     or source.voice
                     or source.audio
                     or source.video_note
+                    or source.video
                     or source.document
                 )
             )
             for source in (message, message.reply_to_message)
         )
-        if not has_attachments:
+        if not has_attachments and not album:
             return text
 
         content: list[dict[str, Any]] = [{"type": "input_text", "text": text}]
-        await self.attachments.add(message, content)
+        await self.attachments.add(message, content, album=album)
         return cast(list[TResponseInputItem], [{"role": "user", "content": content}])
 
     async def _deliver(

@@ -23,6 +23,7 @@ from .conversations import ConversationService
 from .custom_agents import CustomAgentService
 from .db import Database
 from .group_context import GroupContextService
+from .media_groups import MediaGroupService
 from .memory import MemoryService
 from .projects import ProjectService
 from .runtime import OPENAI_MAX_RETRIES, AgentRuntime
@@ -79,6 +80,7 @@ async def run() -> None:
         )
     connectors = ConnectorService(database, composio)
     groups = GroupContextService(config, database, bot)
+    media_groups = MediaGroupService(config, database)
     attachments = AttachmentService(config, bot, client)
     access = AccessService(database, config.skye_owner_ids)
     skills = SkillService(database, client, config.skye_max_attachment_bytes)
@@ -106,12 +108,13 @@ async def run() -> None:
         custom_agents,
         connectors,
         groups,
+        media_groups,
         attachments,
         runtime,
         skills,
         telegram_projects,
     )
-    dispatcher.update.outer_middleware(UpdateMiddleware(database, groups))
+    dispatcher.update.outer_middleware(UpdateMiddleware(database, groups, media_groups))
     dispatcher.include_router(telegram.router)
 
     try:

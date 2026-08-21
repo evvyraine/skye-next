@@ -25,6 +25,7 @@ from .models import (
     GroupMessage,
     InstalledAgent,
     KnownGroup,
+    MediaGroupItem,
     Memory,
     MemoryCategory,
     ProjectKind,
@@ -176,6 +177,35 @@ CREATE TABLE IF NOT EXISTS group_messages (
 
 CREATE INDEX IF NOT EXISTS group_messages_context
 ON group_messages(chat_id, thread_id, message_id DESC);
+
+CREATE TABLE IF NOT EXISTS media_group_items (
+    chat_id INTEGER NOT NULL,
+    media_group_id TEXT NOT NULL,
+    message_id INTEGER NOT NULL,
+    thread_id INTEGER NOT NULL DEFAULT 0,
+    media_kind TEXT NOT NULL,
+    file_id TEXT NOT NULL,
+    file_unique_id TEXT NOT NULL,
+    file_name TEXT,
+    mime_type TEXT,
+    file_size INTEGER,
+    width INTEGER,
+    height INTEGER,
+    caption TEXT,
+    sent_at INTEGER NOT NULL,
+    PRIMARY KEY (chat_id, message_id)
+);
+
+CREATE INDEX IF NOT EXISTS media_group_items_lookup
+ON media_group_items(chat_id, media_group_id, message_id);
+
+CREATE TABLE IF NOT EXISTS media_group_claims (
+    chat_id INTEGER NOT NULL,
+    media_group_id TEXT NOT NULL,
+    claimed_message_id INTEGER NOT NULL,
+    claimed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (chat_id, media_group_id)
+);
 
 CREATE TABLE IF NOT EXISTS custom_connectors (
     id TEXT PRIMARY KEY,
@@ -1111,6 +1141,92 @@ class Database:
                    ORDER BY message_id DESC LIMIT ?
                )""",
             (chat_id, thread_id, chat_id, thread_id, keep),
+        )
+
+    async def save_media_group_item(self, item: MediaGroupItem) -> None:
+        await self._write(
+            """INSERT INTO media_group_items (
+                   chat_id, media_group_id, message_id, thread_id, media_kind,
+                   file_id, file_unique_id, file_name, mime_type, file_size,
+                   width, height, caption, sent_at
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(chat_id, message_id) DO UPDATE SET
+                   media_group_id = excluded.media_group_id,
+                   thread_id = excluded.thread_id,
+                   media_kind = excluded.media_kind,
+                   file_id = excluded.file_id,
+                   file_unique_id = excluded.file_unique_id,
+                   file_name = excluded.file_name,
+                   mime_type = excluded.mime_type,
+                   file_size = excluded.file_size,
+                   width = excluded.width,
+                   height = excluded.height,
+                   caption = excluded.caption,
+                   sent_at = excluded.sent_at""",
+            (
+                item.chat_id,
+                item.media_group_id,
+                item.message_id,
+                item.thread_id,
+                item.media_kind,
+                item.file_id,
+                item.file_unique_id,
+                item.file_name,
+                item.mime_type,
+                item.file_size,
+                item.width,
+                item.height,
+                item.caption,
+                item.sent_at,
+            ),
+        )
+
+    async def media_group_id_for_message(self, chat_id: int, message_id: int) -> str | None:
+        cursor = await self.conn.execute(
+            """SELECT media_group_id FROM media_group_items
+               WHERE chat_id = ? AND message_id = ?""",
+            (chat_id, message_id),
+        )
+        row = await cursor.fetchone()
+        return cast(str | None, row["media_group_id"]) if row else None
+
+    async def media_group_items(
+        self, chat_id: int, media_group_id: str
+    ) -> list[MediaGroupItem]:
+        cursor = await self.conn.execute(
+            """SELECT * FROM media_group_items
+               WHERE chat_id = ? AND media_group_id = ?
+               ORDER BY message_id""",
+            (chat_id, media_group_id),
+        )
+        return [self._media_group_item(row) for row in await cursor.fetchall()]
+
+    async def claim_media_group(self, chat_id: int, media_group_id: str, message_id: int) -> bool:
+        cursor = await self._write(
+            """INSERT INTO media_group_claims (chat_id, media_group_id, claimed_message_id)
+               VALUES (?, ?, ?)
+               ON CONFLICT(chat_id, media_group_id) DO NOTHING""",
+            (chat_id, media_group_id, message_id),
+        )
+        return cursor.rowcount == 1
+
+    @staticmethod
+    def _media_group_item(row: aiosqlite.Row) -> MediaGroupItem:
+        return MediaGroupItem(
+            chat_id=int(row["chat_id"]),
+            media_group_id=str(row["media_group_id"]),
+            message_id=int(row["message_id"]),
+            thread_id=int(row["thread_id"]),
+            media_kind=str(row["media_kind"]),
+            file_id=str(row["file_id"]),
+            file_unique_id=str(row["file_unique_id"]),
+            file_name=cast(str | None, row["file_name"]),
+            mime_type=cast(str | None, row["mime_type"]),
+            file_size=cast(int | None, row["file_size"]),
+            width=cast(int | None, row["width"]),
+            height=cast(int | None, row["height"]),
+            caption=cast(str | None, row["caption"]),
+            sent_at=int(row["sent_at"]),
         )
 
     async def group_messages(

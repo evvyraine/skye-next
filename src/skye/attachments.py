@@ -2,15 +2,17 @@ from __future__ import annotations
 
 import base64
 import mimetypes
+from collections.abc import Awaitable, Sequence
 from io import BytesIO
 from pathlib import Path
 from typing import Any
 
 from aiogram import Bot
-from aiogram.types import Audio, Document, Message, PhotoSize, VideoNote, Voice
+from aiogram.types import Audio, Document, Message, PhotoSize, Video, VideoNote, Voice
 from openai import AsyncOpenAI
 
 from .config import Settings
+from .models import MediaGroupItem
 
 AUDIO_EXTENSIONS = {".aac", ".flac", ".m4a", ".mp3", ".mp4", ".mpeg", ".ogg", ".wav", ".webm"}
 
@@ -23,61 +25,119 @@ class AttachmentService:
         self.bot = bot
         self.client = client
 
-    async def add(self, message: Message, content: list[dict[str, Any]]) -> None:
+    async def add(
+        self,
+        message: Message,
+        content: list[dict[str, Any]],
+        *,
+        album: Sequence[MediaGroupItem] = (),
+    ) -> tuple[str, ...]:
         seen: set[str] = set()
+        file_ids: list[str] = []
+        total = len(album)
+        for index, item in enumerate(album, start=1):
+            label = f"Attached album item {index} of {total}"
+            if item.caption and item.message_id != message.message_id:
+                content.append({"type": "input_text", "text": f"{label} caption:\n{item.caption}"})
+            if item.media_kind == "photo":
+                await self._collect(
+                    file_ids,
+                    self._photo(
+                        item,
+                        f"{label} image",
+                        content,
+                        seen,
+                        upload_filename=f"album-{item.message_id}.jpg",
+                    ),
+                )
+            elif item.media_kind in {"audio", "voice", "video_note"}:
+                await self._collect(file_ids, self._audio(item, label, content, seen))
+            elif item.media_kind == "document":
+                await self._collect(file_ids, self._document(item, label, content, seen))
+            elif item.media_kind == "video":
+                await self._collect(file_ids, self._file(item, label, content, seen))
         for label, source in (("Attached", message), ("Replied-to", message.reply_to_message)):
             if source is None:
                 continue
             if source.photo:
-                await self._photo(source.photo[-1], label, content, seen)
+                photo = source.photo[-1]
+                await self._collect(
+                    file_ids,
+                    self._photo(
+                        photo,
+                        label,
+                        content,
+                        seen,
+                        upload_filename=f"image-{photo.file_unique_id}.jpg",
+                    ),
+                )
             if source.voice:
-                await self._audio(source.voice, label, content, seen)
+                await self._collect(file_ids, self._audio(source.voice, label, content, seen))
             if source.audio:
-                await self._audio(source.audio, label, content, seen)
+                await self._collect(file_ids, self._audio(source.audio, label, content, seen))
             if source.video_note:
-                await self._audio(source.video_note, label, content, seen)
+                await self._collect(file_ids, self._audio(source.video_note, label, content, seen))
+            if source.video:
+                await self._collect(file_ids, self._file(source.video, label, content, seen))
             if source.document:
-                await self._document(source.document, label, content, seen)
+                await self._collect(file_ids, self._document(source.document, label, content, seen))
+        return tuple(file_ids)
 
     async def _photo(
         self,
-        photo: PhotoSize,
+        photo: PhotoSize | MediaGroupItem,
         label: str,
         content: list[dict[str, Any]],
         seen: set[str],
-    ) -> None:
+        upload_filename: str = "image.jpg",
+    ) -> str | None:
         if not self._new(photo.file_unique_id, seen):
-            return
+            return None
         data = await self._download(photo, photo.file_size, "image")
+        file_id = await upload_openai_file(self.client, upload_filename, "image/jpeg", data)
+        image: dict[str, Any] = {"type": "input_image"}
+        if file_id:
+            image["file_id"] = file_id
+        else:
+            image["image_url"] = data_url("image/jpeg", data)
+        image["detail"] = "auto"
         content.extend(
             [
                 {"type": "input_text", "text": f"{label} image:"},
-                {
-                    "type": "input_image",
-                    "image_url": data_url("image/jpeg", data),
-                    "detail": "auto",
-                },
+                image,
             ]
         )
+        return file_id
 
     async def _audio(
         self,
-        audio: Voice | Audio | VideoNote,
+        audio: Voice | Audio | VideoNote | MediaGroupItem,
         label: str,
         content: list[dict[str, Any]],
         seen: set[str],
-    ) -> None:
+    ) -> str | None:
         if not self._new(audio.file_unique_id, seen):
-            return
+            return None
         filename = getattr(audio, "file_name", None) or (
             "voice.ogg"
-            if isinstance(audio, Voice)
+            if isinstance(audio, Voice) or getattr(audio, "media_kind", None) == "voice"
             else "video-note.mp4"
-            if isinstance(audio, VideoNote)
+            if isinstance(audio, VideoNote) or getattr(audio, "media_kind", None) == "video_note"
             else "audio.mp3"
         )
-        kind = "video message" if isinstance(audio, VideoNote) else "audio"
+        kind = (
+            "video message"
+            if isinstance(audio, VideoNote) or getattr(audio, "media_kind", None) == "video_note"
+            else "audio"
+        )
         data = await self._download(audio, audio.file_size, kind)
+        mime = getattr(audio, "mime_type", None) or "audio/ogg"
+        upload_filename = (
+            f"album-{audio.message_id}-{filename}"
+            if isinstance(audio, MediaGroupItem)
+            else filename
+        )
+        file_id = await upload_openai_file(self.client, upload_filename, mime, data)
         transcript = await transcribe_audio(
             self.client, self.config.skye_transcription_model, filename, data
         )
@@ -87,20 +147,31 @@ class AttachmentService:
                 "text": f"{label} {kind} transcript ({filename}):\n{transcript}",
             }
         )
+        if file_id:
+            content.append(
+                {"type": "input_file", "filename": filename, "file_id": file_id}
+            )
+        return file_id
 
     async def _document(
         self,
-        document: Document,
+        document: Document | MediaGroupItem,
         label: str,
         content: list[dict[str, Any]],
         seen: set[str],
-    ) -> None:
+    ) -> str | None:
         if not self._new(document.file_unique_id, seen):
-            return
+            return None
         suffix = mimetypes.guess_extension(document.mime_type or "") or ""
-        filename = document.file_name or f"document{suffix}"
-        mime = document.mime_type or "application/octet-stream"
-        data = await self._download(document, document.file_size, "document")
+        filename = getattr(document, "file_name", None) or f"document{suffix}"
+        mime = getattr(document, "mime_type", None) or "application/octet-stream"
+        data = await self._download(document, getattr(document, "file_size", None), "document")
+        upload_filename = (
+            f"album-{document.message_id}-{filename}"
+            if isinstance(document, MediaGroupItem)
+            else filename
+        )
+        file_id = await upload_openai_file(self.client, upload_filename, mime, data)
         extension = Path(filename).suffix.lower()
         if mime.startswith("audio/") or extension in AUDIO_EXTENSIONS:
             transcript = await transcribe_audio(
@@ -112,18 +183,63 @@ class AttachmentService:
                     "text": f"{label} audio transcript ({filename}):\n{transcript}",
                 }
             )
-            return
+            if file_id:
+                content.append(
+                    {"type": "input_file", "filename": filename, "file_id": file_id}
+                )
+            return file_id
+        file_part: dict[str, Any] = {
+            "type": "input_file",
+            "filename": filename,
+        }
+        if file_id:
+            file_part["file_id"] = file_id
+        else:
+            file_part["file_data"] = data_url(mime, data)
         content.extend(
             [
                 {"type": "input_text", "text": f"{label} document ({filename}):"},
-                {
-                    "type": "input_file",
-                    "filename": filename,
-                    "file_data": data_url(mime, data),
-                    **({"detail": "auto"} if extension == ".pdf" else {}),
-                },
+                {**file_part, **({"detail": "auto"} if extension == ".pdf" else {})},
             ]
         )
+        return file_id
+
+    async def _file(
+        self,
+        media: Video | MediaGroupItem,
+        label: str,
+        content: list[dict[str, Any]],
+        seen: set[str],
+    ) -> str | None:
+        if not self._new(media.file_unique_id, seen):
+            return None
+        filename = getattr(media, "file_name", None) or "video.mp4"
+        mime = getattr(media, "mime_type", None) or "video/mp4"
+        data = await self._download(media, getattr(media, "file_size", None), "video")
+        upload_filename = (
+            f"album-{media.message_id}-{filename}"
+            if isinstance(media, MediaGroupItem)
+            else filename
+        )
+        file_id = await upload_openai_file(self.client, upload_filename, mime, data)
+        file_part: dict[str, Any] = {"type": "input_file", "filename": filename}
+        if file_id:
+            file_part["file_id"] = file_id
+        else:
+            file_part["file_data"] = data_url(mime, data)
+        content.extend(
+            [
+                {"type": "input_text", "text": f"{label} ({filename}):"},
+                file_part,
+            ]
+        )
+        return file_id
+
+    @staticmethod
+    async def _collect(file_ids: list[str], pending: Awaitable[str | None]) -> None:
+        file_id = await pending
+        if file_id:
+            file_ids.append(file_id)
 
     async def _download(self, media: Any, size: int | None, kind: str) -> bytes:
         limit = self.config.skye_max_attachment_bytes
@@ -160,35 +276,58 @@ async def transcribe_audio(client: AsyncOpenAI, model: str, filename: str, data:
     return str(result.text).strip()
 
 
+async def upload_openai_file(
+    client: AsyncOpenAI, filename: str, mime: str, data: bytes
+) -> str | None:
+    files = getattr(client, "files", None)
+    create = getattr(files, "create", None)
+    if create is None:
+        return None
+    uploaded = await create(file=(filename, data, mime), purpose="user_data")
+    file_id = getattr(uploaded, "id", None)
+    return str(file_id) if file_id else None
+
+
 def data_url(mime: str, data: bytes) -> str:
     return f"data:{mime};base64,{base64.b64encode(data).decode()}"
 
 
 def openai_file_parts(
-    filename: str, mime: str, data: bytes, transcript: str | None = None
+    filename: str,
+    mime: str,
+    data: bytes,
+    transcript: str | None = None,
+    file_id: str | None = None,
 ) -> list[dict[str, Any]]:
     extension = Path(filename).suffix.lower()
     if mime.startswith("image/") or mime in IMAGE_MIMES:
+        image: dict[str, Any] = {"type": "input_image", "detail": "auto"}
+        if file_id:
+            image["file_id"] = file_id
+        else:
+            image["image_url"] = data_url(mime or "image/jpeg", data)
         return [
             {"type": "input_text", "text": f"Attached image ({filename}):"},
-            {"type": "input_image", "image_url": data_url(mime or "image/jpeg", data),
-             "detail": "auto"},
+            image,
         ]
     if transcript is not None:
-        return [
+        parts: list[dict[str, Any]] = [
             {
                 "type": "input_text",
                 "text": f"Attached audio transcript ({filename}):\n{transcript}",
             }
         ]
+        if file_id:
+            parts.append({"type": "input_file", "filename": filename, "file_id": file_id})
+        return parts
+    file_part: dict[str, Any] = {"type": "input_file", "filename": filename}
+    if file_id:
+        file_part["file_id"] = file_id
+    else:
+        file_part["file_data"] = data_url(mime or "application/octet-stream", data)
     return [
         {"type": "input_text", "text": f"Attached document ({filename}):"},
-        {
-            "type": "input_file",
-            "filename": filename,
-            "file_data": data_url(mime or "application/octet-stream", data),
-            **({"detail": "auto"} if extension == ".pdf" else {}),
-        },
+        {**file_part, **({"detail": "auto"} if extension == ".pdf" else {})},
     ]
 
 

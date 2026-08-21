@@ -76,6 +76,23 @@ def test_agent_uses_only_hosted_capabilities() -> None:
     }
 
 
+def test_attached_files_are_mounted_in_the_hosted_sandbox() -> None:
+    memory = MemoryService(cast(Any, None))
+    runtime = AgentRuntime(config(), cast(Any, None), memory, "You are Skye.")
+    agent = runtime._agent(
+        RequestContext(1, "private", 1),
+        ChatSettings("gpt-5.6-luna", "medium"),
+        input_file_ids=("file_1", "file_2"),
+    )
+
+    shell = cast(ShellTool, agent.tools[2])
+    assert shell.environment == {
+        "type": "container_auto",
+        "network_policy": sandbox_network_policy(),
+        "file_ids": ["file_1", "file_2"],
+    }
+
+
 def test_disabled_memory_is_not_injected_or_exposed() -> None:
     memory = MemoryService(cast(Any, None))
     runtime = AgentRuntime(config(), cast(Any, None), memory, "You are Skye.")
