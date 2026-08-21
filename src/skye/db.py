@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import time
 from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -28,10 +29,12 @@ from .models import (
     MediaGroupItem,
     Memory,
     MemoryCategory,
+    PlanId,
     ProjectKind,
     Scope,
     ScopeKind,
     Skill,
+    StarEntitlement,
     TelegramProject,
     ToolStatus,
     WebFile,
@@ -392,6 +395,29 @@ CREATE TRIGGER IF NOT EXISTS web_messages_au AFTER UPDATE ON web_messages BEGIN
     VALUES ('delete', old.rowid, old.text);
     INSERT INTO web_messages_fts(rowid, text) VALUES (new.rowid, new.text);
 END;
+
+CREATE TABLE IF NOT EXISTS star_entitlements (
+    user_id INTEGER PRIMARY KEY,
+    plan TEXT NOT NULL CHECK (plan IN ('trial', 'plus', 'super', 'ultra')),
+    auto_renew INTEGER NOT NULL DEFAULT 0,
+    expires_at INTEGER NOT NULL,
+    telegram_payment_charge_id TEXT,
+    trial_used INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS star_payments (
+    telegram_payment_charge_id TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    plan TEXT NOT NULL CHECK (plan IN ('trial', 'plus', 'super', 'ultra')),
+    stars INTEGER NOT NULL,
+    invoice_payload TEXT NOT NULL,
+    is_recurring INTEGER NOT NULL DEFAULT 0,
+    is_first_recurring INTEGER NOT NULL DEFAULT 0,
+    subscription_expiration_date INTEGER,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 """
 
 
@@ -539,6 +565,149 @@ class Database:
             )
             for row in await cursor.fetchall()
         ]
+
+    async def star_entitlement(self, user_id: int) -> StarEntitlement | None:
+        cursor = await self.conn.execute(
+            """SELECT user_id, plan, auto_renew, expires_at, telegram_payment_charge_id,
+                      trial_used, created_at, updated_at
+               FROM star_entitlements WHERE user_id = ?""",
+            (user_id,),
+        )
+        row = await cursor.fetchone()
+        return None if row is None else self._star_entitlement(row)
+
+    async def active_entitlement(
+        self, user_id: int, *, now: int | None = None
+    ) -> StarEntitlement | None:
+        current = await self.star_entitlement(user_id)
+        if current is None or not current.active(int(time.time()) if now is None else now):
+            return None
+        return current
+
+    async def star_trial_used(self, user_id: int) -> bool:
+        current = await self.star_entitlement(user_id)
+        return bool(current and current.trial_used)
+
+    async def record_star_payment(
+        self,
+        *,
+        telegram_payment_charge_id: str,
+        user_id: int,
+        plan: PlanId,
+        stars: int,
+        invoice_payload: str,
+        is_recurring: bool,
+        is_first_recurring: bool,
+        subscription_expiration_date: int | None,
+    ) -> bool:
+        cursor = await self._write(
+            """INSERT OR IGNORE INTO star_payments (
+                   telegram_payment_charge_id, user_id, plan, stars, invoice_payload,
+                   is_recurring, is_first_recurring, subscription_expiration_date
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                telegram_payment_charge_id,
+                user_id,
+                plan,
+                stars,
+                invoice_payload,
+                int(is_recurring),
+                int(is_first_recurring),
+                subscription_expiration_date,
+            ),
+        )
+        return cursor.rowcount > 0
+
+    async def star_payment(self, telegram_payment_charge_id: str) -> tuple[int, PlanId] | None:
+        cursor = await self.conn.execute(
+            "SELECT user_id, plan FROM star_payments WHERE telegram_payment_charge_id = ?",
+            (telegram_payment_charge_id,),
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            return None
+        return int(row["user_id"]), cast(PlanId, row["plan"])
+
+    async def upsert_star_entitlement(
+        self,
+        *,
+        user_id: int,
+        plan: PlanId,
+        auto_renew: bool,
+        expires_at: int,
+        telegram_payment_charge_id: str | None,
+        trial_used: bool,
+    ) -> StarEntitlement:
+        await self._write(
+            """INSERT INTO star_entitlements (
+                   user_id, plan, auto_renew, expires_at, telegram_payment_charge_id, trial_used
+               ) VALUES (?, ?, ?, ?, ?, ?)
+               ON CONFLICT(user_id) DO UPDATE SET
+                   plan = excluded.plan,
+                   auto_renew = excluded.auto_renew,
+                   expires_at = excluded.expires_at,
+                   telegram_payment_charge_id = excluded.telegram_payment_charge_id,
+                   trial_used = MAX(star_entitlements.trial_used, excluded.trial_used),
+                   updated_at = CURRENT_TIMESTAMP""",
+            (
+                user_id,
+                plan,
+                int(auto_renew),
+                expires_at,
+                telegram_payment_charge_id,
+                int(trial_used),
+            ),
+        )
+        current = await self.star_entitlement(user_id)
+        if current is None:
+            raise RuntimeError("Star entitlement was not saved.")
+        return current
+
+    async def extend_star_entitlement(self, user_id: int, expires_at: int) -> StarEntitlement:
+        await self._write(
+            """UPDATE star_entitlements
+               SET expires_at = ?, updated_at = CURRENT_TIMESTAMP
+               WHERE user_id = ?""",
+            (expires_at, user_id),
+        )
+        current = await self.star_entitlement(user_id)
+        if current is None:
+            raise RuntimeError("Star entitlement was not saved.")
+        return current
+
+    async def set_star_auto_renew(self, user_id: int, auto_renew: bool) -> StarEntitlement:
+        await self._write(
+            """UPDATE star_entitlements
+               SET auto_renew = ?, updated_at = CURRENT_TIMESTAMP
+               WHERE user_id = ?""",
+            (int(auto_renew), user_id),
+        )
+        current = await self.star_entitlement(user_id)
+        if current is None:
+            raise RuntimeError("Star entitlement was not saved.")
+        return current
+
+    async def expire_star_entitlement(self, user_id: int, now: int) -> StarEntitlement | None:
+        await self._write(
+            """UPDATE star_entitlements
+               SET auto_renew = 0, expires_at = ?, updated_at = CURRENT_TIMESTAMP
+               WHERE user_id = ?""",
+            (now, user_id),
+        )
+        return await self.star_entitlement(user_id)
+
+    @staticmethod
+    def _star_entitlement(row: aiosqlite.Row) -> StarEntitlement:
+        return StarEntitlement(
+            user_id=int(row["user_id"]),
+            plan=cast(PlanId, row["plan"]),
+            auto_renew=bool(row["auto_renew"]),
+            expires_at=int(row["expires_at"]),
+            telegram_payment_charge_id=cast(str | None, row["telegram_payment_charge_id"]),
+            trial_used=bool(row["trial_used"]),
+            created_at=str(row["created_at"]),
+            updated_at=str(row["updated_at"]),
+        )
 
     async def get_settings(self, scope: Scope) -> ChatSettings:
         table, key = self._settings_table(scope)

@@ -17,6 +17,7 @@ from pydantic import ValidationError
 from .access import AccessService
 from .attachments import AttachmentService
 from .auth import TelegramAuth
+from .billing import BillingService
 from .config import Settings
 from .connectors import ComposioClient, ConnectorService
 from .conversations import ConversationService
@@ -83,6 +84,7 @@ async def run() -> None:
     media_groups = MediaGroupService(config, database)
     attachments = AttachmentService(config, bot, client)
     access = AccessService(database, config.skye_owner_ids)
+    billing = BillingService(database, config.telegram_bot_token)
     skills = SkillService(database, client, config.skye_max_attachment_bytes)
     runtime = AgentRuntime(
         config,
@@ -113,6 +115,7 @@ async def run() -> None:
         runtime,
         skills,
         telegram_projects,
+        billing,
     )
     dispatcher.update.outer_middleware(UpdateMiddleware(database, groups, media_groups))
     dispatcher.include_router(telegram.router)

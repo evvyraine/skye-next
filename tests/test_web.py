@@ -8,6 +8,7 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from skye.access import AccessService
 from skye.auth import COOKIE_NAME, TelegramAuth
+from skye.billing import PLANS, SUBSCRIPTION_PERIOD, BillingService
 from skye.config import Settings
 from skye.db import Database
 from skye.models import Scope
@@ -102,6 +103,37 @@ async def test_web_allowlist_denies_unknown_users(database: Database, tmp_path: 
         response = await client.get("/api/projects")
         assert response.status == 403
         assert "private" in (await response.text()).lower()
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_web_stars_plan_grants_private_access(database: Database, tmp_path: Path) -> None:
+    import time
+
+    from aiogram.types import SuccessfulPayment
+
+    billing = BillingService(database, "123:token")
+    now = int(time.time())
+    plan = PLANS["plus"]
+    await billing.apply_payment(
+        99,
+        SuccessfulPayment(
+            currency="XTR",
+            total_amount=plan.stars,
+            invoice_payload=billing.payload(plan, 99),
+            telegram_payment_charge_id="web-plus",
+            provider_payment_charge_id="",
+            subscription_expiration_date=now + SUBSCRIPTION_PERIOD,
+            is_recurring=True,
+            is_first_recurring=True,
+        ),
+    )
+    client, projects, _runtime = await app_client(database, tmp_path)
+    try:
+        await signed_in(client, projects, user_id=99)
+        response = await client.get("/api/projects")
+        assert response.status == 200
     finally:
         await client.close()
 

@@ -15,6 +15,8 @@ class AccessService:
             return True
         if await self.database.access_effect(Scope("user", context.user_id)) == "ban":
             return False
+        if await self.database.access_effect(context.scope) == "allow":
+            return True
         if context.chat_type == "private":
-            return await self.database.access_effect(context.scope) == "allow"
-        return await self.database.access_effect(context.scope) == "allow"
+            return await self.database.active_entitlement(context.user_id) is not None
+        return False

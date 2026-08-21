@@ -9,6 +9,7 @@ from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import (
     BufferedInputFile,
     InlineKeyboardMarkup,
+    InputRichBlockDetails,
     InputRichBlockParagraph,
     InputRichBlockSectionHeading,
     InputRichBlockTable,
@@ -155,6 +156,107 @@ class RichMessages:
                 InputRichBlockSectionHeading(text="Settings", size=2),
                 InputRichBlockTable(cells=rows, is_bordered=True, is_striped=True),
             ]
+        )
+
+    @staticmethod
+    def account(
+        *,
+        owner: bool,
+        complimentary: bool,
+        plan_name: str | None,
+        plan_emoji: str | None,
+        model_label: str | None,
+        status: str | None,
+        notice: str | None = None,
+    ) -> InputRichMessage:
+        blocks: list[InputRichBlockUnion] = [InputRichBlockSectionHeading(text="Account", size=2)]
+        if notice:
+            blocks.append(InputRichBlockParagraph(text=notice))
+        if owner:
+            blocks.append(
+                InputRichBlockParagraph(
+                    text="Owner access. All models are available. No Stars plan is required."
+                )
+            )
+            return InputRichMessage(blocks=blocks)
+        if plan_name and plan_emoji and model_label and status:
+            blocks.append(InputRichBlockSectionHeading(text=f"{plan_emoji} {plan_name}", size=3))
+            blocks.append(InputRichBlockParagraph(text=f"{model_label}. {status}"))
+        elif complimentary:
+            blocks.append(
+                InputRichBlockParagraph(
+                    text="Complimentary access from the allowlist. All models are available."
+                )
+            )
+        else:
+            blocks.append(
+                InputRichBlockParagraph(
+                    text=(
+                        "No active plan. Subscribe with Telegram Stars for unlimited private "
+                        "access, under Fair Use."
+                    )
+                )
+            )
+        return InputRichMessage(blocks=blocks)
+
+    @staticmethod
+    def plan_checkout(
+        *,
+        name: str,
+        emoji: str,
+        stars: int,
+        model_label: str,
+        recurring: bool,
+    ) -> InputRichMessage:
+        if recurring:
+            price = f"{stars} Telegram Stars each month"
+            access = f"Unlimited {model_label} while the plan is active."
+        else:
+            price = f"{stars} Telegram Stars, once"
+            access = f"Unlimited {model_label} for seven days. This offer can be used once."
+        return InputRichMessage(
+            blocks=[
+                InputRichBlockSectionHeading(text=f"{emoji} {name}", size=2),
+                InputRichBlockParagraph(text=f"{price}. {access} Fair Use applies."),
+                RichMessages._fair_use_details(),
+            ]
+        )
+
+    @staticmethod
+    def plan_terms() -> InputRichMessage:
+        return InputRichMessage(
+            blocks=[
+                InputRichBlockSectionHeading(text="Skye plans", size=2),
+                InputRichBlockParagraph(
+                    text="Paid access uses Telegram Stars. Fair Use applies to every plan."
+                ),
+                RichMessages._fair_use_details(open_by_default=True),
+            ]
+        )
+
+    @staticmethod
+    def _fair_use_details(*, open_by_default: bool = False) -> InputRichBlockDetails:
+        return InputRichBlockDetails(
+            summary="Fair Use and models",
+            blocks=[
+                InputRichBlockParagraph(
+                    text=(
+                        "Access is unlimited for ordinary personal use under Fair Use. "
+                        "If usage is unusually high, Skye may limit this subscription. "
+                        "This is a fairness limit, not a token quota."
+                    )
+                ),
+                InputRichBlockParagraph(
+                    text=(
+                        "✨ Try Skye — Luna for 7 days, 49 Stars, once. "
+                        "🌙 Skye Plus — Luna, 499 Stars each month. "
+                        "🌍 Skye Super — Terra, 1,199 Stars each month. "
+                        "☀️ Skye Ultra — Sol, 2,599 Stars each month. "
+                        "Higher monthly plans include every model below them."
+                    )
+                ),
+            ],
+            is_open=True if open_by_default else None,
         )
 
     @staticmethod
