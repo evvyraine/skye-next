@@ -297,7 +297,9 @@ async def test_deliver_sends_generated_images_after_the_text() -> None:
 
     await app._deliver(incoming, None, RunOutput("Here it is.", images))
 
-    app.rich.send.assert_awaited_once_with(incoming, InputRichMessage(markdown="Here it is."))
+    app.rich.send.assert_awaited_once_with(
+        incoming, InputRichMessage(markdown="Here it is."), reply_markup=None
+    )
     app.rich.send_images.assert_awaited_once_with(incoming, images)
     app.rich.send_documents.assert_not_awaited()
 

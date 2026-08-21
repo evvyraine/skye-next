@@ -183,6 +183,28 @@ class WebSession:
 
 
 @dataclass(frozen=True, slots=True)
+class TelegramProject:
+    id: str
+    user_id: int
+    kind: ProjectKind
+    name: str
+    emoji: str
+    instructions: str
+    openai_conversation_id: str | None
+    created_at: str
+    updated_at: str
+
+    @property
+    def label(self) -> str:
+        text = f"{self.emoji} {self.name}".strip()
+        return text[:64] if len(text) <= 64 else text[:63].rstrip() + "…"
+
+    @property
+    def deletable(self) -> bool:
+        return self.kind != "skye"
+
+
+@dataclass(frozen=True, slots=True)
 class WebProject:
     id: str
     user_id: int

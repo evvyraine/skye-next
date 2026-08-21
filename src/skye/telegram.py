@@ -24,6 +24,7 @@ from aiogram.types import (
     InlineKeyboardMarkup,
     InputRichMessage,
     Message,
+    ReplyKeyboardMarkup,
     RichTextUnion,
     TelegramObject,
     Update,
@@ -53,12 +54,23 @@ from .models import (
 from .rich import RichMessages
 from .runtime import AgentRuntime, ContextLimitError, RunOutput, StreamStartedError
 from .skills import SkillError, SkillPanel, SkillService, SkillWizard
+from .telegram_projects import (
+    ProjectPanel,
+    ProjectWizard,
+    TelegramProjectError,
+    TelegramProjectService,
+    project_reply_keyboard,
+)
 from .telegram_threads import thread_id
 
 log = structlog.get_logger()
 REASONING: tuple[Reasoning, ...] = ("none", "low", "medium", "high", "xhigh", "max")
 BOT_NAME = re.compile(r"(?<!\w)(?:skye|скай)(?!\w)", re.IGNORECASE)
 AdminAction = Literal["allow", "ban", "remove"]
+CATCHUP_PROMPT = (
+    "Catch me up on this conversation: where things stand, open threads, and decisions. "
+    "Be concise. Do not start new work."
+)
 
 
 class AgentWizard(StatesGroup):
@@ -115,6 +127,7 @@ class TelegramApp:
         attachments: AttachmentService,
         runtime: AgentRuntime,
         skills: SkillService,
+        telegram_projects: TelegramProjectService,
     ) -> None:
         self.config = config
         self.bot = bot
@@ -128,9 +141,11 @@ class TelegramApp:
         self.attachments = attachments
         self.runtime = runtime
         self.skill_service = skills
+        self.telegram_projects = telegram_projects
         self.rich = RichMessages(bot)
         self.connectors = ConnectorPanel(connectors, self.rich, bot)
         self.skill_panel = SkillPanel(skills, self.rich, bot)
+        self.project_panel = ProjectPanel(telegram_projects, self.rich, bot)
         self.router = Router(name="skye")
         self._register()
 
@@ -138,11 +153,14 @@ class TelegramApp:
         self.router.message.register(self.start, Command("start"))
         self.router.message.register(self.help, Command("help"))
         self.router.message.register(self.settings, Command("settings"))
+        self.router.message.register(self.projects, Command("projects"))
         self.router.message.register(self.agents, Command("agents"))
+        self.router.message.register(self.catchup, Command("catchup"))
         self.router.message.register(self.reset, Command("reset"))
         self.router.message.register(self.stop, Command("stop"))
         self.router.message.register(self.admin, Command("admin"))
         self.router.callback_query.register(self.settings_callback, F.data.startswith("settings:"))
+        self.router.callback_query.register(self.projects_callback, F.data.startswith("proj:"))
         self.router.callback_query.register(self.connectors_callback, F.data.startswith("conn:"))
         self.router.callback_query.register(self.skills_callback, F.data.startswith("skill:"))
         self.router.callback_query.register(self.agents_callback, F.data.startswith("agents:"))
@@ -167,6 +185,15 @@ class TelegramApp:
             ),
         )
         self.router.message.register(self.skill_wizard, StateFilter(SkillWizard.upload))
+        self.router.message.register(
+            self.project_wizard,
+            StateFilter(
+                ProjectWizard.name,
+                ProjectWizard.emoji,
+                ProjectWizard.instructions,
+                ProjectWizard.edit,
+            ),
+        )
         self.router.message.register(self.admin_prompt, StateFilter(AdminPrompt.target))
         self.router.message.register(self.chat)
 
@@ -200,6 +227,7 @@ class TelegramApp:
                 message,
                 "Hi. I'm Skye. Send a message, image, or task — "
                 "I'll use the right tools when needed.",
+                reply_markup=await self._private_reply_keyboard(context),
             )
         else:
             await self.rich.send(
@@ -212,7 +240,9 @@ class TelegramApp:
             "I can chat, search the web, work with images, "
             "run code in an isolated container, and use apps and skills you add.\n\n"
             "/settings — model, reasoning, agent, memory, connectors, and skills\n\n"
+            "/projects — switch and manage project chats\n\n"
             "/agents — create, install, select, and share agents\n\n"
+            "/catchup — summarize this conversation\n\n"
             "/reset — new conversation\n\n"
             "/stop — cancel the active task\n\n"
             "A few useful links.",
@@ -278,6 +308,11 @@ class TelegramApp:
                 return
         elif action == ["settings", "skills"]:
             await self.skill_panel.show_home(callback.message, context, editable=editable)
+        elif action == ["settings", "projects"]:
+            if context.chat_type != "private":
+                await callback.answer("Projects are available in a private chat.", show_alert=True)
+                return
+            await self.project_panel.show_home(callback.message, context, from_settings=True)
         elif action == ["settings", "memory"]:
             memories = await self.database.memories(context.scope, 10)
             await self.rich.edit(
@@ -713,9 +748,119 @@ class TelegramApp:
             ),
         )
 
+    async def projects(self, message: Message, state: FSMContext) -> None:
+        context = self._context(message)
+        if context is None or not await self._require_access(message, context):
+            return
+        if context.chat_type != "private":
+            await self.rich.send(message, "Projects are available in a private chat.")
+            return
+        await state.clear()
+        await self.project_panel.show_home(message, context, edit=False)
+
+    async def projects_callback(self, callback: CallbackQuery, state: FSMContext) -> None:
+        if not callback.message or not isinstance(callback.message, Message) or not callback.data:
+            await callback.answer()
+            return
+        context = self._context(callback.message, callback.from_user)
+        if context is None or not await self.access.allowed(context):
+            await callback.answer("Access denied", show_alert=True)
+            return
+        if context.chat_type != "private":
+            await callback.answer("Projects are available in a private chat.", show_alert=True)
+            return
+        action = callback.data.split(":")[1:]
+        try:
+            await self.project_panel.handle_callback(
+                callback.message,
+                context,
+                action,
+                state,
+                catchup=self._panel_catchup,
+            )
+        except (TelegramProjectError, PermissionError, LookupError, ValueError) as error:
+            await callback.answer(str(error), show_alert=True)
+            return
+        await callback.answer()
+
+    async def project_wizard(self, message: Message, state: FSMContext) -> None:
+        context = self._context(message)
+        if context is None or not await self._require_access(message, context):
+            await state.clear()
+            return
+        if context.chat_type != "private":
+            await state.clear()
+            await self.rich.send(message, "Projects are available in a private chat.")
+            return
+        try:
+            await self.project_panel.handle_wizard(message, context, state)
+        except TelegramProjectError as error:
+            await self.rich.send(message, str(error))
+
+    async def catchup(self, message: Message) -> None:
+        context = self._context(message)
+        if context is None or not await self._require_access(message, context):
+            return
+        await self._run_catchup(message, context)
+
+    async def _panel_catchup(
+        self, message: Message, context: RequestContext, project_id: str
+    ) -> None:
+        project = await self.telegram_projects.require(context.user_id, project_id)
+        await self._run_catchup(
+            message,
+            context,
+            conversation_id=project.openai_conversation_id,
+            extra_instructions=project.instructions,
+            draft=False,
+            resolved=True,
+        )
+
+    async def _run_catchup(
+        self,
+        message: Message,
+        context: RequestContext,
+        *,
+        conversation_id: str | None = None,
+        extra_instructions: str | None = None,
+        draft: bool | None = None,
+        resolved: bool = False,
+    ) -> None:
+        extra = extra_instructions or ""
+        if not resolved:
+            if context.chat_type == "private":
+                project = await self.telegram_projects.active(context.user_id)
+                conversation_id = project.openai_conversation_id
+                extra = project.instructions
+            else:
+                conversation_id = await self.database.conversation_id(
+                    context.chat_id, context.thread_id
+                )
+        markup = await self._private_reply_keyboard(context)
+        if not conversation_id or not await self.conversations.has_items(conversation_id):
+            await self.rich.send(message, "Nothing to catch up on yet.", reply_markup=markup)
+            return
+        await self._stream_turn(
+            message,
+            context,
+            CATCHUP_PROMPT,
+            conversation_id=conversation_id,
+            extra_instructions=extra,
+            draft=draft,
+        )
+
     async def reset(self, message: Message) -> None:
         context = self._context(message)
         if context is None or not await self._require_access(message, context):
+            return
+        if context.chat_type == "private":
+            project = await self.telegram_projects.active(context.user_id)
+            await self.telegram_projects.reset(context.user_id, project.id)
+            await self.rich.send(
+                message,
+                "Conversation reset. Long-term memory was not changed.",
+                reply_markup=project_reply_keyboard(project),
+            )
             return
         await self.conversations.reset(context.chat_id, context.thread_id)
         await self.rich.send(message, "Conversation reset. Long-term memory was not changed.")
@@ -919,9 +1064,34 @@ class TelegramApp:
         except ValueError as error:
             await self.rich.send(message, str(error))
             return
+        conversation_id: str | None = None
+        extra_instructions = ""
+        if context.chat_type == "private":
+            project = await self.telegram_projects.active(context.user_id)
+            conversation_id = await self.telegram_projects.conversation_id(project)
+            extra_instructions = project.instructions
+        await self._stream_turn(
+            message,
+            context,
+            user_input,
+            conversation_id=conversation_id,
+            extra_instructions=extra_instructions,
+        )
+
+    async def _stream_turn(
+        self,
+        message: Message,
+        context: RequestContext,
+        user_input: str | list[TResponseInputItem],
+        *,
+        conversation_id: str | None = None,
+        extra_instructions: str = "",
+        draft: bool | None = None,
+    ) -> None:
         current = await self.database.get_settings(context.scope)
         placeholder: Message | None = None
-        if context.chat_type == "private":
+        use_draft = context.chat_type == "private" if draft is None else draft
+        if use_draft:
             await self.rich.draft(message)
         else:
             placeholder = await self.rich.send(message, "Thinking…")
@@ -936,13 +1106,20 @@ class TelegramApp:
                 return
             last_edit = now
             with suppress(TelegramBadRequest):
-                if context.chat_type == "private":
+                if use_draft:
                     await self.rich.draft(message, text[:32000])
                 elif placeholder:
                     await self.rich.edit(placeholder, text[:32000] or "Thinking…")
 
         try:
-            output = await self.runtime.run(context, current, user_input, on_text)
+            output = await self.runtime.run(
+                context,
+                current,
+                user_input,
+                on_text,
+                conversation_id=conversation_id,
+                extra_instructions=extra_instructions,
+            )
             if context.chat_type != "private":
                 await self.groups.mark_seen(message)
             await self._deliver(message, placeholder, output)
@@ -1037,8 +1214,20 @@ class TelegramApp:
     ) -> None:
         if placeholder:
             await self.rich.edit(placeholder, content)
-        else:
-            await self.rich.send(target, content)
+            return
+        markup = None
+        projects = getattr(self, "telegram_projects", None)
+        if target.chat.type == "private" and projects is not None:
+            context = self._context(target)
+            if context is not None:
+                markup = await self._private_reply_keyboard(context)
+        await self.rich.send(target, content, reply_markup=markup)
+
+    async def _private_reply_keyboard(self, context: RequestContext) -> ReplyKeyboardMarkup | None:
+        if context.chat_type != "private":
+            return None
+        project = await self.telegram_projects.active(context.user_id)
+        return project_reply_keyboard(project)
 
     async def _require_access(self, message: Message, context: RequestContext) -> bool:
         if await self.access.allowed(context):
@@ -1226,26 +1415,41 @@ class TelegramApp:
     @staticmethod
     def _settings_keyboard(editable: bool, *, private: bool = False) -> InlineKeyboardMarkup | None:
         if not editable:
-            return InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [InlineKeyboardButton(text="Connectors", callback_data="settings:connectors")],
+            rows = []
+            if private:
+                rows.append(
+                    [InlineKeyboardButton(text="Projects", callback_data="settings:projects")]
+                )
+            rows.extend(
+                [
+                    [
+                        InlineKeyboardButton(
+                            text="Connectors", callback_data="settings:connectors"
+                        )
+                    ],
                     [InlineKeyboardButton(text="Skills", callback_data="settings:skills")],
                 ]
             )
-        rows = [
+            return InlineKeyboardMarkup(inline_keyboard=rows)
+        rows = []
+        if private:
+            rows.append([InlineKeyboardButton(text="Projects", callback_data="settings:projects")])
+        rows.extend(
             [
-                InlineKeyboardButton(text="Model", callback_data="settings:models"),
-                InlineKeyboardButton(text="Reasoning", callback_data="settings:reasoning"),
-            ],
-            [
-                InlineKeyboardButton(text="Agent", callback_data="settings:agents"),
-                InlineKeyboardButton(text="Connectors", callback_data="settings:connectors"),
-            ],
-            [
-                InlineKeyboardButton(text="Skills", callback_data="settings:skills"),
-                InlineKeyboardButton(text="Memory", callback_data="settings:memory"),
-            ],
-        ]
+                [
+                    InlineKeyboardButton(text="Model", callback_data="settings:models"),
+                    InlineKeyboardButton(text="Reasoning", callback_data="settings:reasoning"),
+                ],
+                [
+                    InlineKeyboardButton(text="Agent", callback_data="settings:agents"),
+                    InlineKeyboardButton(text="Connectors", callback_data="settings:connectors"),
+                ],
+                [
+                    InlineKeyboardButton(text="Skills", callback_data="settings:skills"),
+                    InlineKeyboardButton(text="Memory", callback_data="settings:memory"),
+                ],
+            ]
+        )
         return InlineKeyboardMarkup(inline_keyboard=rows)
 
     @staticmethod
@@ -1462,6 +1666,18 @@ COMMANDS = [
     BotCommand(command="help", description="Show capabilities"),
     BotCommand(command="settings", description="Model, agent, memory, connectors, and skills"),
     BotCommand(command="agents", description="Create and manage agents"),
+    BotCommand(command="reset", description="Start a new conversation"),
+    BotCommand(command="stop", description="Stop the active task"),
+    BotCommand(command="admin", description="Manage access (owner)"),
+]
+
+PRIVATE_COMMANDS = [
+    BotCommand(command="start", description="Start Skye"),
+    BotCommand(command="help", description="Show capabilities"),
+    BotCommand(command="settings", description="Model, agent, memory, connectors, and skills"),
+    BotCommand(command="projects", description="Switch and manage project chats"),
+    BotCommand(command="agents", description="Create and manage agents"),
+    BotCommand(command="catchup", description="Summarize this conversation"),
     BotCommand(command="reset", description="Start a new conversation"),
     BotCommand(command="stop", description="Stop the active task"),
     BotCommand(command="admin", description="Manage access (owner)"),

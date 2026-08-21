@@ -10,6 +10,7 @@ from pathlib import Path
 import structlog
 from agents import set_default_openai_client, set_tracing_disabled
 from aiogram import Bot, Dispatcher
+from aiogram.types import BotCommandScopeAllPrivateChats
 from openai import AsyncOpenAI
 from pydantic import ValidationError
 
@@ -26,7 +27,8 @@ from .memory import MemoryService
 from .projects import ProjectService
 from .runtime import OPENAI_MAX_RETRIES, AgentRuntime
 from .skills import SkillService
-from .telegram import COMMANDS, TelegramApp, UpdateMiddleware
+from .telegram import COMMANDS, PRIVATE_COMMANDS, TelegramApp, UpdateMiddleware
+from .telegram_projects import TelegramProjectService
 from .web import WebApp, serve_web
 
 log = structlog.get_logger()
@@ -91,6 +93,7 @@ async def run() -> None:
         skills,
     )
     projects = ProjectService(database, client, config.skye_web_files_path)
+    telegram_projects = TelegramProjectService(database, client)
     auth = TelegramAuth(config, database, projects)
     web_app = WebApp(config, database, access, runtime, projects, auth, client)
     telegram = TelegramApp(
@@ -106,6 +109,7 @@ async def run() -> None:
         attachments,
         runtime,
         skills,
+        telegram_projects,
     )
     dispatcher.update.outer_middleware(UpdateMiddleware(database, groups))
     dispatcher.include_router(telegram.router)
@@ -118,6 +122,7 @@ async def run() -> None:
                 hint="Disable Group Privacy in BotFather or make the bot a group administrator.",
             )
         await bot.set_my_commands(COMMANDS)
+        await bot.set_my_commands(PRIVATE_COMMANDS, scope=BotCommandScopeAllPrivateChats())
         dropped = await database.drop_pending_updates()
         if dropped:
             log.info("pending_updates_dropped", count=dropped)

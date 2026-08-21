@@ -16,6 +16,7 @@ from aiogram.types import (
     InputRichBlockUnion,
     InputRichMessage,
     Message,
+    ReplyKeyboardMarkup,
     RichBlockTableCell,
     RichTextBold,
     RichTextCode,
@@ -38,6 +39,7 @@ from .models import (
     Memory,
     Scope,
     Skill,
+    TelegramProject,
 )
 from .telegram_threads import api_thread_id, reply_parameters
 
@@ -52,7 +54,7 @@ class RichMessages:
         self,
         target: Message,
         content: str | InputRichMessage,
-        reply_markup: InlineKeyboardMarkup | None = None,
+        reply_markup: InlineKeyboardMarkup | ReplyKeyboardMarkup | None = None,
     ) -> Message:
         return await self.bot.send_rich_message(
             chat_id=target.chat.id,
@@ -265,6 +267,95 @@ class RichMessages:
             body.extend([", or ", _code("."), f" to keep “{current}”"])
         body.append(".")
         return RichMessages.prompt("Agent description", body)
+
+    @staticmethod
+    def projects(
+        projects: Sequence[TelegramProject],
+        active_id: str,
+        *,
+        notice: str | None = None,
+    ) -> InputRichMessage:
+        blocks: list[InputRichBlockUnion] = [
+            InputRichBlockSectionHeading(text="Projects", size=2),
+            InputRichBlockParagraph(
+                text="Each project is its own conversation, with optional extra instructions."
+            ),
+        ]
+        if notice:
+            blocks.append(InputRichBlockParagraph(text=notice))
+        active = next((item for item in projects if item.id == active_id), None)
+        if active is not None:
+            blocks.append(InputRichBlockParagraph(text=f"Now in {active.label}."))
+        return InputRichMessage(blocks=blocks)
+
+    @staticmethod
+    def project(
+        project: TelegramProject,
+        active: bool,
+        *,
+        notice: str | None = None,
+    ) -> InputRichMessage:
+        blocks: list[InputRichBlockUnion] = [
+            InputRichBlockSectionHeading(text=project.label, size=2),
+        ]
+        if notice:
+            blocks.append(InputRichBlockParagraph(text=notice))
+        status = "Active. New messages continue this conversation."
+        if not active:
+            status = "Inactive. Switch to continue this conversation."
+        blocks.append(InputRichBlockParagraph(text=status))
+        if project.instructions:
+            blocks.append(InputRichBlockParagraph(text=project.instructions[:1000]))
+        else:
+            blocks.append(InputRichBlockParagraph(text="No extra instructions."))
+        return InputRichMessage(blocks=blocks)
+
+    @staticmethod
+    def project_name_prompt(current: str | None = None) -> InputRichMessage:
+        if current is None:
+            body: RichTextUnion = (
+                "Send a name (up to 64 characters). You can start with an emoji."
+            )
+        else:
+            body = ["Send a new name, or ", _code("."), f" to keep “{current}”."]
+        return RichMessages.prompt("Project name", body)
+
+    @staticmethod
+    def project_emoji_prompt() -> InputRichMessage:
+        return RichMessages.prompt(
+            "Project emoji",
+            "Pick an emoji, or send any emoji.",
+        )
+
+    @staticmethod
+    def project_instructions_prompt(keep: bool = False) -> InputRichMessage:
+        body: list[RichTextUnion] = [
+            "Optional extra instructions for this project. They are added to the current agent"
+        ]
+        if keep:
+            body.extend(
+                [". Send new text, ", _code("."), " to keep them, or ", _code("-"), " to clear"]
+            )
+        body.append(".")
+        return RichMessages.prompt("Project instructions", body)
+
+    @staticmethod
+    def project_reset_confirm(project: TelegramProject) -> InputRichMessage:
+        return RichMessages.prompt(
+            "Reset this chat?",
+            [
+                "Start a new conversation in ",
+                _bold(project.label),
+                ". Long-term memory is kept.",
+            ],
+        )
+
+    @staticmethod
+    def project_delete_confirm(project: TelegramProject) -> InputRichMessage:
+        return RichMessages.prompt(
+            "Delete this project?",
+            ["Delete ", _bold(project.label), "? The conversation will be removed."],
+        )
 
     @staticmethod
     def agent_instructions_prompt(*, keep: bool = False) -> InputRichMessage:

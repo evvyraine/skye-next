@@ -80,7 +80,7 @@ If (1) is yes or (2) is no, do not add it.
 
 ## Commands
 
-Keep the public command list small: `/start`, `/help`, `/settings`, `/agents`, `/reset`, `/stop`, `/admin`. Do not grow it without a real user flow.
+Keep the public command list small: `/start`, `/help`, `/settings`, `/projects`, `/agents`, `/catchup`, `/reset`, `/stop`, `/admin`. Do not grow it without a real user flow.
 
 ## Tooling
 
