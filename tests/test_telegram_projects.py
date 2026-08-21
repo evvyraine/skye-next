@@ -12,6 +12,8 @@ from skye.projects import ProjectService
 from skye.telegram import CATCHUP_PROMPT, TelegramApp
 from skye.telegram_projects import (
     DEFAULT_EMOJI,
+    PROJECT_KEYBOARD_CATCHUP,
+    PROJECT_KEYBOARD_PROJECTS,
     TelegramProjectError,
     TelegramProjectService,
     parse_leading_emoji,
@@ -189,7 +191,7 @@ async def test_create_rejects_empty_names(database: Database) -> None:
         await projects.create(1, name="  ")
 
 
-async def test_project_reply_keyboard_uses_command_buttons() -> None:
+async def test_project_reply_keyboard_uses_plain_labels() -> None:
     project = TelegramProject(
         id="abc",
         user_id=1,
@@ -203,7 +205,8 @@ async def test_project_reply_keyboard_uses_command_buttons() -> None:
     )
     markup = project_reply_keyboard(project)
     labels = [button.text for row in markup.keyboard for button in row]
-    assert labels == ["/projects", "/catchup"]
+    assert labels == [PROJECT_KEYBOARD_PROJECTS, PROJECT_KEYBOARD_CATCHUP]
+    assert labels == ["💼 Projects", "📝 Catch up"]
     assert markup.input_field_placeholder == "🧠 Research"
     assert markup.is_persistent is True
 
@@ -243,7 +246,7 @@ async def test_catchup_on_empty_conversation_does_not_call_the_model() -> None:
     )
     app.database = SimpleNamespace(conversation_id=AsyncMock(return_value=None))
 
-    await app.catchup(private_message("/catchup"))
+    await app.catchup(private_message("/catchup"), AsyncMock())
 
     cast(AsyncMock, app.runtime.run).assert_not_called()
     app.rich.send.assert_awaited()
