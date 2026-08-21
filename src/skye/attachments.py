@@ -148,9 +148,7 @@ class AttachmentService:
             }
         )
         if file_id:
-            content.append(
-                {"type": "input_file", "filename": filename, "file_id": file_id}
-            )
+            content.append({"type": "input_file", "file_id": file_id})
         return file_id
 
     async def _document(
@@ -184,9 +182,7 @@ class AttachmentService:
                 }
             )
             if file_id:
-                content.append(
-                    {"type": "input_file", "filename": filename, "file_id": file_id}
-                )
+                content.append({"type": "input_file", "file_id": file_id})
             return file_id
         file_part: dict[str, Any] = {
             "type": "input_file",
@@ -222,11 +218,14 @@ class AttachmentService:
             else filename
         )
         file_id = await upload_openai_file(self.client, upload_filename, mime, data)
-        file_part: dict[str, Any] = {"type": "input_file", "filename": filename}
         if file_id:
-            file_part["file_id"] = file_id
+            file_part = {"type": "input_file", "file_id": file_id}
         else:
-            file_part["file_data"] = data_url(mime, data)
+            file_part = {
+                "type": "input_file",
+                "filename": filename,
+                "file_data": data_url(mime, data),
+            }
         content.extend(
             [
                 {"type": "input_text", "text": f"{label} ({filename}):"},
@@ -318,13 +317,16 @@ def openai_file_parts(
             }
         ]
         if file_id:
-            parts.append({"type": "input_file", "filename": filename, "file_id": file_id})
+            parts.append({"type": "input_file", "file_id": file_id})
         return parts
-    file_part: dict[str, Any] = {"type": "input_file", "filename": filename}
     if file_id:
-        file_part["file_id"] = file_id
+        file_part = {"type": "input_file", "file_id": file_id}
     else:
-        file_part["file_data"] = data_url(mime or "application/octet-stream", data)
+        file_part = {
+            "type": "input_file",
+            "filename": filename,
+            "file_data": data_url(mime or "application/octet-stream", data),
+        }
     return [
         {"type": "input_text", "text": f"Attached document ({filename}):"},
         {**file_part, **({"detail": "auto"} if extension == ".pdf" else {})},

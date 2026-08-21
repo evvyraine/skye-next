@@ -30,6 +30,11 @@ class Transcriptions:
         return SimpleNamespace(text="Hello from the voice note.")
 
 
+class FileUploads:
+    async def create(self, **_kwargs: Any) -> Any:
+        return SimpleNamespace(id="file_voice")
+
+
 def settings(limit: int = 1024) -> Settings:
     return Settings.model_construct(
         skye_max_attachment_bytes=limit,
@@ -66,6 +71,23 @@ async def test_transcribes_direct_voice() -> None:
     ]
     assert transcriptions.calls[0]["model"] == "gpt-transcribe"
     assert transcriptions.calls[0]["file"] == ("voice.ogg", b"audio")
+
+
+@pytest.mark.asyncio
+async def test_replied_voice_file_input_uses_only_file_id() -> None:
+    voice = Voice(file_id="voice", file_unique_id="unique-voice", duration=3, file_size=5)
+    transcriptions = Transcriptions()
+    client = SimpleNamespace(
+        audio=SimpleNamespace(transcriptions=transcriptions), files=FileUploads()
+    )
+    service = AttachmentService(
+        settings(), cast(Any, FakeBot({"voice": b"audio"})), cast(AsyncOpenAI, client)
+    )
+    content: list[dict[str, Any]] = []
+
+    await service.add(message(reply_to_message=message(voice=voice)), content)
+
+    assert content[-1] == {"type": "input_file", "file_id": "file_voice"}
 
 
 @pytest.mark.asyncio

@@ -13,6 +13,12 @@ def test_pdfs_keep_detail_auto() -> None:
     assert parts[1]["detail"] == "auto"
 
 
+def test_uploaded_files_use_file_id_without_filename() -> None:
+    parts = openai_file_parts("notes.pdf", "application/pdf", b"%PDF", file_id="file_1")
+
+    assert parts[1] == {"type": "input_file", "file_id": "file_1", "detail": "auto"}
+
+
 def test_audio_uploads_are_detected() -> None:
     assert is_audio_upload("voice.webm", "audio/webm")
     assert is_audio_upload("clip.ogg", "application/octet-stream")

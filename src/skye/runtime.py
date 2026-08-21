@@ -269,9 +269,10 @@ class GuardedResponsesModel(OpenAIResponsesModel):
             label = _nonempty_str(part.get("filename")) or "file"
             return {"type": "input_text", "text": f"[{label}]"}
         counted[file_source[0]] = file_source[1]
-        filename = _nonempty_str(part.get("filename"))
-        if filename:
-            counted["filename"] = filename
+        if file_source[0] != "file_id":
+            filename = _nonempty_str(part.get("filename"))
+            if filename:
+                counted["filename"] = filename
         detail = part.get("detail")
         if isinstance(detail, str) and detail:
             counted["detail"] = detail

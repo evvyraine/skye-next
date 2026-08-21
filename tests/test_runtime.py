@@ -186,6 +186,12 @@ def test_counting_tools_remove_streaming_only_image_options() -> None:
     assert tools[0]["partial_images"] == 1
 
 
+def test_counting_uploaded_file_uses_only_file_id() -> None:
+    assert GuardedResponsesModel._counting_file_part(
+        {"type": "input_file", "filename": "voice.ogg", "file_id": "file_voice"}
+    ) == {"type": "input_file", "file_id": "file_voice"}
+
+
 def test_shell_file_note_follows_capabilities() -> None:
     memory = MemoryService(cast(Any, None))
     runtime = AgentRuntime(config(), cast(Any, None), memory, "You are Skye.")
