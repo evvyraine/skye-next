@@ -26,6 +26,8 @@ from .rich import RichMessages
 log = structlog.get_logger()
 
 DEFAULT_EMOJI = "☁️"
+PROJECT_KEYBOARD_PROJECTS = "💼 Projects"
+PROJECT_KEYBOARD_CATCHUP = "📝 Catch up"
 PRESET_EMOJIS: tuple[str, ...] = (
     "☁️",
     "💬",
@@ -302,7 +304,10 @@ class TelegramProjectService:
 def project_reply_keyboard(project: TelegramProject) -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text="/projects"), KeyboardButton(text="/catchup")],
+            [
+                KeyboardButton(text=PROJECT_KEYBOARD_PROJECTS),
+                KeyboardButton(text=PROJECT_KEYBOARD_CATCHUP),
+            ],
         ],
         resize_keyboard=True,
         is_persistent=True,

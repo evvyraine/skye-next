@@ -55,6 +55,8 @@ from .rich import RichMessages
 from .runtime import AgentRuntime, ContextLimitError, RunOutput, StreamStartedError
 from .skills import SkillError, SkillPanel, SkillService, SkillWizard
 from .telegram_projects import (
+    PROJECT_KEYBOARD_CATCHUP,
+    PROJECT_KEYBOARD_PROJECTS,
     ProjectPanel,
     ProjectWizard,
     TelegramProjectError,
@@ -154,8 +156,14 @@ class TelegramApp:
         self.router.message.register(self.help, Command("help"))
         self.router.message.register(self.settings, Command("settings"))
         self.router.message.register(self.projects, Command("projects"))
+        self.router.message.register(
+            self.projects, F.chat.type == "private", F.text == PROJECT_KEYBOARD_PROJECTS
+        )
         self.router.message.register(self.agents, Command("agents"))
         self.router.message.register(self.catchup, Command("catchup"))
+        self.router.message.register(
+            self.catchup, F.chat.type == "private", F.text == PROJECT_KEYBOARD_CATCHUP
+        )
         self.router.message.register(self.reset, Command("reset"))
         self.router.message.register(self.stop, Command("stop"))
         self.router.message.register(self.admin, Command("admin"))
@@ -797,10 +805,11 @@ class TelegramApp:
         except TelegramProjectError as error:
             await self.rich.send(message, str(error))
 
-    async def catchup(self, message: Message) -> None:
+    async def catchup(self, message: Message, state: FSMContext) -> None:
         context = self._context(message)
         if context is None or not await self._require_access(message, context):
             return
+        await state.clear()
         await self._run_catchup(message, context)
 
     async def _panel_catchup(
