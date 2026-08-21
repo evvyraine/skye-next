@@ -74,7 +74,7 @@ async def test_transcribes_direct_voice() -> None:
 
 
 @pytest.mark.asyncio
-async def test_replied_voice_file_input_uses_only_file_id() -> None:
+async def test_replied_voice_is_transcript_input_and_keeps_file_id() -> None:
     voice = Voice(file_id="voice", file_unique_id="unique-voice", duration=3, file_size=5)
     transcriptions = Transcriptions()
     client = SimpleNamespace(
@@ -85,9 +85,15 @@ async def test_replied_voice_file_input_uses_only_file_id() -> None:
     )
     content: list[dict[str, Any]] = []
 
-    await service.add(message(reply_to_message=message(voice=voice)), content)
+    file_ids = await service.add(message(reply_to_message=message(voice=voice)), content)
 
-    assert content[-1] == {"type": "input_file", "file_id": "file_voice"}
+    assert file_ids == ("file_voice",)
+    assert content == [
+        {
+            "type": "input_text",
+            "text": "Replied-to audio transcript (voice.ogg):\nHello from the voice note.",
+        }
+    ]
 
 
 @pytest.mark.asyncio

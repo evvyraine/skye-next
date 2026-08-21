@@ -19,6 +19,16 @@ def test_uploaded_files_use_file_id_without_filename() -> None:
     assert parts[1] == {"type": "input_file", "file_id": "file_1", "detail": "auto"}
 
 
+def test_audio_uploads_are_transcript_only_model_inputs() -> None:
+    parts = openai_file_parts(
+        "voice.ogg", "audio/ogg", b"audio", transcript="Transcript", file_id="file_1"
+    )
+
+    assert parts == [
+        {"type": "input_text", "text": "Attached audio transcript (voice.ogg):\nTranscript"}
+    ]
+
+
 def test_audio_uploads_are_detected() -> None:
     assert is_audio_upload("voice.webm", "audio/webm")
     assert is_audio_upload("clip.ogg", "application/octet-stream")

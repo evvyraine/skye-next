@@ -1152,8 +1152,11 @@ class TelegramApp:
             album = await media_groups.resolve(message)
             if message.media_group_id is not None and not await media_groups.claim(message):
                 return
+        input_file_ids: list[str] = []
         try:
-            user_input = await self._input(message, context, album=album)
+            user_input = await self._input(
+                message, context, album=album, file_ids=input_file_ids
+            )
         except ValueError as error:
             await self.rich.send(message, str(error))
             return
@@ -1169,6 +1172,7 @@ class TelegramApp:
             user_input,
             conversation_id=conversation_id,
             extra_instructions=extra_instructions,
+            input_file_ids=tuple(input_file_ids),
         )
 
     async def _stream_turn(
@@ -1180,6 +1184,7 @@ class TelegramApp:
         conversation_id: str | None = None,
         extra_instructions: str = "",
         draft: bool | None = None,
+        input_file_ids: tuple[str, ...] = (),
     ) -> None:
         current = await self.database.get_settings(context.scope)
         current = await self.billing.clamp_settings(context, current, self.access)
@@ -1211,6 +1216,7 @@ class TelegramApp:
                 current,
                 user_input,
                 on_text,
+                input_file_ids=input_file_ids,
                 conversation_id=conversation_id,
                 extra_instructions=extra_instructions,
             )
@@ -1246,6 +1252,7 @@ class TelegramApp:
         context: RequestContext,
         *,
         album: Sequence[MediaGroupItem] | None = None,
+        file_ids: list[str] | None = None,
     ) -> str | list[TResponseInputItem]:
         if album is None:
             media_groups = getattr(self, "media_groups", None)
@@ -1294,7 +1301,9 @@ class TelegramApp:
             return text
 
         content: list[dict[str, Any]] = [{"type": "input_text", "text": text}]
-        await self.attachments.add(message, content, album=album)
+        attached_file_ids = await self.attachments.add(message, content, album=album)
+        if file_ids is not None:
+            file_ids.extend(attached_file_ids)
         return cast(list[TResponseInputItem], [{"role": "user", "content": content}])
 
     async def _deliver(

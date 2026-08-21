@@ -490,6 +490,7 @@ class AgentRuntime:
         conversation_id: str | None = None,
         extra_instructions: str = "",
         on_event: EventCallback | None = None,
+        input_file_ids: tuple[str, ...] = (),
     ) -> RunOutput:
         key = run_key or telegram_run_key(context.chat_id, context.thread_id)
         async with self._locks[key]:
@@ -517,7 +518,10 @@ class AgentRuntime:
                 skills: tuple[Skill, ...] = ()
                 if self.skills is not None:
                     skills = await self.skills.mounted(context.scope)
-                input_file_ids = _input_file_ids(user_input)
+                attached_file_ids = list(input_file_ids)
+                for file_id in _input_file_ids(user_input):
+                    if file_id not in attached_file_ids:
+                        attached_file_ids.append(file_id)
                 agent = self._agent(
                     context,
                     settings,
@@ -526,7 +530,7 @@ class AgentRuntime:
                     connector_tools,
                     skills,
                     extra_instructions,
-                    input_file_ids,
+                    tuple(attached_file_ids),
                 )
                 if self._queue.locked():
                     log.info(

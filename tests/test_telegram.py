@@ -143,7 +143,7 @@ async def test_undirected_group_message_does_not_check_access() -> None:
 async def test_private_video_note_is_processed_as_attachment() -> None:
     app = telegram_app()
     app.groups = SimpleNamespace(text=lambda _: "[video note]")
-    app.attachments = SimpleNamespace(add=AsyncMock())
+    app.attachments = SimpleNamespace(add=AsyncMock(return_value=("file_video_note",)))
     incoming = Message(
         message_id=2,
         date=0,
@@ -159,10 +159,12 @@ async def test_private_video_note_is_processed_as_attachment() -> None:
     )
     context = app._context(incoming)
     assert context is not None
+    file_ids: list[str] = []
 
-    result = await app._input(incoming, context)
+    result = await app._input(incoming, context, file_ids=file_ids)
 
     app.attachments.add.assert_awaited_once()
+    assert file_ids == ["file_video_note"]
     assert result == [
         {
             "role": "user",

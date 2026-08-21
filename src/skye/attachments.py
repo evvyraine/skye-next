@@ -147,8 +147,6 @@ class AttachmentService:
                 "text": f"{label} {kind} transcript ({filename}):\n{transcript}",
             }
         )
-        if file_id:
-            content.append({"type": "input_file", "file_id": file_id})
         return file_id
 
     async def _document(
@@ -181,8 +179,6 @@ class AttachmentService:
                     "text": f"{label} audio transcript ({filename}):\n{transcript}",
                 }
             )
-            if file_id:
-                content.append({"type": "input_file", "file_id": file_id})
             return file_id
         file_part: dict[str, Any] = {
             "type": "input_file",
@@ -316,8 +312,6 @@ def openai_file_parts(
                 "text": f"Attached audio transcript ({filename}):\n{transcript}",
             }
         ]
-        if file_id:
-            parts.append({"type": "input_file", "file_id": file_id})
         return parts
     if file_id:
         file_part = {"type": "input_file", "file_id": file_id}
