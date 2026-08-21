@@ -17,6 +17,7 @@ from .attachments import (
     upload_openai_file,
 )
 from .auth import COOKIE_NAME, OIDC_COOKIE, AuthError, TelegramAuth
+from .billing import BillingService
 from .config import Settings
 from .db import Database
 from .models import RequestContext, WebFile, WebSession
@@ -53,6 +54,7 @@ class WebApp:
         self.projects = projects
         self.auth = auth
         self.client = client
+        self.billing = BillingService(database, config.telegram_bot_token)
         self.app = web.Application(
             client_max_size=config.skye_max_attachment_bytes + 1_000_000,
             middlewares=[self._headers],
@@ -273,6 +275,7 @@ class WebApp:
             raise web.HTTPBadRequest(text="Write a message or attach a file.")
         context = self._context(session)
         settings = await self.database.get_settings(context.scope)
+        settings = await self.billing.clamp_settings(context, settings, self.access)
         content: list[dict[str, Any]] = []
         file_ids: list[str] = []
         uploaded_files: list[WebFile] = []

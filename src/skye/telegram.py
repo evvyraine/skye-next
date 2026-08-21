@@ -24,6 +24,7 @@ from aiogram.types import (
     InlineKeyboardMarkup,
     InputRichMessage,
     Message,
+    PreCheckoutQuery,
     ReplyKeyboardMarkup,
     RichTextUnion,
     TelegramObject,
@@ -33,7 +34,8 @@ from aiogram.types import (
 
 from .access import AccessService
 from .attachments import AttachmentService
-from .config import MODELS, Reasoning, Settings
+from .billing import AccountPanel, BillingError, BillingService
+from .config import MODELS, ModelId, Reasoning, Settings
 from .connectors import ConnectorError, ConnectorPanel, ConnectorService, ConnectorWizard
 from .conversations import ConversationService
 from .custom_agents import AGENT_CAPABILITIES, CustomAgentService
@@ -137,6 +139,7 @@ class TelegramApp:
         runtime: AgentRuntime,
         skills: SkillService,
         telegram_projects: TelegramProjectService,
+        billing: BillingService,
     ) -> None:
         self.config = config
         self.bot = bot
@@ -152,16 +155,21 @@ class TelegramApp:
         self.runtime = runtime
         self.skill_service = skills
         self.telegram_projects = telegram_projects
+        self.billing = billing
         self.rich = RichMessages(bot)
         self.connectors = ConnectorPanel(connectors, self.rich, bot)
         self.skill_panel = SkillPanel(skills, self.rich, bot)
         self.project_panel = ProjectPanel(telegram_projects, self.rich, bot)
+        self.account = AccountPanel(billing, access, self.rich, bot)
         self.router = Router(name="skye")
         self._register()
 
     def _register(self) -> None:
         self.router.message.register(self.start, Command("start"))
         self.router.message.register(self.help, Command("help"))
+        self.router.message.register(self.account_command, Command("account"))
+        self.router.message.register(self.paysupport, Command("paysupport"))
+        self.router.message.register(self.terms, Command("terms"))
         self.router.message.register(self.settings, Command("settings"))
         self.router.message.register(self.projects, Command("projects"))
         self.router.message.register(
@@ -176,6 +184,7 @@ class TelegramApp:
         self.router.message.register(self.stop, Command("stop"))
         self.router.message.register(self.admin, Command("admin"))
         self.router.callback_query.register(self.settings_callback, F.data.startswith("settings:"))
+        self.router.callback_query.register(self.account_callback, F.data.startswith("acct:"))
         self.router.callback_query.register(self.projects_callback, F.data.startswith("proj:"))
         self.router.callback_query.register(self.connectors_callback, F.data.startswith("conn:"))
         self.router.callback_query.register(self.skills_callback, F.data.startswith("skill:"))
@@ -211,6 +220,9 @@ class TelegramApp:
             ),
         )
         self.router.message.register(self.admin_prompt, StateFilter(AdminPrompt.target))
+        self.router.pre_checkout_query.register(self.pre_checkout)
+        self.router.message.register(self.successful_payment, F.successful_payment)
+        self.router.message.register(self.refunded_payment, F.refunded_payment)
         self.router.message.register(self.chat)
 
     async def start(self, message: Message) -> None:
@@ -245,6 +257,12 @@ class TelegramApp:
                 "I'll use the right tools when needed.",
                 reply_markup=await self._private_reply_keyboard(context),
             )
+        elif context.chat_type == "private":
+            await self.rich.send(
+                message,
+                "Hi. I'm Skye. Open /account to subscribe with Telegram Stars, "
+                "or ask the owner for access.",
+            )
         else:
             await self.rich.send(
                 message, "This chat is not allowlisted yet. Ask the bot owner for access."
@@ -255,6 +273,7 @@ class TelegramApp:
             message,
             "I can chat, search the web, work with images, "
             "run code in an isolated container, and use apps and skills you add.\n\n"
+            "/account — Skye plans, Telegram Stars, and cancellation\n\n"
             "/settings — model, reasoning, agent, memory, connectors, and skills\n\n"
             "/projects — switch and manage project chats\n\n"
             "/agents — create, install, select, and share agents\n\n"
@@ -264,6 +283,50 @@ class TelegramApp:
             "A few useful links.",
             reply_markup=self._help_keyboard(),
         )
+
+    async def account_command(self, message: Message) -> None:
+        context = self._context(message)
+        if context is None:
+            return
+        await self.account.show(message, context)
+
+    async def paysupport(self, message: Message) -> None:
+        await self.account.paysupport(message)
+
+    async def terms(self, message: Message) -> None:
+        await self.account.terms(message)
+
+    async def account_callback(self, callback: CallbackQuery) -> None:
+        if not callback.message or not isinstance(callback.message, Message) or not callback.data:
+            await callback.answer()
+            return
+        context = self._context(callback.message, callback.from_user)
+        if context is None:
+            await callback.answer()
+            return
+        try:
+            await self.account.handle_callback(
+                callback.message, context, callback.data.split(":")[1:]
+            )
+        except BillingError as error:
+            await callback.answer(str(error), show_alert=True)
+            return
+        await callback.answer()
+
+    async def pre_checkout(self, query: PreCheckoutQuery) -> None:
+        await self.account.pre_checkout(query)
+
+    async def successful_payment(self, message: Message) -> None:
+        context = self._context(message)
+        if context is None:
+            return
+        await self.account.successful_payment(message, context)
+
+    async def refunded_payment(self, message: Message) -> None:
+        context = self._context(message)
+        if context is None:
+            return
+        await self.account.refunded_payment(message, context)
 
     async def settings(self, message: Message) -> None:
         context = self._context(message)
@@ -296,10 +359,11 @@ class TelegramApp:
         agent_name = await self.custom_agents.active_name(context.scope, current.active_agent_id)
 
         if action == ["settings", "models"]:
+            models = await self.billing.allowed_models(context, self.access)
             await self.rich.edit(
                 callback.message,
                 self.rich.choose_model(current.model),
-                reply_markup=self._model_keyboard(current),
+                reply_markup=self._model_keyboard(current, models),
             )
         elif action == ["settings", "reasoning"]:
             await self.rich.edit(
@@ -373,6 +437,10 @@ class TelegramApp:
         elif len(action) == 3 and action[:2] == ["settings", "model"]:
             if not editable or action[2] not in MODELS:
                 await callback.answer("Only chat administrators can change this.", show_alert=True)
+                return
+            models = await self.billing.allowed_models(context, self.access)
+            if action[2] not in models:
+                await callback.answer("That model is not on this plan.", show_alert=True)
                 return
             current = await self.database.set_model(context.scope, action[2])
             await self._edit_settings(callback.message, context, current, agent_name, True)
@@ -1074,6 +1142,8 @@ class TelegramApp:
             return
         if context.chat_type != "private" and not await self._directed_at_bot(message):
             return
+        if message.successful_payment or message.refunded_payment:
+            return
         if not await self._require_access(message, context):
             return
         media_groups = getattr(self, "media_groups", None)
@@ -1112,6 +1182,7 @@ class TelegramApp:
         draft: bool | None = None,
     ) -> None:
         current = await self.database.get_settings(context.scope)
+        current = await self.billing.clamp_settings(context, current, self.access)
         placeholder: Message | None = None
         use_draft = context.chat_type == "private" if draft is None else draft
         if use_draft:
@@ -1263,6 +1334,11 @@ class TelegramApp:
     async def _require_access(self, message: Message, context: RequestContext) -> bool:
         if await self.access.allowed(context):
             return True
+        if context.chat_type == "private":
+            await self.rich.send(
+                message, "This chat needs a Skye plan. Open /account to subscribe."
+            )
+            return False
         await self.rich.send(message, "This chat is not allowlisted.")
         return False
 
@@ -1632,7 +1708,10 @@ class TelegramApp:
         )
 
     @staticmethod
-    def _model_keyboard(settings: ChatSettings) -> InlineKeyboardMarkup:
+    def _model_keyboard(
+        settings: ChatSettings, models: tuple[ModelId, ...] | None = None
+    ) -> InlineKeyboardMarkup:
+        catalog = MODELS if models is None else {item: MODELS[item] for item in models}
         rows = [
             [
                 InlineKeyboardButton(
@@ -1640,7 +1719,7 @@ class TelegramApp:
                     callback_data=f"settings:model:{model}",
                 )
             ]
-            for model, label in MODELS.items()
+            for model, label in catalog.items()
         ]
         rows.append([InlineKeyboardButton(text="‹ Back", callback_data="settings:back")])
         return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -1695,6 +1774,7 @@ PRIVACY_URL = "https://ai.skye-bot.com/privacy"
 COMMANDS = [
     BotCommand(command="start", description="Start Skye"),
     BotCommand(command="help", description="Show capabilities"),
+    BotCommand(command="account", description="Skye plans and Telegram Stars"),
     BotCommand(command="settings", description="Model, agent, memory, connectors, and skills"),
     BotCommand(command="agents", description="Create and manage agents"),
     BotCommand(command="reset", description="Start a new conversation"),
@@ -1705,6 +1785,7 @@ COMMANDS = [
 PRIVATE_COMMANDS = [
     BotCommand(command="start", description="Start Skye"),
     BotCommand(command="help", description="Show capabilities"),
+    BotCommand(command="account", description="Skye plans and Telegram Stars"),
     BotCommand(command="settings", description="Model, agent, memory, connectors, and skills"),
     BotCommand(command="projects", description="Switch and manage project chats"),
     BotCommand(command="agents", description="Create and manage agents"),

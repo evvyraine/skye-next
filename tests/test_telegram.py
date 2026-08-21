@@ -103,6 +103,14 @@ def test_help_keyboard_opens_product_links() -> None:
     ]
 
 
+def test_private_commands_include_account() -> None:
+    from skye.telegram import COMMANDS, PRIVATE_COMMANDS
+
+    assert any(item.command == "account" for item in COMMANDS)
+    assert any(item.command == "account" for item in PRIVATE_COMMANDS)
+    assert not any(item.command == "paysupport" for item in PRIVATE_COMMANDS)
+
+
 @pytest.mark.parametrize(
     "text",
     [

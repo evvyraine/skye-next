@@ -5,6 +5,7 @@ from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import (
     BufferedInputFile,
     Chat,
+    InputRichBlockDetails,
     InputRichBlockParagraph,
     InputRichBlockSectionHeading,
     InputRichBlockTable,
@@ -428,3 +429,41 @@ async def test_edit_still_raises_other_bad_requests() -> None:
 
     with pytest.raises(TelegramBadRequest):
         await RichMessages(bot).edit(incoming, "Done.")
+
+
+def test_account_screen_shows_renewal_status() -> None:
+    message = RichMessages.account(
+        owner=False,
+        complimentary=False,
+        plan_name="Skye Super",
+        plan_emoji="🌍",
+        model_label="Terra",
+        status="18 days left. Renews automatically. Telegram Stars will be charged again "
+        "at the end of this period.",
+    )
+    assert message.blocks
+    heading = message.blocks[1]
+    status = message.blocks[2]
+    assert isinstance(heading, InputRichBlockSectionHeading)
+    assert heading.text == "🌍 Skye Super"
+    assert isinstance(status, InputRichBlockParagraph)
+    assert "Terra" in str(status.text)
+    assert "Renews automatically" in str(status.text)
+
+
+def test_plan_checkout_has_a_collapsed_fair_use_details_block() -> None:
+    message = RichMessages.plan_checkout(
+        name="Skye Plus",
+        emoji="🌙",
+        stars=499,
+        model_label="Luna",
+        recurring=True,
+    )
+    assert message.blocks
+    assert isinstance(message.blocks[0], InputRichBlockSectionHeading)
+    assert message.blocks[0].text == "🌙 Skye Plus"
+    details = message.blocks[-1]
+    assert isinstance(details, InputRichBlockDetails)
+    assert details.summary == "Fair Use and models"
+    assert details.is_open is not True
+    assert "unusually" in str(details.blocks[0].text).lower()
