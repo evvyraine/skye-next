@@ -31,6 +31,7 @@ from .models import (
     Scope,
     ScopeKind,
     Skill,
+    TelegramProject,
     ToolStatus,
     WebFile,
     WebFileKind,
@@ -56,6 +57,7 @@ CREATE TABLE IF NOT EXISTS user_settings (
     reasoning TEXT NOT NULL,
     memory_enabled INTEGER NOT NULL DEFAULT 1,
     active_agent_id TEXT,
+    active_telegram_project_id TEXT,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -77,6 +79,24 @@ CREATE TABLE IF NOT EXISTS conversations (
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (chat_id, thread_id)
 );
+
+CREATE TABLE IF NOT EXISTS telegram_projects (
+    id TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('skye', 'custom')),
+    name TEXT NOT NULL,
+    emoji TEXT NOT NULL,
+    instructions TEXT NOT NULL DEFAULT '',
+    openai_conversation_id TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS telegram_projects_user
+ON telegram_projects(user_id, updated_at DESC);
+
+CREATE UNIQUE INDEX IF NOT EXISTS telegram_projects_skye
+ON telegram_projects(user_id) WHERE kind = 'skye';
 
 CREATE TABLE IF NOT EXISTS updates (
     update_id INTEGER PRIMARY KEY,
@@ -371,6 +391,7 @@ class Database:
         await self._ensure_column(
             "conversations", "context_message_id", "INTEGER NOT NULL DEFAULT 0"
         )
+        await self._ensure_column("user_settings", "active_telegram_project_id", "TEXT")
         await self._normalize_group_message_threads()
         await self._migrate_composio_sessions()
         await self.connection.commit()
@@ -904,6 +925,144 @@ class Database:
             (chat_id, thread_id),
         )
         return conversation_id
+
+    async def active_telegram_project_id(self, user_id: int) -> str | None:
+        cursor = await self.conn.execute(
+            "SELECT active_telegram_project_id FROM user_settings WHERE user_id = ?",
+            (user_id,),
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            return None
+        return cast(str | None, row["active_telegram_project_id"])
+
+    async def set_active_telegram_project_id(self, user_id: int, project_id: str) -> None:
+        await self._write(
+            """INSERT INTO user_settings (
+                   user_id, model, reasoning, memory_enabled, active_telegram_project_id
+               ) VALUES (?, ?, ?, 1, ?)
+               ON CONFLICT(user_id) DO UPDATE SET
+                   active_telegram_project_id = excluded.active_telegram_project_id,
+                   updated_at = CURRENT_TIMESTAMP""",
+            (user_id, self.default_model, self.default_reasoning, project_id),
+        )
+
+    async def create_telegram_project(self, project: TelegramProject) -> TelegramProject:
+        await self._write(
+            """INSERT INTO telegram_projects (
+                   id, user_id, kind, name, emoji, instructions, openai_conversation_id
+               ) VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (
+                project.id,
+                project.user_id,
+                project.kind,
+                project.name,
+                project.emoji,
+                project.instructions,
+                project.openai_conversation_id,
+            ),
+        )
+        saved = await self.telegram_project(project.user_id, project.id)
+        if saved is None:
+            raise RuntimeError("Project was not created")
+        return saved
+
+    async def telegram_project(self, user_id: int, project_id: str) -> TelegramProject | None:
+        cursor = await self.conn.execute(
+            "SELECT * FROM telegram_projects WHERE id = ? AND user_id = ?",
+            (project_id, user_id),
+        )
+        row = await cursor.fetchone()
+        return self._telegram_project(row) if row else None
+
+    async def skye_telegram_project(self, user_id: int) -> TelegramProject | None:
+        cursor = await self.conn.execute(
+            "SELECT * FROM telegram_projects WHERE user_id = ? AND kind = 'skye'",
+            (user_id,),
+        )
+        row = await cursor.fetchone()
+        return self._telegram_project(row) if row else None
+
+    async def list_telegram_projects(self, user_id: int) -> list[TelegramProject]:
+        cursor = await self.conn.execute(
+            """SELECT * FROM telegram_projects WHERE user_id = ?
+               ORDER BY CASE WHEN kind = 'skye' THEN 0 ELSE 1 END,
+                        updated_at DESC, created_at DESC""",
+            (user_id,),
+        )
+        return [self._telegram_project(row) for row in await cursor.fetchall()]
+
+    async def update_telegram_project(
+        self,
+        user_id: int,
+        project_id: str,
+        *,
+        name: str | None = None,
+        emoji: str | None = None,
+        instructions: str | None = None,
+    ) -> TelegramProject | None:
+        current = await self.telegram_project(user_id, project_id)
+        if current is None:
+            return None
+        await self._write(
+            """UPDATE telegram_projects
+               SET name = ?, emoji = ?, instructions = ?, updated_at = CURRENT_TIMESTAMP
+               WHERE id = ? AND user_id = ?""",
+            (
+                current.name if name is None else name,
+                current.emoji if emoji is None else emoji,
+                current.instructions if instructions is None else instructions,
+                project_id,
+                user_id,
+            ),
+        )
+        return await self.telegram_project(user_id, project_id)
+
+    async def set_telegram_conversation(
+        self, user_id: int, project_id: str, conversation_id: str | None
+    ) -> None:
+        await self._write(
+            """UPDATE telegram_projects
+               SET openai_conversation_id = ?, updated_at = CURRENT_TIMESTAMP
+               WHERE id = ? AND user_id = ?""",
+            (conversation_id, project_id, user_id),
+        )
+
+    async def touch_telegram_project(self, user_id: int, project_id: str) -> None:
+        await self._write(
+            """UPDATE telegram_projects
+               SET updated_at = CURRENT_TIMESTAMP
+               WHERE id = ? AND user_id = ?""",
+            (project_id, user_id),
+        )
+
+    async def delete_telegram_project(
+        self, user_id: int, project_id: str
+    ) -> TelegramProject | None:
+        current = await self.telegram_project(user_id, project_id)
+        if current is None:
+            return None
+        if current.kind == "skye":
+            raise PermissionError("The Skye project cannot be deleted.")
+        await self._write(
+            "DELETE FROM telegram_projects WHERE id = ? AND user_id = ? AND kind = 'custom'",
+            (project_id, user_id),
+        )
+        return current
+
+    @staticmethod
+    def _telegram_project(row: aiosqlite.Row) -> TelegramProject:
+        return TelegramProject(
+            id=cast(str, row["id"]),
+            user_id=int(row["user_id"]),
+            kind=cast(ProjectKind, row["kind"]),
+            name=cast(str, row["name"]),
+            emoji=cast(str, row["emoji"]),
+            instructions=cast(str, row["instructions"]),
+            openai_conversation_id=cast(str | None, row["openai_conversation_id"]),
+            created_at=cast(str, row["created_at"]),
+            updated_at=cast(str, row["updated_at"]),
+        )
 
     async def save_group_message(self, message: GroupMessage) -> None:
         await self._write(

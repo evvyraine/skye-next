@@ -42,3 +42,9 @@ class ConversationService:
                     error=type(error).__name__,
                 )
             return True
+
+    async def has_items(self, conversation_id: str) -> bool:
+        page = await self.client.conversations.items.list(
+            conversation_id, limit=1, order="desc"
+        )
+        return bool(page.data)
