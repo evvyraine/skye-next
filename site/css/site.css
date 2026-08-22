@@ -554,30 +554,60 @@ button {
 
 .pricing-grid {
   display: grid;
-  grid-template-columns: minmax(12rem, 1fr) repeat(2, minmax(0, 1.15fr));
-  gap: 1.5rem;
-  align-items: stretch;
+  grid-template-columns: minmax(12rem, 0.82fr) minmax(0, 2.4fr);
+  gap: 1.5rem 2rem;
+  align-items: center;
+}
+
+.pricing-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+  align-self: center;
 }
 
 .pricing h2 {
   margin: 0;
-  align-self: center;
   font-size: clamp(2.25rem, 1.4rem + 2.6vw, 3.75rem);
   font-weight: 500;
   letter-spacing: -0.03em;
   line-height: 1;
 }
 
+.pricing-note {
+  margin: 0;
+  max-width: 16rem;
+  font-size: 1.05rem;
+  letter-spacing: -0.03em;
+  line-height: 1.3;
+  opacity: 0.78;
+}
+
+.pricing-offers {
+  display: grid;
+  gap: 1.5rem;
+  min-width: 0;
+}
+
+.pricing-monthly {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1rem;
+  align-items: stretch;
+}
+
 .plan {
   display: flex;
   flex-direction: column;
   gap: 0.35rem;
+  min-width: 0;
   padding: 1.5rem 1.6rem 1.65rem;
   border: 1.5px solid rgb(255 255 255 / 0.55);
   border-radius: 1.35rem;
   background: transparent;
   transition:
     border-color 150ms var(--ease),
+    background-color 150ms var(--ease),
     transform 150ms ease-out;
 }
 
@@ -588,6 +618,43 @@ button {
 
 .plan:active {
   scale: 0.96;
+}
+
+.plan-featured {
+  border-color: #fff;
+  background: rgb(255 255 255 / 0.12);
+}
+
+.plan-trial {
+  flex-flow: row wrap;
+  align-items: center;
+  gap: 0.75rem 1.75rem;
+  padding: 1.15rem 1.6rem 1.2rem;
+  border-color: rgb(255 255 255 / 0.32);
+}
+
+.plan-trial .plan-name {
+  margin-bottom: 0;
+}
+
+.plan-trial .plan-price {
+  margin-bottom: 0;
+}
+
+.plan-trial .plan-amount {
+  font-size: clamp(2rem, 1.4rem + 1.4vw, 2.75rem);
+}
+
+.plan-trial .plan-list {
+  display: flex;
+  flex: 1 1 16rem;
+  flex-wrap: wrap;
+  gap: 0.15rem 1.35rem;
+  min-width: 0;
+}
+
+.plan-trial .plan-list li + li {
+  margin-top: 0;
 }
 
 .plan-name {
@@ -614,7 +681,7 @@ button {
 }
 
 .plan-amount {
-  font-size: clamp(3rem, 2.2rem + 2.4vw, 4.25rem);
+  font-size: clamp(2.35rem, 1.5rem + 1.8vw, 3.25rem);
   font-weight: 500;
 }
 
@@ -801,6 +868,11 @@ button {
   .features {
     gap: 2rem;
   }
+  .pricing-grid {
+    grid-template-columns: 1fr;
+    align-items: start;
+  }
+  .pricing-note { max-width: none; }
 }
 
 @media (max-width: 860px) {
@@ -831,8 +903,25 @@ button {
   .intro,
   .features,
   .pricing-grid,
+  .pricing-monthly,
   .site-footer {
     grid-template-columns: 1fr;
+  }
+  .plan-trial {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.35rem;
+    padding: 1.35rem 1.4rem 1.5rem;
+  }
+  .plan-trial .plan-price {
+    margin-bottom: 0.85rem;
+  }
+  .plan-trial .plan-list {
+    display: block;
+    flex: none;
+  }
+  .plan-trial .plan-list li + li {
+    margin-top: 0.25rem;
   }
   .mascot-peek { width: 6rem; top: 0.5rem; left: 0.5rem; }
   .btn { font-size: 1.35rem; min-height: 3.5rem; }
