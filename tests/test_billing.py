@@ -383,6 +383,56 @@ async def test_owner_and_allowlist_bypass_quota(database: Database) -> None:
     await quota.check(allowed, now=now)
 
 
+async def test_group_usage_increments_payer_not_speaker(database: Database) -> None:
+    billing = BillingService(database, "secret")
+    access = AccessService(database, frozenset({1}))
+    quota = QuotaService(database, billing, access)
+    now_ts = int(time.time())
+    await billing.apply_payment(
+        5,
+        payment(billing, "plus", 5, recurring=True, first=True, expires=now_ts + 1_000),
+    )
+    speaker = RequestContext(-100, "supergroup", user_id=42)
+    now = datetime(2026, 8, 22, tzinfo=UTC)
+
+    await quota.record(speaker, 1_500, billed_user_id=5, now=now)
+    assert await database.usage_totals(5, now=now) == (1_500, 1_500)
+    assert await database.usage_totals(42, now=now) == (0, 0)
+
+
+async def test_group_waits_on_the_payer_allowance(database: Database) -> None:
+    billing = BillingService(database, "secret")
+    access = AccessService(database, frozenset({1}))
+    quota = QuotaService(database, billing, access)
+    now_ts = int(time.time())
+    await billing.apply_payment(
+        5,
+        payment(billing, "plus", 5, recurring=True, first=True, expires=now_ts + 1_000),
+    )
+    speaker = RequestContext(-100, "supergroup", user_id=42)
+    now = datetime(2026, 8, 22, tzinfo=UTC)
+
+    await quota.record(speaker, FREE_DAILY, billed_user_id=5, now=now)
+    await quota.check(speaker, billed_user_id=5, now=now)
+    await quota.record(speaker, PLUS_DAILY - FREE_DAILY, billed_user_id=5, now=now)
+    with pytest.raises(AllowanceError, match="daily message allowance") as error:
+        await quota.check(speaker, billed_user_id=5, now=now)
+    assert str(error.value) == DAILY_LIMIT_COPY
+    assert "token" not in str(error.value).lower()
+    assert await database.usage_totals(42, now=now) == (0, 0)
+
+
+async def test_group_allowlist_still_bypasses_quota(database: Database) -> None:
+    billing = BillingService(database, "secret")
+    access = AccessService(database, frozenset({1}))
+    quota = QuotaService(database, billing, access)
+    await database.set_access(Scope("chat", -100), "allow", created_by=1)
+    speaker = RequestContext(-100, "supergroup", user_id=42)
+    now = datetime(2026, 8, 22, tzinfo=UTC)
+    await quota.record(speaker, 9_000_000, now=now)
+    await quota.check(speaker, now=now)
+
+
 async def test_usage_resets_on_a_new_utc_day(database: Database) -> None:
     first = datetime(2026, 8, 22, 23, 0, tzinfo=UTC)
     later = datetime(2026, 8, 23, 0, 1, tzinfo=UTC)

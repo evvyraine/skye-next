@@ -10,11 +10,12 @@ from pathlib import Path
 import structlog
 from agents import set_default_openai_client, set_tracing_disabled
 from aiogram import Bot, Dispatcher
+from aiogram.exceptions import TelegramAPIError
 from aiogram.types import BotCommandScopeAllPrivateChats
 from openai import AsyncOpenAI
 from pydantic import ValidationError
 
-from .access import AccessService
+from .access import AccessService, ChatAdministrator
 from .attachments import AttachmentService
 from .auth import TelegramAuth
 from .billing import BillingService
@@ -83,7 +84,27 @@ async def run() -> None:
     groups = GroupContextService(config, database, bot)
     media_groups = MediaGroupService(config, database)
     attachments = AttachmentService(config, bot, client)
-    access = AccessService(database, config.skye_owner_ids)
+
+    async def list_chat_administrators(
+        chat_id: int,
+    ) -> tuple[ChatAdministrator, ...] | None:
+        try:
+            members = await bot.get_chat_administrators(chat_id)
+        except TelegramAPIError:
+            log.warning("chat_admins_failed", chat_id=chat_id)
+            return None
+        return tuple(
+            ChatAdministrator(
+                user_id=member.user.id,
+                is_creator=member.status == "creator",
+                is_bot=member.user.is_bot,
+            )
+            for member in members
+        )
+
+    access = AccessService(
+        database, config.skye_owner_ids, list_administrators=list_chat_administrators
+    )
     billing = BillingService(database, config.telegram_bot_token)
     skills = SkillService(database, client, config.skye_max_attachment_bytes)
     runtime = AgentRuntime(
