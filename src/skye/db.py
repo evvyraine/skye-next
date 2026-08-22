@@ -428,6 +428,12 @@ CREATE TABLE IF NOT EXISTS usage_counters (
     monthly_tokens INTEGER NOT NULL DEFAULT 0,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS group_plus_payers (
+    chat_id INTEGER PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 """
 
 
@@ -696,6 +702,27 @@ class Database:
         if current is None:
             raise RuntimeError("Star entitlement was not saved.")
         return current
+
+    async def group_plus_payer(self, chat_id: int) -> int | None:
+        cursor = await self.conn.execute(
+            "SELECT user_id FROM group_plus_payers WHERE chat_id = ?",
+            (chat_id,),
+        )
+        row = await cursor.fetchone()
+        return int(row["user_id"]) if row else None
+
+    async def set_group_plus_payer(self, chat_id: int, user_id: int | None) -> None:
+        if user_id is None:
+            await self._write("DELETE FROM group_plus_payers WHERE chat_id = ?", (chat_id,))
+            return
+        await self._write(
+            """INSERT INTO group_plus_payers (chat_id, user_id)
+               VALUES (?, ?)
+               ON CONFLICT(chat_id) DO UPDATE SET
+                   user_id = excluded.user_id,
+                   updated_at = CURRENT_TIMESTAMP""",
+            (chat_id, user_id),
+        )
 
     async def usage_totals(
         self, user_id: int, *, now: datetime | None = None

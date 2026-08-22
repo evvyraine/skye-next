@@ -200,6 +200,37 @@ async def test_undirected_group_message_does_not_check_access() -> None:
     app._require_access.assert_not_awaited()
 
 
+async def test_group_without_plus_admin_points_to_private_account() -> None:
+    from skye.telegram import GROUP_NEEDS_PLUS
+
+    app = telegram_app()
+    app.access = SimpleNamespace(allowed=AsyncMock(return_value=False))
+    app.database = SimpleNamespace(access_effect=AsyncMock(return_value=None))
+    app.rich = SimpleNamespace(send=AsyncMock())
+    incoming = group_message("@skye_example_bot help")
+    context = app._context(incoming)
+    assert context is not None
+
+    assert await app._require_access(incoming, context) is False
+    app.rich.send.assert_awaited_once_with(incoming, GROUP_NEEDS_PLUS)
+    assert "Skye Plus" in GROUP_NEEDS_PLUS
+    assert "/account" in GROUP_NEEDS_PLUS
+    assert "token" not in GROUP_NEEDS_PLUS.lower()
+
+
+async def test_banned_group_member_sees_ban_copy() -> None:
+    app = telegram_app()
+    app.access = SimpleNamespace(allowed=AsyncMock(return_value=False))
+    app.database = SimpleNamespace(access_effect=AsyncMock(return_value="ban"))
+    app.rich = SimpleNamespace(send=AsyncMock())
+    incoming = group_message("@skye_example_bot help")
+    context = app._context(incoming)
+    assert context is not None
+
+    assert await app._require_access(incoming, context) is False
+    app.rich.send.assert_awaited_once_with(incoming, "This account is banned.")
+
+
 async def test_private_video_note_is_processed_as_attachment() -> None:
     app = telegram_app()
     app.groups = SimpleNamespace(text=lambda _: "[video note]")

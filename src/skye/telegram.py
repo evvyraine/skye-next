@@ -73,6 +73,7 @@ from .telegram_threads import thread_id
 log = structlog.get_logger()
 REASONING: tuple[Reasoning, ...] = ("none", "low", "medium", "high", "xhigh", "max")
 BOT_NAME = re.compile(r"(?<!\w)(?:skye|скай)(?!\w)", re.IGNORECASE)
+GROUP_NEEDS_PLUS = "Group mode needs an admin with Skye Plus. Open /account in a private chat."
 AdminAction = Literal["allow", "ban", "remove"]
 CATCHUP_PROMPT = (
     "Catch me up on this conversation: where things stand, open threads, and decisions. "
@@ -259,12 +260,8 @@ class TelegramApp:
                 "I'll use the right tools when needed.",
                 reply_markup=await self._private_reply_keyboard(context),
             )
-        elif context.chat_type == "private":
-            await self.rich.send(message, "This account is banned.")
         else:
-            await self.rich.send(
-                message, "This chat is not allowlisted yet. Ask the bot owner for access."
-            )
+            await self._deny_access(message, context)
 
     async def help(self, message: Message) -> None:
         await self.rich.send(
@@ -1142,9 +1139,7 @@ class TelegramApp:
                 return
         input_file_ids: list[str] = []
         try:
-            user_input = await self._input(
-                message, context, album=album, file_ids=input_file_ids
-            )
+            user_input = await self._input(message, context, album=album, file_ids=input_file_ids)
         except ValueError as error:
             await self.rich.send(message, str(error))
             return
@@ -1176,8 +1171,9 @@ class TelegramApp:
     ) -> None:
         current = await self.database.get_settings(context.scope)
         current = await self.billing.clamp_settings(context, current, self.access)
+        billed_user_id = await self.access.billed_user_id(context)
         try:
-            await self.quota.check(context)
+            await self.quota.check(context, billed_user_id=billed_user_id)
         except AllowanceError as error:
             await self.rich.send(message, error.message)
             return
@@ -1213,7 +1209,7 @@ class TelegramApp:
                 conversation_id=conversation_id,
                 extra_instructions=extra_instructions,
             )
-            await self.quota.record(context, output.usage_tokens)
+            await self.quota.record(context, output.usage_tokens, billed_user_id=billed_user_id)
             if context.chat_type != "private":
                 await self.groups.mark_seen(message)
             await self._deliver(message, placeholder, output)
@@ -1339,11 +1335,17 @@ class TelegramApp:
     async def _require_access(self, message: Message, context: RequestContext) -> bool:
         if await self.access.allowed(context):
             return True
+        await self._deny_access(message, context)
+        return False
+
+    async def _deny_access(self, message: Message, context: RequestContext) -> None:
         if context.chat_type == "private":
             await self.rich.send(message, "This account is banned.")
-            return False
-        await self.rich.send(message, "This chat is not allowlisted.")
-        return False
+            return
+        if await self.database.access_effect(Scope("user", context.user_id)) == "ban":
+            await self.rich.send(message, "This account is banned.")
+            return
+        await self.rich.send(message, GROUP_NEEDS_PLUS)
 
     async def _require_plus(self, message: Message, context: RequestContext) -> bool:
         if await self.access.plus(context):
@@ -1538,11 +1540,7 @@ class TelegramApp:
                 )
             rows.extend(
                 [
-                    [
-                        InlineKeyboardButton(
-                            text="Connectors", callback_data="settings:connectors"
-                        )
-                    ],
+                    [InlineKeyboardButton(text="Connectors", callback_data="settings:connectors")],
                     [InlineKeyboardButton(text="Skills", callback_data="settings:skills")],
                 ]
             )
