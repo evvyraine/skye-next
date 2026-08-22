@@ -1,5 +1,6 @@
 import asyncio
 import base64
+from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock, patch
 
@@ -247,7 +248,7 @@ def test_active_agent_and_specialist_are_composed() -> None:
     )
 
     assert agent.name == "Researcher"
-    assert agent.model == "gpt-5.6-sol"
+    assert agent.model == "gpt-5.6-luna"
     assert "Follow the Researcher method." in cast(str, agent.instructions)
     assert "You are Skye." not in cast(str, agent.instructions)
     assert isinstance(agent.tools[0], WebSearchTool)
@@ -825,3 +826,14 @@ async def test_openai_runs_wait_in_one_queue() -> None:
 
     assert started == 2
     assert max_concurrent == 1
+
+
+def test_usage_falls_back_to_a_conservative_length_estimate() -> None:
+    from skye.runtime import _usage_value, estimate_usage_tokens
+
+    assert estimate_usage_tokens("abcd", "ef") == 3
+    assert estimate_usage_tokens("", "") == 1
+    assert _usage_value(SimpleNamespace(input_tokens=10, output_tokens=5)) == 15
+    assert _usage_value(SimpleNamespace(prompt_tokens=4, completion_tokens=6)) == 10
+    assert _usage_value({"total_tokens": 8}) == 8
+    assert _usage_value(None) is None

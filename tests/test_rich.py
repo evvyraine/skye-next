@@ -45,9 +45,9 @@ def test_settings_use_a_native_rich_table() -> None:
     assert message.blocks
     table = message.blocks[1]
     assert isinstance(table, InputRichBlockTable)
-    assert table.cells[1][1].text == "Sol"
-    assert table.cells[2][1].text == "High"
-    assert table.cells[3][1].text == "Skye"
+    assert table.cells[1][1].text == "High"
+    assert table.cells[2][1].text == "Skye"
+    assert all(cell[0].text != "Model" for cell in table.cells)
 
 
 def test_thinking_block_is_valid_for_drafts() -> None:
@@ -130,7 +130,6 @@ def test_settings_prompts_use_native_headings_and_inline_rich_text() -> None:
 def test_settings_menus_send_native_blocks_instead_of_markdown() -> None:
     screens = [
         RichMessages.settings(ChatSettings(model="gpt-5.6-luna", reasoning="medium")),
-        RichMessages.choose_model("gpt-5.6-luna"),
         RichMessages.choose_reasoning("medium"),
         RichMessages.agents((), None),
         RichMessages.access(
@@ -171,19 +170,6 @@ def test_access_screen_can_hide_entries() -> None:
     assert status.text == "This group is not allowlisted."
 
 
-def test_model_chooser_uses_a_title_instead_of_the_settings_table() -> None:
-    message = RichMessages.choose_model("gpt-5.6-luna")
-
-    assert message.blocks
-    heading = message.blocks[0]
-    current = message.blocks[1]
-    assert isinstance(heading, InputRichBlockSectionHeading)
-    assert heading.text == "Choose your model"
-    assert isinstance(current, InputRichBlockParagraph)
-    assert current.text == "Currently Luna."
-    assert all(not isinstance(block, InputRichBlockTable) for block in message.blocks)
-
-
 def test_reasoning_chooser_uses_a_title_instead_of_the_settings_table() -> None:
     message = RichMessages.choose_reasoning("medium")
 
@@ -207,10 +193,10 @@ def test_settings_can_show_connector_and_skill_counts() -> None:
     assert message.blocks
     table = message.blocks[1]
     assert isinstance(table, InputRichBlockTable)
-    assert table.cells[4][0].text == "Connectors"
-    assert table.cells[4][1].text == "2 connected"
-    assert table.cells[5][0].text == "Skills"
-    assert table.cells[5][1].text == "1 uploaded"
+    assert table.cells[3][0].text == "Connectors"
+    assert table.cells[3][1].text == "2 connected"
+    assert table.cells[4][0].text == "Skills"
+    assert table.cells[4][1].text == "1 uploaded"
 
 
 def test_connectors_screen_lists_apps_and_custom_servers() -> None:
@@ -435,9 +421,8 @@ def test_account_screen_shows_renewal_status() -> None:
     message = RichMessages.account(
         owner=False,
         complimentary=False,
-        plan_name="Skye Super",
-        plan_emoji="🌍",
-        model_label="Terra",
+        plan_name="Skye Plus",
+        plan_emoji="🌙",
         status="18 days left. Renews automatically. Telegram Stars will be charged again "
         "at the end of this period.",
     )
@@ -445,18 +430,18 @@ def test_account_screen_shows_renewal_status() -> None:
     heading = message.blocks[1]
     status = message.blocks[2]
     assert isinstance(heading, InputRichBlockSectionHeading)
-    assert heading.text == "🌍 Skye Super"
+    assert heading.text == "🌙 Skye Plus"
     assert isinstance(status, InputRichBlockParagraph)
-    assert "Terra" in str(status.text)
+    assert "Terra" not in str(status.text)
+    assert "Luna" not in str(status.text)
     assert "Renews automatically" in str(status.text)
 
 
-def test_plan_checkout_has_a_collapsed_fair_use_details_block() -> None:
+def test_plan_checkout_has_a_collapsed_plans_details_block() -> None:
     message = RichMessages.plan_checkout(
         name="Skye Plus",
         emoji="🌙",
-        stars=499,
-        model_label="Luna",
+        stars=449,
         recurring=True,
     )
     assert message.blocks
@@ -464,6 +449,9 @@ def test_plan_checkout_has_a_collapsed_fair_use_details_block() -> None:
     assert message.blocks[0].text == "🌙 Skye Plus"
     details = message.blocks[-1]
     assert isinstance(details, InputRichBlockDetails)
-    assert details.summary == "Fair Use and models"
+    assert details.summary == "Plans"
     assert details.is_open is not True
-    assert "unusually" in str(details.blocks[0].text).lower()
+    blob = str(details.blocks[0].text)
+    assert "expanded daily message allowance" in blob.lower()
+    assert "Luna" not in blob
+    assert "token" not in blob.lower()

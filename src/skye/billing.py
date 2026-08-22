@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import time
 from dataclasses import dataclass, replace
+from typing import cast
 
 import structlog
 from aiogram import Bot
@@ -19,7 +20,7 @@ from aiogram.types import (
 )
 
 from .access import AccessService
-from .config import MODELS, ModelId
+from .config import HOSTED_MODEL, clamp_model
 from .db import Database
 from .models import ChatSettings, PlanId, RequestContext, Scope, StarEntitlement
 from .rich import RichMessages
@@ -28,7 +29,7 @@ log = structlog.get_logger()
 
 STARS_CURRENCY = "XTR"
 SUBSCRIPTION_PERIOD = 2_592_000
-TRIAL_SECONDS = 7 * 86_400
+STORED_PLAN_IDS: frozenset[PlanId] = frozenset({"trial", "plus", "super", "ultra"})
 
 
 class BillingError(ValueError):
@@ -41,16 +42,9 @@ class StarPlan:
     name: str
     emoji: str
     stars: int
-    model: ModelId
-    models: tuple[ModelId, ...]
     recurring: bool
-    rank: int
     invoice_title: str
     invoice_description: str
-
-    @property
-    def model_label(self) -> str:
-        return MODELS[self.model]
 
     @property
     def button_label(self) -> str:
@@ -66,64 +60,16 @@ class StarPlan:
 
 
 PLANS: dict[PlanId, StarPlan] = {
-    "trial": StarPlan(
-        id="trial",
-        name="Try Skye",
-        emoji="✨",
-        stars=49,
-        model="gpt-5.6-luna",
-        models=("gpt-5.6-luna",),
-        recurring=False,
-        rank=0,
-        invoice_title="Skye trial",
-        invoice_description=(
-            "One-week Skye trial. Unlimited Luna under Fair Use. "
-            "This offer can be used once and does not renew."
-        ),
-    ),
     "plus": StarPlan(
         id="plus",
         name="Skye Plus",
         emoji="🌙",
-        stars=499,
-        model="gpt-5.6-luna",
-        models=("gpt-5.6-luna",),
+        stars=449,
         recurring=True,
-        rank=1,
         invoice_title="Skye Plus",
         invoice_description=(
-            "Monthly Skye Plus. Unlimited Luna under Fair Use. "
-            "Unusually high usage may be limited. Renews every 30 days in Telegram Stars."
-        ),
-    ),
-    "super": StarPlan(
-        id="super",
-        name="Skye Super",
-        emoji="🌍",
-        stars=1_199,
-        model="gpt-5.6-terra",
-        models=("gpt-5.6-luna", "gpt-5.6-terra"),
-        recurring=True,
-        rank=2,
-        invoice_title="Skye Super",
-        invoice_description=(
-            "Monthly Skye Super. Unlimited Terra under Fair Use. "
-            "Unusually high usage may be limited. Renews every 30 days in Telegram Stars."
-        ),
-    ),
-    "ultra": StarPlan(
-        id="ultra",
-        name="Skye Ultra",
-        emoji="☀️",
-        stars=2_599,
-        model="gpt-5.6-sol",
-        models=("gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol"),
-        recurring=True,
-        rank=3,
-        invoice_title="Skye Ultra",
-        invoice_description=(
-            "Monthly Skye Ultra. Unlimited Sol under Fair Use. "
-            "Unusually high usage may be limited. Renews every 30 days in Telegram Stars."
+            "Monthly Skye Plus. Expanded daily message allowance. "
+            "Renews every 30 days in Telegram Stars."
         ),
     ),
 }
@@ -154,7 +100,23 @@ def decode_payload(payload: str, secret: str) -> tuple[StarPlan, int]:
         user_id = int(raw_user)
     except ValueError as error:
         raise BillingError("This invoice is not valid.") from error
-    return plan_by_id(plan_id), user_id
+    return stored_plan(plan_id), user_id
+
+
+def stored_plan(plan_id: str) -> StarPlan:
+    if plan_id in PLANS:
+        return PLANS[plan_id]
+    if plan_id in STORED_PLAN_IDS:
+        return StarPlan(
+            id=cast(PlanId, plan_id),
+            name="Skye",
+            emoji="🌙",
+            stars=0,
+            recurring=plan_id != "trial",
+            invoice_title="Skye",
+            invoice_description="Skye access.",
+        )
+    raise BillingError("Unknown Skye plan.")
 
 
 def remaining_copy(entitlement: StarEntitlement, now: int) -> str:
@@ -187,31 +149,18 @@ class BillingService:
     async def entitlement(self, user_id: int, *, now: int | None = None) -> StarEntitlement | None:
         return await self.database.active_entitlement(user_id, now=now)
 
-    async def trial_used(self, user_id: int) -> bool:
-        return await self.database.star_trial_used(user_id)
-
     async def complimentary(self, context: RequestContext, access: AccessService) -> bool:
         if access.is_owner(context.user_id):
             return True
         return await self.database.access_effect(context.scope) == "allow"
 
-    async def allowed_models(
-        self, context: RequestContext, access: AccessService
-    ) -> tuple[ModelId, ...]:
-        if await self.complimentary(context, access):
-            return tuple(MODELS)
-        entitlement = await self.entitlement(context.user_id)
-        if entitlement is None:
-            return tuple(MODELS)
-        return PLANS[entitlement.plan].models
-
     async def clamp_settings(
         self, context: RequestContext, settings: ChatSettings, access: AccessService
     ) -> ChatSettings:
-        models = await self.allowed_models(context, access)
-        if settings.model in models:
+        del context, access
+        if settings.model == HOSTED_MODEL:
             return settings
-        return replace(settings, model=models[-1])
+        return replace(settings, model=clamp_model(settings.model))
 
     def validate_checkout(
         self,
@@ -221,7 +170,6 @@ class BillingService:
         total_amount: int,
         invoice_payload: str,
         entitlement: StarEntitlement | None,
-        trial_used: bool,
         now: int | None = None,
         renewal: bool = False,
     ) -> StarPlan:
@@ -230,19 +178,15 @@ class BillingService:
         plan, payload_user = decode_payload(invoice_payload, self.secret)
         if payload_user != user_id:
             raise BillingError("This invoice is for a different Telegram account.")
-        if total_amount != plan.stars:
-            raise BillingError("This invoice no longer matches the Skye plan.")
         if renewal:
             return plan
+        if plan.id not in PLANS:
+            raise BillingError("Unknown Skye plan.")
+        if total_amount != plan.stars:
+            raise BillingError("This invoice no longer matches the Skye plan.")
         current = entitlement
         if current is not None and now is not None and not current.active(now):
             current = None
-        if plan.id == "trial":
-            if trial_used:
-                raise BillingError("The Skye trial can only be used once.")
-            if current is not None and current.plan != "trial":
-                raise BillingError("An active Skye plan is already running.")
-            return plan
         if (
             current is not None
             and current.plan == plan.id
@@ -268,7 +212,6 @@ class BillingService:
             total_amount=payment.total_amount,
             invoice_payload=payment.invoice_payload,
             entitlement=await self.database.star_entitlement(user_id),
-            trial_used=await self.trial_used(user_id),
             now=now,
             renewal=bool(payment.is_recurring and not payment.is_first_recurring),
         )
@@ -290,7 +233,7 @@ class BillingService:
         if payment.is_recurring and not payment.is_first_recurring and current is not None:
             expires_at = payment.subscription_expiration_date or (now + SUBSCRIPTION_PERIOD)
             return await self.database.extend_star_entitlement(user_id, expires_at)
-        expires_at = self._expires_at(plan, payment, now)
+        expires_at = payment.subscription_expiration_date or (now + SUBSCRIPTION_PERIOD)
         charge_id = payment.telegram_payment_charge_id if plan.recurring else None
         if (
             current is not None
@@ -308,9 +251,9 @@ class BillingService:
             auto_renew=plan.recurring,
             expires_at=expires_at,
             telegram_payment_charge_id=charge_id,
-            trial_used=plan.id == "trial",
+            trial_used=False,
         )
-        await self._align_model(user_id, plan)
+        await self._align_model(user_id)
         return entitlement
 
     async def cancel_renewal(self, user_id: int, bot: Bot) -> StarEntitlement:
@@ -340,16 +283,11 @@ class BillingService:
             return current
         return await self.database.expire_star_entitlement(user_id, int(time.time()))
 
-    def _expires_at(self, plan: StarPlan, payment: SuccessfulPayment, now: int) -> int:
-        if plan.recurring:
-            return payment.subscription_expiration_date or (now + SUBSCRIPTION_PERIOD)
-        return now + TRIAL_SECONDS
-
-    async def _align_model(self, user_id: int, plan: StarPlan) -> None:
+    async def _align_model(self, user_id: int) -> None:
         scope = Scope("user", user_id)
         settings = await self.database.get_settings(scope)
-        if settings.model not in plan.models:
-            await self.database.set_model(scope, plan.model)
+        if settings.model != HOSTED_MODEL:
+            await self.database.set_model(scope, HOSTED_MODEL)
 
 
 class AccountPanel:
@@ -392,20 +330,18 @@ class AccountPanel:
             return
         now = int(time.time())
         entitlement = await self.billing.entitlement(context.user_id, now=now)
-        trial_used = await self.billing.trial_used(context.user_id)
         owner = self.access.is_owner(context.user_id)
         complimentary = await self.billing.complimentary(context, self.access)
-        plan = PLANS[entitlement.plan] if entitlement is not None else None
+        plan = PLANS.get(entitlement.plan) if entitlement is not None else None
         content = self.rich.account(
             owner=owner,
             complimentary=complimentary,
             plan_name=None if plan is None else plan.name,
             plan_emoji=None if plan is None else plan.emoji,
-            model_label=None if plan is None else plan.model_label,
             status=None if entitlement is None else remaining_copy(entitlement, now),
             notice=notice,
         )
-        markup = self._home_keyboard(entitlement, trial_used=trial_used, owner=owner)
+        markup = self._home_keyboard(entitlement, owner=owner)
         if edit:
             await self.rich.edit(message, content, reply_markup=markup)
         else:
@@ -417,14 +353,12 @@ class AccountPanel:
         plan = plan_by_id(plan_id)
         now = int(time.time())
         entitlement = await self.billing.entitlement(context.user_id, now=now)
-        trial_used = await self.billing.trial_used(context.user_id)
         self.billing.validate_checkout(
             user_id=context.user_id,
             currency=STARS_CURRENCY,
             total_amount=plan.stars,
             invoice_payload=self.billing.payload(plan, context.user_id),
             entitlement=entitlement,
-            trial_used=trial_used,
             now=now,
         )
         link = await self._invoice_link(plan, context.user_id)
@@ -434,7 +368,6 @@ class AccountPanel:
                 name=plan.name,
                 emoji=plan.emoji,
                 stars=plan.stars,
-                model_label=plan.model_label,
                 recurring=plan.recurring,
             ),
             reply_markup=self._checkout_keyboard(plan, link),
@@ -481,7 +414,6 @@ class AccountPanel:
                 total_amount=query.total_amount,
                 invoice_payload=query.invoice_payload,
                 entitlement=await self.billing.database.star_entitlement(query.from_user.id),
-                trial_used=await self.billing.trial_used(query.from_user.id),
                 now=now,
             )
         except BillingError as error:
@@ -499,13 +431,14 @@ class AccountPanel:
             log.warning("star_payment_rejected", user_id=context.user_id, error=str(error)[:200])
             await self.rich.send(message, str(error))
             return
-        plan = PLANS[entitlement.plan]
+        plan = PLANS.get(entitlement.plan)
+        heading = plan.name if plan is not None else "Account"
         await self.rich.send(
             message,
             self.rich.prompt(
-                plan.name,
+                heading,
                 [
-                    f"{plan.emoji} {plan.name} is active. ",
+                    f"{plan.emoji} {plan.name} is active. " if plan is not None else "",
                     remaining_copy(entitlement, int(time.time())),
                 ],
             ),
@@ -566,20 +499,15 @@ class AccountPanel:
     def _home_keyboard(
         entitlement: StarEntitlement | None,
         *,
-        trial_used: bool,
         owner: bool,
     ) -> InlineKeyboardMarkup | None:
         if owner:
             return None
         rows: list[list[InlineKeyboardButton]] = []
-        active = entitlement is not None
-        for plan in PLANS.values():
-            if plan.id == "trial" and (trial_used or active):
-                continue
-            if active and entitlement is not None and entitlement.plan == plan.id:
-                continue
+        plus = PLANS["plus"]
+        if entitlement is None or entitlement.plan != plus.id:
             rows.append(
-                [InlineKeyboardButton(text=plan.button_label, callback_data=f"acct:plan:{plan.id}")]
+                [InlineKeyboardButton(text=plus.button_label, callback_data="acct:plan:plus")]
             )
         if entitlement is not None and entitlement.auto_renew:
             rows.append(

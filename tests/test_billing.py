@@ -1,4 +1,5 @@
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock
 
@@ -21,6 +22,14 @@ from skye.billing import (
 )
 from skye.db import Database
 from skye.models import RequestContext, Scope, StarEntitlement
+from skye.quota import (
+    AllowanceError,
+    DAILY_LIMIT_COPY,
+    FREE_DAILY,
+    MONTHLY_LIMIT_COPY,
+    PLUS_DAILY,
+    QuotaService,
+)
 from skye.rich import RichMessages
 
 
@@ -43,11 +52,12 @@ def payment(
     recurring: bool = False,
     first: bool = False,
     expires: int | None = None,
+    stars: int | None = None,
 ) -> SuccessfulPayment:
     plan = PLANS[plan_id]
     return SuccessfulPayment(
         currency="XTR",
-        total_amount=plan.stars,
+        total_amount=stars if stars is not None else plan.stars,
         invoice_payload=service.payload(plan, user_id),
         telegram_payment_charge_id=charge_id,
         provider_payment_charge_id="",
@@ -58,20 +68,18 @@ def payment(
 
 
 def test_plan_catalog_matches_the_product() -> None:
-    assert PLANS["trial"].stars == 49
-    assert PLANS["plus"].stars == 499
-    assert PLANS["super"].stars == 1_199
-    assert PLANS["ultra"].stars == 2_599
-    assert PLANS["plus"].models == ("gpt-5.6-luna",)
-    assert PLANS["super"].models == ("gpt-5.6-luna", "gpt-5.6-terra")
-    assert PLANS["ultra"].models[-1] == "gpt-5.6-sol"
-    assert all(plan.recurring is (plan.id != "trial") for plan in PLANS.values())
+    assert list(PLANS) == ["plus"]
+    assert PLANS["plus"].stars == 449
+    assert PLANS["plus"].recurring is True
+    assert PLANS["plus"].button_label.startswith("🌙")
     assert all(len(plan.invoice_title) <= 32 for plan in PLANS.values())
     assert all(len(plan.invoice_description) <= 255 for plan in PLANS.values())
-    assert PLANS["plus"].button_label.startswith("🌙")
-    assert PLANS["super"].button_label.startswith("🌍")
-    assert PLANS["ultra"].button_label.startswith("☀️")
-    assert PLANS["trial"].button_label.startswith("✨")
+    joined = " ".join(
+        f"{plan.invoice_title} {plan.invoice_description} {plan.button_label}"
+        for plan in PLANS.values()
+    )
+    for banned in ("Luna", "Terra", "Sol", "GPT", "token", "Try Skye", "Super", "Ultra"):
+        assert banned not in joined
 
 
 def test_invoice_payload_is_signed_and_bound_to_the_user() -> None:
@@ -131,7 +139,7 @@ async def test_ban_beats_an_active_subscription(database: Database) -> None:
     now = int(time.time())
     await billing.apply_payment(
         42,
-        payment(billing, "super", 42, recurring=True, first=True, expires=now + 1_000),
+        payment(billing, "plus", 42, recurring=True, first=True, expires=now + 1_000),
     )
     await database.set_access(Scope("user", 42), "ban", created_by=1)
 
@@ -139,25 +147,44 @@ async def test_ban_beats_an_active_subscription(database: Database) -> None:
     assert await access.allowed(RequestContext(1, "private", user_id=1))
 
 
-async def test_trial_cannot_be_used_twice(database: Database) -> None:
+async def test_legacy_plans_cannot_be_purchased(database: Database) -> None:
     billing = BillingService(database, "secret")
-    first = await billing.apply_payment(7, payment(billing, "trial", 7, charge_id="trial-1"))
-    later = int(time.time()) + 8 * 86_400
-    await database.expire_star_entitlement(7, later)
-
-    assert first.plan == "trial"
-    assert first.auto_renew is False
-    assert await billing.trial_used(7)
-    with pytest.raises(BillingError, match="once"):
+    payload = encode_payload("trial", 7, "secret")
+    with pytest.raises(BillingError, match="Unknown"):
         billing.validate_checkout(
             user_id=7,
             currency="XTR",
             total_amount=49,
-            invoice_payload=billing.payload(PLANS["trial"], 7),
-            entitlement=await database.star_entitlement(7),
-            trial_used=True,
-            now=later,
+            invoice_payload=payload,
+            entitlement=None,
+            now=int(time.time()),
         )
+
+
+async def test_legacy_renewal_keeps_access(database: Database) -> None:
+    billing = BillingService(database, "secret")
+    now = int(time.time())
+    await database.upsert_star_entitlement(
+        user_id=9,
+        plan="super",
+        auto_renew=True,
+        expires_at=now + 1_000,
+        telegram_payment_charge_id="legacy",
+        trial_used=False,
+    )
+    payload = encode_payload("super", 9, "secret")
+    plan = billing.validate_checkout(
+        user_id=9,
+        currency="XTR",
+        total_amount=1_199,
+        invoice_payload=payload,
+        entitlement=await database.star_entitlement(9),
+        now=now,
+        renewal=True,
+    )
+    assert plan.id == "super"
+    access = AccessService(database, frozenset({1}))
+    assert await access.allowed(RequestContext(9, "private", user_id=9))
 
 
 async def test_recurring_payment_extends_expiry_without_changing_charge_id(
@@ -200,14 +227,14 @@ async def test_duplicate_charge_id_is_idempotent(database: Database) -> None:
     billing = BillingService(database, "secret")
     now = int(time.time())
     item = payment(
-        billing, "ultra", 8, charge_id="same", recurring=True, first=True, expires=now + 100
+        billing, "plus", 8, charge_id="same", recurring=True, first=True, expires=now + 100
     )
     first = await billing.apply_payment(8, item)
     again = await billing.apply_payment(8, item)
     assert first == again
 
 
-async def test_plus_clamps_sol_down_to_luna(database: Database) -> None:
+async def test_unknown_settings_are_clamped_to_the_hosted_model(database: Database) -> None:
     billing = BillingService(database, "secret")
     access = AccessService(database, frozenset({1}))
     now = int(time.time())
@@ -252,37 +279,130 @@ async def test_cancel_renewal_keeps_access_until_expiry(database: Database) -> N
     assert "no further charges" in copy
 
 
-def test_account_buttons_use_plan_emoji_and_short_callback_data() -> None:
-    markup = AccountPanel._home_keyboard(None, trial_used=False, owner=False)
+def test_account_buttons_offer_plus_or_cancel_only() -> None:
+    markup = AccountPanel._home_keyboard(None, owner=False)
     assert markup is not None
     labels = [button.text for row in markup.inline_keyboard for button in row]
     callbacks = [button.callback_data or "" for row in markup.inline_keyboard for button in row]
-    assert labels == [
-        PLANS["trial"].button_label,
-        PLANS["plus"].button_label,
-        PLANS["super"].button_label,
-        PLANS["ultra"].button_label,
-    ]
+    assert labels == [PLANS["plus"].button_label]
+    assert callbacks == ["acct:plan:plus"]
     assert all(item.startswith("acct:") and len(item) <= 64 for item in callbacks)
     buttons = [button for row in markup.inline_keyboard for button in row]
     assert all(isinstance(button, InlineKeyboardButton) for button in buttons)
 
+    active = StarEntitlement(1, "plus", True, 9_999_999_999, "chg", False, "now", "now")
+    plus_home = AccountPanel._home_keyboard(active, owner=False)
+    assert plus_home is not None
+    plus_labels = [button.text for row in plus_home.inline_keyboard for button in row]
+    assert plus_labels == ["Cancel renewal"]
 
-def test_checkout_uses_an_expandable_fair_use_block() -> None:
+
+def test_checkout_explains_allowance_without_model_names() -> None:
     from aiogram.types import InputRichBlockDetails
 
     message = RichMessages.plan_checkout(
         name="Skye Plus",
         emoji="🌙",
-        stars=499,
-        model_label="Luna",
+        stars=449,
         recurring=True,
     )
     assert message.blocks
     details = message.blocks[-1]
     assert isinstance(details, InputRichBlockDetails)
-    assert details.summary == "Fair Use and models"
-    assert "Fair Use" in str(details.blocks[0].text)
-    assert "Luna" in str(details.blocks[1].text)
-    assert "Terra" in str(details.blocks[1].text)
-    assert "Sol" in str(details.blocks[1].text)
+    assert details.summary == "Plans"
+    blob = " ".join(str(getattr(block, "text", "")) for block in message.blocks)
+    blob += " " + " ".join(str(getattr(block, "text", "")) for block in details.blocks)
+    assert "449" in blob
+    assert "expanded daily message allowance" in blob.lower()
+    for banned in ("Luna", "Terra", "Sol", "GPT", "token", "Fair Use", "Try Skye"):
+        assert banned not in blob
+
+
+async def test_quota_blocks_before_recording(database: Database) -> None:
+    billing = BillingService(database, "secret")
+    access = AccessService(database, frozenset({1}))
+    quota = QuotaService(database, billing, access)
+    context = RequestContext(42, "private", user_id=42)
+    now = datetime(2026, 8, 22, tzinfo=timezone.utc)
+
+    await quota.check(context, now=now)
+    await quota.record(context, FREE_DAILY, now=now)
+    with pytest.raises(AllowanceError, match="daily message allowance") as error:
+        await quota.check(context, now=now)
+    assert str(error.value) == DAILY_LIMIT_COPY
+    assert "20" not in str(error.value)
+    assert "token" not in str(error.value).lower()
+
+
+async def test_plus_quota_uses_the_higher_allowance(database: Database) -> None:
+    billing = BillingService(database, "secret")
+    access = AccessService(database, frozenset({1}))
+    quota = QuotaService(database, billing, access)
+    now_ts = int(time.time())
+    await billing.apply_payment(
+        42,
+        payment(billing, "plus", 42, recurring=True, first=True, expires=now_ts + 1_000),
+    )
+    context = RequestContext(42, "private", user_id=42)
+    now = datetime(2026, 8, 22, tzinfo=timezone.utc)
+    await quota.record(context, FREE_DAILY, now=now)
+    await quota.check(context, now=now)
+    await quota.record(context, PLUS_DAILY - FREE_DAILY, now=now)
+    with pytest.raises(AllowanceError, match="daily message allowance"):
+        await quota.check(context, now=now)
+
+
+async def test_monthly_copy_is_used_when_the_month_is_the_one_that_hit(
+    database: Database,
+) -> None:
+    billing = BillingService(database, "secret")
+    access = AccessService(database, frozenset({1}))
+    quota = QuotaService(database, billing, access)
+    context = RequestContext(7, "private", user_id=7)
+    now = datetime(2026, 8, 22, tzinfo=timezone.utc)
+    await quota.record(context, 400_000, now=now)
+    with pytest.raises(AllowanceError, match="monthly message allowance") as error:
+        await quota.check(context, now=now)
+    assert str(error.value) == MONTHLY_LIMIT_COPY
+
+
+async def test_owner_and_allowlist_bypass_quota(database: Database) -> None:
+    billing = BillingService(database, "secret")
+    access = AccessService(database, frozenset({1}))
+    quota = QuotaService(database, billing, access)
+    now = datetime(2026, 8, 22, tzinfo=timezone.utc)
+    owner = RequestContext(1, "private", user_id=1)
+    allowed = RequestContext(42, "private", user_id=42)
+    await database.set_access(Scope("user", 42), "allow", created_by=1)
+    await quota.record(owner, 9_000_000, now=now)
+    await quota.record(allowed, 9_000_000, now=now)
+    await quota.check(owner, now=now)
+    await quota.check(allowed, now=now)
+
+
+async def test_usage_resets_on_a_new_utc_day(database: Database) -> None:
+    first = datetime(2026, 8, 22, 23, 0, tzinfo=timezone.utc)
+    later = datetime(2026, 8, 23, 0, 1, tzinfo=timezone.utc)
+    await database.add_usage(42, FREE_DAILY, now=first)
+    daily, monthly = await database.usage_totals(42, now=later)
+    assert daily == 0
+    assert monthly == FREE_DAILY
+
+
+async def test_expired_unknown_plan_is_treated_as_free(database: Database) -> None:
+    billing = BillingService(database, "secret")
+    access = AccessService(database, frozenset({1}))
+    quota = QuotaService(database, billing, access)
+    now_ts = int(time.time())
+    await database.upsert_star_entitlement(
+        user_id=11,
+        plan="ultra",
+        auto_renew=False,
+        expires_at=now_ts - 10,
+        telegram_payment_charge_id="old",
+        trial_used=False,
+    )
+    context = RequestContext(11, "private", user_id=11)
+    daily, monthly = await quota.limits(context)
+    assert (daily, monthly) == (20_000, 400_000)
+    assert await billing.entitlement(11, now=now_ts) is None

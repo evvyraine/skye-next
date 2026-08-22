@@ -7,11 +7,16 @@ from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 ModelId = Literal["gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol"]
 Reasoning = Literal["none", "low", "medium", "high", "xhigh", "max"]
 
+HOSTED_MODEL: ModelId = "gpt-5.6-luna"
 MODELS: dict[ModelId, str] = {
     "gpt-5.6-luna": "Luna",
     "gpt-5.6-terra": "Terra",
     "gpt-5.6-sol": "Sol",
 }
+
+
+def clamp_model(_model: str | None) -> ModelId:
+    return HOSTED_MODEL
 
 
 def _ids(value: object) -> frozenset[int]:
@@ -73,7 +78,7 @@ class Settings(BaseSettings):
     skye_owner_ids: OwnerIds = Field(min_length=1)
     skye_database_path: Path = Path("data/skye.db")
     skye_base_prompt_path: Path = Path("BASE_PROMPT.md")
-    skye_default_model: ModelId = "gpt-5.6-luna"
+    skye_default_model: ModelId = HOSTED_MODEL
     skye_default_reasoning: Reasoning = "medium"
     skye_max_turns: int = Field(default=20, ge=2, le=100)
     skye_run_timeout_seconds: int = Field(default=300, ge=10, le=1800)
