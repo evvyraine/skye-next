@@ -60,8 +60,10 @@ async def test_groups_stay_allowlist_only(database: Database) -> None:
     private = RequestContext(42, "private", user_id=42)
 
     assert not await access.allowed(group)
+    assert not await access.plus(group)
     await database.set_access(Scope("chat", -100), "allow", created_by=1)
     assert await access.allowed(group)
+    assert await access.plus(group)
     assert not await access.allowed(other_group)
     assert await access.allowed(private)
 

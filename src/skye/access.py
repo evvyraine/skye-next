@@ -22,10 +22,10 @@ class AccessService:
         return await self.database.access_effect(context.scope) == "allow"
 
     async def plus(self, context: RequestContext) -> bool:
+        if not await self.allowed(context):
+            return False
         if self.is_owner(context.user_id):
             return True
-        if await self.database.access_effect(Scope("user", context.user_id)) == "ban":
-            return False
         if await self.database.access_effect(context.scope) == "allow":
             return True
         entitlement = await self.database.active_entitlement(context.user_id)
