@@ -213,7 +213,6 @@ def test_settings_keyboard_adds_connectors_in_private() -> None:
     inspect_labels = [button.text for row in inspect.inline_keyboard for button in row]
     assert private_labels == [
         "Projects",
-        "Model",
         "Reasoning",
         "Agent",
         "Connectors",
@@ -221,7 +220,6 @@ def test_settings_keyboard_adds_connectors_in_private() -> None:
         "Memory",
     ]
     assert group_labels == [
-        "Model",
         "Reasoning",
         "Agent",
         "Connectors",

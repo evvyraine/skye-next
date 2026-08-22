@@ -26,7 +26,7 @@ from aiogram.types import (
 )
 
 from .artifacts import GeneratedFile
-from .config import MODELS, ModelId, Reasoning
+from .config import Reasoning
 from .models import (
     AccessEffect,
     AccessEntry,
@@ -132,7 +132,6 @@ class RichMessages:
 
         rows = [
             [cell("Option", header=True), cell("Selected", header=True)],
-            [cell("Model"), cell(MODELS[settings.model])],
             [cell("Reasoning"), cell(settings.reasoning.title())],
             [cell("Agent"), cell(agent_name)],
         ]
@@ -165,7 +164,6 @@ class RichMessages:
         complimentary: bool,
         plan_name: str | None,
         plan_emoji: str | None,
-        model_label: str | None,
         status: str | None,
         notice: str | None = None,
     ) -> InputRichMessage:
@@ -174,26 +172,25 @@ class RichMessages:
             blocks.append(InputRichBlockParagraph(text=notice))
         if owner:
             blocks.append(
-                InputRichBlockParagraph(
-                    text="Owner access. All models are available. No Stars plan is required."
-                )
+                InputRichBlockParagraph(text="Owner access. No Stars plan is required.")
             )
             return InputRichMessage(blocks=blocks)
-        if plan_name and plan_emoji and model_label and status:
+        if plan_name and plan_emoji and status:
             blocks.append(InputRichBlockSectionHeading(text=f"{plan_emoji} {plan_name}", size=3))
-            blocks.append(InputRichBlockParagraph(text=f"{model_label}. {status}"))
+            blocks.append(InputRichBlockParagraph(text=status))
+        elif status:
+            blocks.append(InputRichBlockParagraph(text=status))
         elif complimentary:
             blocks.append(
-                InputRichBlockParagraph(
-                    text="Complimentary access from the allowlist. All models are available."
-                )
+                InputRichBlockParagraph(text="Complimentary access from the allowlist.")
             )
         else:
             blocks.append(
                 InputRichBlockParagraph(
                     text=(
-                        "No active plan. Subscribe with Telegram Stars for unlimited private "
-                        "access, under Fair Use."
+                        "Free plan, with a basic daily message allowance. "
+                        "Subscribe to Skye Plus for an expanded daily message allowance, "
+                        "paid in Telegram Stars."
                     )
                 )
             )
@@ -205,20 +202,19 @@ class RichMessages:
         name: str,
         emoji: str,
         stars: int,
-        model_label: str,
         recurring: bool,
     ) -> InputRichMessage:
         if recurring:
             price = f"{stars} Telegram Stars each month"
-            access = f"Unlimited {model_label} while the plan is active."
+            access = "Expanded daily message allowance while the plan is active."
         else:
             price = f"{stars} Telegram Stars, once"
-            access = f"Unlimited {model_label} for seven days. This offer can be used once."
+            access = "Access for a limited time. This offer can be used once."
         return InputRichMessage(
             blocks=[
                 InputRichBlockSectionHeading(text=f"{emoji} {name}", size=2),
-                InputRichBlockParagraph(text=f"{price}. {access} Fair Use applies."),
-                RichMessages._fair_use_details(),
+                InputRichBlockParagraph(text=f"{price}. {access}"),
+                RichMessages._plan_details(),
             ]
         )
 
@@ -228,44 +224,29 @@ class RichMessages:
             blocks=[
                 InputRichBlockSectionHeading(text="Skye plans", size=2),
                 InputRichBlockParagraph(
-                    text="Paid access uses Telegram Stars. Fair Use applies to every plan."
+                    text=(
+                        "Paid access uses Telegram Stars. Skye Plus is the paid plan. "
+                        "The free plan has a basic daily message allowance."
+                    )
                 ),
-                RichMessages._fair_use_details(open_by_default=True),
+                RichMessages._plan_details(open_by_default=True),
             ]
         )
 
     @staticmethod
-    def _fair_use_details(*, open_by_default: bool = False) -> InputRichBlockDetails:
+    def _plan_details(*, open_by_default: bool = False) -> InputRichBlockDetails:
         return InputRichBlockDetails(
-            summary="Fair Use and models",
+            summary="Plans",
             blocks=[
                 InputRichBlockParagraph(
                     text=(
-                        "Access is unlimited for ordinary personal use under Fair Use. "
-                        "If usage is unusually high, Skye may limit this subscription. "
-                        "This is a fairness limit, not a token quota."
-                    )
-                ),
-                InputRichBlockParagraph(
-                    text=(
-                        "✨ Try Skye — Luna for 7 days, 49 Stars, once. "
-                        "🌙 Skye Plus — Luna, 499 Stars each month. "
-                        "🌍 Skye Super — Terra, 1,199 Stars each month. "
-                        "☀️ Skye Ultra — Sol, 2,599 Stars each month. "
-                        "Higher monthly plans include every model below them."
+                        "Free includes a basic daily message allowance and core features. "
+                        "Skye Plus, 449 Stars each month, includes an expanded daily "
+                        "message allowance and full features. Paid in Telegram Stars."
                     )
                 ),
             ],
             is_open=True if open_by_default else None,
-        )
-
-    @staticmethod
-    def choose_model(model: ModelId) -> InputRichMessage:
-        return InputRichMessage(
-            blocks=[
-                InputRichBlockSectionHeading(text="Choose your model", size=2),
-                InputRichBlockParagraph(text=f"Currently {MODELS[model]}."),
-            ]
         )
 
     @staticmethod
@@ -322,7 +303,6 @@ class RichMessages:
         def cell(text: str) -> RichBlockTableCell:
             return RichBlockTableCell(text=text, align="left", valign="top")
 
-        model = MODELS[version.model] if version.model else "Chat default"
         capabilities = ", ".join(item.title() for item in version.capabilities) or "None"
         return InputRichMessage(
             blocks=[
@@ -332,7 +312,6 @@ class RichMessages:
                     cells=[
                         [cell("Role"), cell("Active" if active else "Specialist")],
                         [cell("Version"), cell(str(version.version))],
-                        [cell("Model"), cell(model)],
                         [cell("Capabilities"), cell(capabilities)],
                     ],
                     is_bordered=True,

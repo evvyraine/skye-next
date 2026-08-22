@@ -591,7 +591,7 @@ button {
 
 .pricing-monthly {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 1rem;
   align-items: stretch;
 }
@@ -623,38 +623,6 @@ button {
 .plan-featured {
   border-color: #fff;
   background: rgb(255 255 255 / 0.12);
-}
-
-.plan-trial {
-  flex-flow: row wrap;
-  align-items: center;
-  gap: 0.75rem 1.75rem;
-  padding: 1.15rem 1.6rem 1.2rem;
-  border-color: rgb(255 255 255 / 0.32);
-}
-
-.plan-trial .plan-name {
-  margin-bottom: 0;
-}
-
-.plan-trial .plan-price {
-  margin-bottom: 0;
-}
-
-.plan-trial .plan-amount {
-  font-size: clamp(2rem, 1.4rem + 1.4vw, 2.75rem);
-}
-
-.plan-trial .plan-list {
-  display: flex;
-  flex: 1 1 16rem;
-  flex-wrap: wrap;
-  gap: 0.15rem 1.35rem;
-  min-width: 0;
-}
-
-.plan-trial .plan-list li + li {
-  margin-top: 0;
 }
 
 .plan-name {
@@ -906,22 +874,6 @@ button {
   .pricing-monthly,
   .site-footer {
     grid-template-columns: 1fr;
-  }
-  .plan-trial {
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 0.35rem;
-    padding: 1.35rem 1.4rem 1.5rem;
-  }
-  .plan-trial .plan-price {
-    margin-bottom: 0.85rem;
-  }
-  .plan-trial .plan-list {
-    display: block;
-    flex: none;
-  }
-  .plan-trial .plan-list li + li {
-    margin-top: 0.25rem;
   }
   .mascot-peek { width: 6rem; top: 0.5rem; left: 0.5rem; }
   .btn { font-size: 1.35rem; min-height: 3.5rem; }

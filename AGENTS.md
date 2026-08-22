@@ -29,7 +29,7 @@ We do not own a model loop, a provider abstraction, a billing provider, an admin
 ## Core decisions
 
 - **One provider.** OpenAI Responses API through `openai-agents`. Every normal chat turn is `Agent` + `Runner.run_streamed()`. Use the official `openai` client only for resource lifecycle (conversations, files, skills). No Chat Completions fallback. No second-provider interface until a second real provider exists.
-- **Small model catalog**, code-owned: Luna (`gpt-5.6-luna`, default), Terra (`gpt-5.6-terra`), Sol (`gpt-5.6-sol`).
+- **One hosted model.** Chat turns use `gpt-5.6-luna`. There is no user-facing model picker. Public copy never names Luna, Terra, Sol, GPT, or other model IDs. If asked, Skye says she works on Sun Engine.
 - **No Mini App.** Telegram settings stay inline-keyboard messages edited in place. Callback data is a short action plus an opaque id — never JSON, never trusted client state. The web app at `chat.skye-bot.com` is a second transport for private project chats, not a Mini App and not an admin panel.
 - **Connectors are per user.** Hosted apps connect through Composio; custom HTTPS MCP is stored locally. A group run receives a connector only after the owner explicitly shares that one item with that group. The owner or a group admin can revoke the share.
 - **Explicit composition.** One typed app container, one startup function. Features expose services; they do not register themselves.
@@ -38,7 +38,7 @@ We do not own a model loop, a provider abstraction, a billing provider, an admin
 - **Skills are data.** Users upload a zip bundle or a `SKILL.md` file; every file in the zip is stored locally and sent together to OpenAI `/v1/skills`. Mount them on hosted shell as `skill_reference`. Delete removes both the local copy and the OpenAI skill. Skills are scoped like memories: private skills stay `scope=user`, group skills stay `scope=chat`.
 - **Custom agents are data**, not Python: name, description, instructions, optional model, hosted capabilities, visibility. Users cannot upload function tools. Sharing pins an immutable published version; later edits never change an imported install. Default orchestration is manager-style: Skye is the root, specialists are `Agent.as_tool()`. Selecting an agent as active makes that profile the root.
 - **Access is deny-by-default.** Allowed if the sender is the owner, the private user is allowlisted, the current group is allowlisted, or the private user has an active Telegram Stars entitlement. A ban beats every allow except the immutable owner. Allowlisting a group grants access only inside that group. Stars plans grant private and web access, not group access.
-- **Telegram Stars plans** are code-owned: Try Skye (49 Stars, 7 days, once, Luna), Plus (499 Stars / 30 days, Luna), Super (1199, Terra), Ultra (2599, Sol). Monthly plans use Bot API `createInvoiceLink` with `subscription_period=2592000`. The trial is a one-time Stars invoice. Cancel renewal with `editUserStarSubscription` from `/account`. Fair Use is disclosed in checkout; do not add a token meter.
+- **Telegram Stars plans** are code-owned: Skye Plus (449 Stars / 30 days). Monthly plans use Bot API `createInvoiceLink` with `subscription_period=2592000`. Cancel renewal with `editUserStarSubscription` from `/account`. Usage is metered silently per Telegram user; user-facing copy talks about daily and monthly message allowance, never remaining counts.
 - **Groups stay quiet** unless the bot is mentioned, replied to, invoked by command, or named in the text. At most the latest 20 *new* messages per topic since the last Skye turn are attached as untrusted user content — never a repeat of what OpenAI `conversation_id` already holds. Forum topics get their own conversation state but share the group's settings and group memory. Ignore Telegram reply-only thread ids.
 - **Photos** go to vision only when they are on the current message or the user replies to a photo while addressing Skye. Voice, video notes, and audio are transcribed; only the text from video notes enters the model. Videos attached or replied to become a short text placeholder; the model never receives the video file. Documents are native OpenAI file inputs. Captions stay part of the request. Generated images are artifacts sent as Telegram photos, not embedded in text.
 
@@ -61,7 +61,8 @@ We do not own a model loop, a provider abstraction, a billing provider, an admin
 
 - A second model provider
 - A Mini App or an admin web panel
-- Token quotas, a second payment provider, or product tiers outside Telegram Stars
+- A second payment provider, or product tiers outside Telegram Stars
+- Token numbers in user-facing copy
 - Local shell, Daytona, or host-side code execution
 - Dynamic module discovery
 - Embeddings for memory until FTS is proven insufficient

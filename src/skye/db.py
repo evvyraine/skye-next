@@ -6,6 +6,7 @@ import re
 import time
 from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
@@ -418,6 +419,15 @@ CREATE TABLE IF NOT EXISTS star_payments (
     subscription_expiration_date INTEGER,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS usage_counters (
+    user_id INTEGER PRIMARY KEY,
+    day_utc TEXT NOT NULL,
+    month_utc TEXT NOT NULL,
+    daily_tokens INTEGER NOT NULL DEFAULT 0,
+    monthly_tokens INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 """
 
 
@@ -686,6 +696,61 @@ class Database:
         if current is None:
             raise RuntimeError("Star entitlement was not saved.")
         return current
+
+    async def usage_totals(
+        self, user_id: int, *, now: datetime | None = None
+    ) -> tuple[int, int]:
+        day, month = _usage_keys(now)
+        cursor = await self.conn.execute(
+            """SELECT day_utc, month_utc, daily_tokens, monthly_tokens
+               FROM usage_counters WHERE user_id = ?""",
+            (user_id,),
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            return 0, 0
+        daily = int(row["daily_tokens"]) if str(row["day_utc"]) == day else 0
+        monthly = int(row["monthly_tokens"]) if str(row["month_utc"]) == month else 0
+        return daily, monthly
+
+    async def add_usage(
+        self, user_id: int, tokens: int, *, now: datetime | None = None
+    ) -> tuple[int, int]:
+        if tokens < 0:
+            raise ValueError("Usage cannot be negative.")
+        day, month = _usage_keys(now)
+        async with self.transaction() as connection:
+            cursor = await connection.execute(
+                """SELECT day_utc, month_utc, daily_tokens, monthly_tokens
+                   FROM usage_counters WHERE user_id = ?""",
+                (user_id,),
+            )
+            row = await cursor.fetchone()
+            daily = (
+                int(row["daily_tokens"])
+                if row is not None and str(row["day_utc"]) == day
+                else 0
+            )
+            monthly = (
+                int(row["monthly_tokens"])
+                if row is not None and str(row["month_utc"]) == month
+                else 0
+            )
+            daily += tokens
+            monthly += tokens
+            await connection.execute(
+                """INSERT INTO usage_counters (
+                       user_id, day_utc, month_utc, daily_tokens, monthly_tokens
+                   ) VALUES (?, ?, ?, ?, ?)
+                   ON CONFLICT(user_id) DO UPDATE SET
+                       day_utc = excluded.day_utc,
+                       month_utc = excluded.month_utc,
+                       daily_tokens = excluded.daily_tokens,
+                       monthly_tokens = excluded.monthly_tokens,
+                       updated_at = CURRENT_TIMESTAMP""",
+                (user_id, day, month, daily, monthly),
+            )
+        return daily, monthly
 
     async def expire_star_entitlement(self, user_id: int, now: int) -> StarEntitlement | None:
         await self._write(
@@ -2269,3 +2334,9 @@ class Database:
             kind=cast(WebFileKind, row["kind"]),
             created_at=cast(str, row["created_at"]),
         )
+
+
+def _usage_keys(now: datetime | None = None) -> tuple[str, str]:
+    current = now or datetime.now(UTC)
+    current = current.replace(tzinfo=UTC) if current.tzinfo is None else current.astimezone(UTC)
+    return current.strftime("%Y-%m-%d"), current.strftime("%Y-%m")

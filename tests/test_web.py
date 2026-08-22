@@ -206,3 +206,48 @@ async def test_project_isolation_on_messages(database: Database, tmp_path: Path)
         assert response.status == 404
     finally:
         await client.close()
+
+
+@pytest.mark.asyncio
+async def test_web_blocks_when_the_daily_allowance_is_used(
+    database: Database, tmp_path: Path
+) -> None:
+    import time
+
+    from aiogram.types import SuccessfulPayment
+
+    from skye.quota import PLUS_DAILY
+
+    billing = BillingService(database, "123:token")
+    now = int(time.time())
+    plan = PLANS["plus"]
+    await billing.apply_payment(
+        99,
+        SuccessfulPayment(
+            currency="XTR",
+            total_amount=plan.stars,
+            invoice_payload=billing.payload(plan, 99),
+            telegram_payment_charge_id="web-quota",
+            provider_payment_charge_id="",
+            subscription_expiration_date=now + SUBSCRIPTION_PERIOD,
+            is_recurring=True,
+            is_first_recurring=True,
+        ),
+    )
+    await database.add_usage(99, PLUS_DAILY)
+    client, projects, runtime = await app_client(database, tmp_path)
+    try:
+        await signed_in(client, projects, user_id=99)
+        await projects.ensure_skye(99)
+        listed = await client.get("/api/projects")
+        skye_id = (await listed.json())["projects"][0]["id"]
+        response = await client.post(
+            f"/api/projects/{skye_id}/messages", json={"text": "hello"}
+        )
+        assert response.status == 429
+        body = await response.text()
+        assert "daily message allowance" in body
+        assert "token" not in body.lower()
+        assert runtime.calls == []
+    finally:
+        await client.close()

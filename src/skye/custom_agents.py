@@ -171,11 +171,6 @@ class CustomAgentService:
         return value
 
     @staticmethod
-    def next_model(current: ModelId | None) -> ModelId | None:
-        choices: tuple[ModelId | None, ...] = (None, *MODELS)
-        return choices[(choices.index(current) + 1) % len(choices)]
-
-    @staticmethod
     def _definition(
         name: str,
         description: str,
@@ -214,6 +209,5 @@ class CustomAgentService:
 
 
 def version_summary(version: AgentVersion) -> str:
-    model = MODELS[version.model] if version.model else "Chat default"
     capabilities = ", ".join(version.capabilities) or "None"
-    return f"Model: {model}\nCapabilities: {capabilities}"
+    return f"Capabilities: {capabilities}"

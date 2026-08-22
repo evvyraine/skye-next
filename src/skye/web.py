@@ -29,6 +29,7 @@ from .projects import (
     message_payload,
     project_payload,
 )
+from .quota import AllowanceError, QuotaService
 from .runtime import AgentRuntime, RunEvent, web_run_key
 
 log = structlog.get_logger()
@@ -55,6 +56,7 @@ class WebApp:
         self.auth = auth
         self.client = client
         self.billing = BillingService(database, config.telegram_bot_token)
+        self.quota = QuotaService(database, self.billing, access)
         self.app = web.Application(
             client_max_size=config.skye_max_attachment_bytes + 1_000_000,
             middlewares=[self._headers],
@@ -274,6 +276,10 @@ class WebApp:
         if not text and not uploads:
             raise web.HTTPBadRequest(text="Write a message or attach a file.")
         context = self._context(session)
+        try:
+            await self.quota.check(context)
+        except AllowanceError as error:
+            raise web.HTTPTooManyRequests(text=error.message) from error
         settings = await self.database.get_settings(context.scope)
         settings = await self.billing.clamp_settings(context, settings, self.access)
         content: list[dict[str, Any]] = []
@@ -390,6 +396,7 @@ class WebApp:
                 on_event=on_event,
                 input_file_ids=tuple(openai_file_ids),
             )
+            await self.quota.record(context, output.usage_tokens)
         except asyncio.CancelledError:
             if assistant_text.strip():
                 await self.projects.add_message(

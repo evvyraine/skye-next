@@ -35,7 +35,7 @@ from aiogram.types import (
 from .access import AccessService
 from .attachments import AttachmentService
 from .billing import AccountPanel, BillingError, BillingService
-from .config import MODELS, ModelId, Reasoning, Settings
+from .config import Reasoning, Settings
 from .connectors import ConnectorError, ConnectorPanel, ConnectorService, ConnectorWizard
 from .conversations import ConversationService
 from .custom_agents import AGENT_CAPABILITIES, CustomAgentService
@@ -55,6 +55,7 @@ from .models import (
     Scope,
     ScopeKind,
 )
+from .quota import AllowanceError, QuotaService
 from .rich import RichMessages
 from .runtime import AgentRuntime, ContextLimitError, RunOutput, StreamStartedError
 from .skills import SkillError, SkillPanel, SkillService, SkillWizard
@@ -156,6 +157,7 @@ class TelegramApp:
         self.skill_service = skills
         self.telegram_projects = telegram_projects
         self.billing = billing
+        self.quota = QuotaService(database, billing, access)
         self.rich = RichMessages(bot)
         self.connectors = ConnectorPanel(connectors, self.rich, bot)
         self.skill_panel = SkillPanel(skills, self.rich, bot)
@@ -274,7 +276,7 @@ class TelegramApp:
             "I can chat, search the web, work with images, "
             "run code in an isolated container, and use apps and skills you add.\n\n"
             "/account — Skye plans, Telegram Stars, and cancellation\n\n"
-            "/settings — model, reasoning, agent, memory, connectors, and skills\n\n"
+            "/settings — reasoning, agent, memory, connectors, and skills\n\n"
             "/projects — switch and manage project chats\n\n"
             "/agents — create, install, select, and share agents\n\n"
             "/catchup — summarize this conversation\n\n"
@@ -358,14 +360,7 @@ class TelegramApp:
         current = await self.database.get_settings(context.scope)
         agent_name = await self.custom_agents.active_name(context.scope, current.active_agent_id)
 
-        if action == ["settings", "models"]:
-            models = await self.billing.allowed_models(context, self.access)
-            await self.rich.edit(
-                callback.message,
-                self.rich.choose_model(current.model),
-                reply_markup=self._model_keyboard(current, models),
-            )
-        elif action == ["settings", "reasoning"]:
+        if action == ["settings", "reasoning"]:
             await self.rich.edit(
                 callback.message,
                 self.rich.choose_reasoning(current.reasoning),
@@ -434,16 +429,6 @@ class TelegramApp:
             )
         elif action == ["settings", "back"]:
             await self._edit_settings(callback.message, context, current, agent_name, editable)
-        elif len(action) == 3 and action[:2] == ["settings", "model"]:
-            if not editable or action[2] not in MODELS:
-                await callback.answer("Only chat administrators can change this.", show_alert=True)
-                return
-            models = await self.billing.allowed_models(context, self.access)
-            if action[2] not in models:
-                await callback.answer("That model is not on this plan.", show_alert=True)
-                return
-            current = await self.database.set_model(context.scope, action[2])
-            await self._edit_settings(callback.message, context, current, agent_name, True)
         elif len(action) == 3 and action[:2] == ["settings", "reason"]:
             if not editable or action[2] not in REASONING:
                 await callback.answer("Only chat administrators can change this.", show_alert=True)
@@ -651,17 +636,6 @@ class TelegramApp:
                     raise PermissionError("Only chat administrators can remove agents here.")
                 await self.custom_agents.remove(context.scope, action[2])
                 await self._edit_agents(callback.message, context, editable)
-            elif len(action) == 3 and action[:2] == ["agents", "model"]:
-                installed = await self.custom_agents.require_installed(context.scope, action[2])
-                if installed.profile.owner_id != context.user_id:
-                    raise PermissionError("Only the agent owner can edit it.")
-                installed = await self.custom_agents.reconfigure(
-                    agent_id=installed.profile.id,
-                    owner_id=context.user_id,
-                    scope=context.scope,
-                    model=self.custom_agents.next_model(installed.version.model),
-                )
-                await self._show_agent(callback.message, context, installed, editable)
             elif len(action) == 4 and action[:2] == ["agents", "cap"]:
                 installed = await self.custom_agents.require_installed(context.scope, action[2])
                 capability = cast(AgentCapability, action[3])
@@ -1188,6 +1162,11 @@ class TelegramApp:
     ) -> None:
         current = await self.database.get_settings(context.scope)
         current = await self.billing.clamp_settings(context, current, self.access)
+        try:
+            await self.quota.check(context)
+        except AllowanceError as error:
+            await self.rich.send(message, error.message)
+            return
         placeholder: Message | None = None
         use_draft = context.chat_type == "private" if draft is None else draft
         if use_draft:
@@ -1220,9 +1199,12 @@ class TelegramApp:
                 conversation_id=conversation_id,
                 extra_instructions=extra_instructions,
             )
+            await self.quota.record(context, output.usage_tokens)
             if context.chat_type != "private":
                 await self.groups.mark_seen(message)
             await self._deliver(message, placeholder, output)
+        except AllowanceError as error:
+            await self._finish(message, placeholder, error.message)
         except TimeoutError:
             await self._finish(message, placeholder, "This took too long, so I stopped it.")
         except asyncio.CancelledError:
@@ -1553,17 +1535,14 @@ class TelegramApp:
         rows.extend(
             [
                 [
-                    InlineKeyboardButton(text="Model", callback_data="settings:models"),
                     InlineKeyboardButton(text="Reasoning", callback_data="settings:reasoning"),
-                ],
-                [
                     InlineKeyboardButton(text="Agent", callback_data="settings:agents"),
-                    InlineKeyboardButton(text="Connectors", callback_data="settings:connectors"),
                 ],
                 [
+                    InlineKeyboardButton(text="Connectors", callback_data="settings:connectors"),
                     InlineKeyboardButton(text="Skills", callback_data="settings:skills"),
-                    InlineKeyboardButton(text="Memory", callback_data="settings:memory"),
                 ],
+                [InlineKeyboardButton(text="Memory", callback_data="settings:memory")],
             ]
         )
         return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -1636,7 +1615,6 @@ class TelegramApp:
                 ]
             )
         if owner:
-            model = MODELS[installed.version.model] if installed.version.model else "Chat default"
             rows.extend(
                 [
                     [
@@ -1644,11 +1622,6 @@ class TelegramApp:
                         InlineKeyboardButton(
                             text="Share", callback_data=f"agents:share:{agent_id}"
                         ),
-                    ],
-                    [
-                        InlineKeyboardButton(
-                            text=f"Model: {model}", callback_data=f"agents:model:{agent_id}"
-                        )
                     ],
                     [
                         InlineKeyboardButton(
@@ -1715,23 +1688,6 @@ class TelegramApp:
                 ]
             ]
         )
-
-    @staticmethod
-    def _model_keyboard(
-        settings: ChatSettings, models: tuple[ModelId, ...] | None = None
-    ) -> InlineKeyboardMarkup:
-        catalog = MODELS if models is None else {item: MODELS[item] for item in models}
-        rows = [
-            [
-                InlineKeyboardButton(
-                    text=("✓ " if model == settings.model else "") + label,
-                    callback_data=f"settings:model:{model}",
-                )
-            ]
-            for model, label in catalog.items()
-        ]
-        rows.append([InlineKeyboardButton(text="‹ Back", callback_data="settings:back")])
-        return InlineKeyboardMarkup(inline_keyboard=rows)
 
     @staticmethod
     def _reasoning_keyboard(settings: ChatSettings) -> InlineKeyboardMarkup:

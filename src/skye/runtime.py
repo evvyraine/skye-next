@@ -38,7 +38,7 @@ from tenacity import (
 )
 
 from .artifacts import GeneratedFile, collect_container_files, without_sandbox_links
-from .config import Settings
+from .config import HOSTED_MODEL, Settings
 from .connectors import ConnectorService, ConnectorTools
 from .conversations import ConversationService
 from .custom_agents import AGENT_CAPABILITIES, AgentComposition, CustomAgentService
@@ -75,6 +75,7 @@ class RunOutput:
     text: str
     images: tuple[bytes, ...]
     files: tuple[GeneratedFile, ...] = ()
+    usage_tokens: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -676,7 +677,10 @@ class AgentRuntime:
         if on_event is not None:
             for image in images:
                 await on_event(RunEvent(kind="image", image=image))
-        return RunOutput(without_sandbox_links(final.strip()), images, files)
+        usage = _usage_tokens(result)
+        if usage is None:
+            usage = estimate_usage_tokens(user_input, final)
+        return RunOutput(without_sandbox_links(final.strip()), images, files, usage)
 
     async def _delay(self, active: _ActiveRun, seconds: float) -> None:
         if active.cancel.is_set():
@@ -732,7 +736,7 @@ class AgentRuntime:
         return Agent(
             name=active.version.name if active else "Skye",
             instructions=instructions,
-            model=active.version.model or settings.model if active else settings.model,
+            model=HOSTED_MODEL,
             model_settings=self._model_settings(context, settings),
             tools=tools,
         )
@@ -849,7 +853,7 @@ class AgentRuntime:
         return Agent(
             name=installed.version.name,
             instructions=instructions,
-            model=installed.version.model or settings.model,
+            model=HOSTED_MODEL,
             model_settings=self._model_settings(context, settings),
             tools=tools,
         )
@@ -899,6 +903,55 @@ class AgentRuntime:
                 if encoded:
                     images.append(base64.b64decode(encoded, validate=True))
         return tuple(images)
+
+
+def estimate_usage_tokens(
+    user_input: str | list[TResponseInputItem], output_text: str
+) -> int:
+    text = AgentRuntime._query(user_input) + output_text
+    return max(1, (len(text) + 1) // 2)
+
+
+def _usage_tokens(result: RunResultStreaming) -> int | None:
+    total = 0
+    found = False
+    wrapper = getattr(result, "context_wrapper", None)
+    usage = getattr(wrapper, "usage", None) if wrapper is not None else None
+    counted = _usage_value(usage)
+    if counted is not None:
+        return counted
+    for response in getattr(result, "raw_responses", ()) or ():
+        counted = _usage_value(getattr(response, "usage", None))
+        if counted is None:
+            continue
+        found = True
+        total += counted
+    return total if found else None
+
+
+def _usage_value(usage: object) -> int | None:
+    if usage is None:
+        return None
+    inp = getattr(usage, "input_tokens", None)
+    out = getattr(usage, "output_tokens", None)
+    if inp is None:
+        inp = getattr(usage, "prompt_tokens", None)
+    if out is None:
+        out = getattr(usage, "completion_tokens", None)
+    total = getattr(usage, "total_tokens", None)
+    if isinstance(inp, int) or isinstance(out, int):
+        return int(inp or 0) + int(out or 0)
+    if isinstance(total, int):
+        return total
+    if isinstance(usage, dict):
+        inp = usage.get("input_tokens", usage.get("prompt_tokens"))
+        out = usage.get("output_tokens", usage.get("completion_tokens"))
+        total = usage.get("total_tokens")
+        if isinstance(inp, int) or isinstance(out, int):
+            return int(inp or 0) + int(out or 0)
+        if isinstance(total, int):
+            return total
+    return None
 
 
 def telegram_run_key(chat_id: int, thread_id: int) -> str:
