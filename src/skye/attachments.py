@@ -55,7 +55,7 @@ class AttachmentService:
             elif item.media_kind == "document":
                 await self._collect(file_ids, self._document(item, label, content, seen))
             elif item.media_kind == "video":
-                await self._collect(file_ids, self._file(item, label, content, seen))
+                self._video(item, label, content, seen)
         for label, source in (("Attached", message), ("Replied-to", message.reply_to_message)):
             if source is None:
                 continue
@@ -78,7 +78,8 @@ class AttachmentService:
             if source.video_note:
                 await self._collect(file_ids, self._audio(source.video_note, label, content, seen))
             if source.video:
-                await self._collect(file_ids, self._file(source.video, label, content, seen))
+                caption = source.caption if source is not message else None
+                self._video(source.video, label, content, seen, caption=caption)
             if source.document:
                 await self._collect(file_ids, self._document(source.document, label, content, seen))
         return tuple(file_ids)
@@ -196,39 +197,22 @@ class AttachmentService:
         )
         return file_id
 
-    async def _file(
+    def _video(
         self,
         media: Video | MediaGroupItem,
         label: str,
         content: list[dict[str, Any]],
         seen: set[str],
-    ) -> str | None:
+        *,
+        caption: str | None = None,
+    ) -> None:
         if not self._new(media.file_unique_id, seen):
-            return None
+            return
         filename = getattr(media, "file_name", None) or "video.mp4"
-        mime = getattr(media, "mime_type", None) or "video/mp4"
-        data = await self._download(media, getattr(media, "file_size", None), "video")
-        upload_filename = (
-            f"album-{media.message_id}-{filename}"
-            if isinstance(media, MediaGroupItem)
-            else filename
-        )
-        file_id = await upload_openai_file(self.client, upload_filename, mime, data)
-        if file_id:
-            file_part = {"type": "input_file", "file_id": file_id}
-        else:
-            file_part = {
-                "type": "input_file",
-                "filename": filename,
-                "file_data": data_url(mime, data),
-            }
-        content.extend(
-            [
-                {"type": "input_text", "text": f"{label} ({filename}):"},
-                file_part,
-            ]
-        )
-        return file_id
+        text = f"{label} video ({filename}): the model cannot view this video."
+        if caption:
+            text += f"\nCaption:\n{caption}"
+        content.append({"type": "input_text", "text": text})
 
     @staticmethod
     async def _collect(file_ids: list[str], pending: Awaitable[str | None]) -> None:
