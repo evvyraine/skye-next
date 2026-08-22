@@ -1,3 +1,4 @@
+from dataclasses import replace
 from datetime import UTC, datetime
 from io import BytesIO
 from pathlib import Path
@@ -165,3 +166,53 @@ async def test_album_file_ids_are_available_to_the_hosted_sandbox() -> None:
         "openai-2",
     ]
     assert uploads.names == ["album-1-file-1.pdf", "album-2-file-2.pdf"]
+
+
+async def test_album_videos_become_text_placeholders() -> None:
+    bot = DownloadBot({})
+    service = AttachmentService(
+        settings(),
+        cast(Any, bot),
+        cast(AsyncOpenAI, SimpleNamespace(files=FileUploads())),
+    )
+    content: list[dict[str, Any]] = []
+    album = [
+        replace(
+            item(1, "video"),
+            file_name="clip-1.mp4",
+            mime_type="video/mp4",
+            caption="First clip",
+        ),
+        replace(
+            item(2, "video"),
+            file_name="clip-2.mp4",
+            mime_type="video/mp4",
+            caption="Second clip",
+        ),
+    ]
+
+    file_ids = await service.add(text_message(), content, album=album)
+
+    assert file_ids == ()
+    assert content == [
+        {
+            "type": "input_text",
+            "text": "Attached album item 1 of 2 caption:\nFirst clip",
+        },
+        {
+            "type": "input_text",
+            "text": (
+                "Attached album item 1 of 2 video (clip-1.mp4): the model cannot view this video."
+            ),
+        },
+        {
+            "type": "input_text",
+            "text": "Attached album item 2 of 2 caption:\nSecond clip",
+        },
+        {
+            "type": "input_text",
+            "text": (
+                "Attached album item 2 of 2 video (clip-2.mp4): the model cannot view this video."
+            ),
+        },
+    ]

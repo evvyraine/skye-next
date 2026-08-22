@@ -15,6 +15,7 @@ from aiogram.types import (
     PhotoSize,
     Update,
     User,
+    Video,
     VideoNote,
 )
 
@@ -169,6 +170,86 @@ async def test_private_video_note_is_processed_as_attachment() -> None:
         {
             "role": "user",
             "content": [{"type": "input_text", "text": "[video note]"}],
+        }
+    ]
+
+
+async def test_private_video_keeps_caption_and_is_attached() -> None:
+    app = telegram_app()
+    app.groups = SimpleNamespace(text=lambda item: item.caption or item.text or "")
+    app.attachments = SimpleNamespace(add=AsyncMock(return_value=()))
+    incoming = Message(
+        message_id=2,
+        date=0,
+        chat=Chat(id=42, type="private", first_name="Alice"),
+        from_user=User(id=42, is_bot=False, first_name="Alice"),
+        caption="Channel recap",
+        video=Video(
+            file_id="video",
+            file_unique_id="unique-video",
+            width=1280,
+            height=720,
+            duration=8,
+            file_name="clip.mp4",
+            mime_type="video/mp4",
+            file_size=20,
+        ),
+    )
+    context = app._context(incoming)
+    assert context is not None
+    file_ids: list[str] = []
+
+    result = await app._input(incoming, context, file_ids=file_ids)
+
+    app.attachments.add.assert_awaited_once()
+    assert file_ids == []
+    assert result == [
+        {
+            "role": "user",
+            "content": [{"type": "input_text", "text": "Channel recap"}],
+        }
+    ]
+
+
+async def test_private_reply_to_video_is_attached() -> None:
+    app = telegram_app()
+    app.groups = SimpleNamespace(text=lambda item: item.caption or item.text or "")
+    app.attachments = SimpleNamespace(add=AsyncMock(return_value=()))
+    posted = Message(
+        message_id=1,
+        date=0,
+        chat=Chat(id=42, type="private", first_name="Alice"),
+        from_user=User(id=99, is_bot=True, first_name="Channel"),
+        caption="Channel recap",
+        video=Video(
+            file_id="video",
+            file_unique_id="unique-video",
+            width=1280,
+            height=720,
+            duration=8,
+            file_name="clip.mp4",
+            mime_type="video/mp4",
+            file_size=20,
+        ),
+    )
+    incoming = Message(
+        message_id=2,
+        date=0,
+        chat=Chat(id=42, type="private", first_name="Alice"),
+        from_user=User(id=42, is_bot=False, first_name="Alice"),
+        text="Summarize this",
+        reply_to_message=posted,
+    )
+    context = app._context(incoming)
+    assert context is not None
+
+    result = await app._input(incoming, context)
+
+    app.attachments.add.assert_awaited_once()
+    assert result == [
+        {
+            "role": "user",
+            "content": [{"type": "input_text", "text": "Summarize this"}],
         }
     ]
 

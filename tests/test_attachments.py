@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
-from aiogram.types import Chat, Document, Message, VideoNote, Voice
+from aiogram.types import Chat, Document, Message, Video, VideoNote, Voice
 from openai import AsyncOpenAI
 
 from skye.attachments import AttachmentService
@@ -16,9 +16,26 @@ from skye.config import Settings
 class FakeBot:
     def __init__(self, files: dict[str, bytes]) -> None:
         self.files = files
+        self.downloads: list[str] = []
 
     async def download(self, media: Any, destination: BytesIO) -> None:
+        self.downloads.append(media.file_id)
         destination.write(self.files[media.file_id])
+
+
+def video(**overrides: Any) -> Video:
+    payload: dict[str, Any] = {
+        "file_id": "video",
+        "file_unique_id": "unique-video",
+        "width": 1280,
+        "height": 720,
+        "duration": 8,
+        "file_name": "clip.mp4",
+        "mime_type": "video/mp4",
+        "file_size": 20,
+    }
+    payload.update(overrides)
+    return Video(**payload)
 
 
 class Transcriptions:
@@ -136,6 +153,53 @@ async def test_transcribes_video_note(reply: bool) -> None:
             "model": "gpt-transcribe",
             "file": ("video-note.mp4", b"video-audio"),
             "response_format": "json",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reply", [False, True])
+async def test_video_becomes_text_placeholder(reply: bool) -> None:
+    bot = FakeBot({})
+    client = SimpleNamespace(files=FileUploads())
+    service = AttachmentService(settings(), cast(Any, bot), cast(AsyncOpenAI, client))
+    content: list[dict[str, Any]] = []
+    clip = video()
+    target = (
+        message(reply_to_message=message(video=clip, caption="Channel recap"))
+        if reply
+        else message(video=clip, caption="Channel recap")
+    )
+
+    file_ids = await service.add(target, content)
+
+    assert file_ids == ()
+    assert bot.downloads == []
+    label = "Replied-to" if reply else "Attached"
+    expected = f"{label} video (clip.mp4): the model cannot view this video."
+    if reply:
+        expected += "\nCaption:\nChannel recap"
+    assert content == [{"type": "input_text", "text": expected}]
+
+
+@pytest.mark.asyncio
+async def test_video_placeholder_skips_download_even_when_over_size_limit() -> None:
+    bot = FakeBot({})
+    service = AttachmentService(
+        settings(10),
+        cast(Any, bot),
+        cast(AsyncOpenAI, SimpleNamespace(files=FileUploads())),
+    )
+    content: list[dict[str, Any]] = []
+
+    file_ids = await service.add(message(video=video(file_size=11)), content)
+
+    assert file_ids == ()
+    assert bot.downloads == []
+    assert content == [
+        {
+            "type": "input_text",
+            "text": "Attached video (clip.mp4): the model cannot view this video.",
         }
     ]
 
