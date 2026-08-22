@@ -6,7 +6,7 @@ import re
 import time
 from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
@@ -2337,9 +2337,6 @@ class Database:
 
 
 def _usage_keys(now: datetime | None = None) -> tuple[str, str]:
-    current = now or datetime.now(timezone.utc)
-    if current.tzinfo is None:
-        current = current.replace(tzinfo=timezone.utc)
-    else:
-        current = current.astimezone(timezone.utc)
+    current = now or datetime.now(UTC)
+    current = current.replace(tzinfo=UTC) if current.tzinfo is None else current.astimezone(UTC)
     return current.strftime("%Y-%m-%d"), current.strftime("%Y-%m")

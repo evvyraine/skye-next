@@ -1,5 +1,5 @@
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import AsyncMock
 
@@ -23,11 +23,11 @@ from skye.billing import (
 from skye.db import Database
 from skye.models import RequestContext, Scope, StarEntitlement
 from skye.quota import (
-    AllowanceError,
     DAILY_LIMIT_COPY,
     FREE_DAILY,
     MONTHLY_LIMIT_COPY,
     PLUS_DAILY,
+    AllowanceError,
     QuotaService,
 )
 from skye.rich import RichMessages
@@ -323,7 +323,7 @@ async def test_quota_blocks_before_recording(database: Database) -> None:
     access = AccessService(database, frozenset({1}))
     quota = QuotaService(database, billing, access)
     context = RequestContext(42, "private", user_id=42)
-    now = datetime(2026, 8, 22, tzinfo=timezone.utc)
+    now = datetime(2026, 8, 22, tzinfo=UTC)
 
     await quota.check(context, now=now)
     await quota.record(context, FREE_DAILY, now=now)
@@ -344,7 +344,7 @@ async def test_plus_quota_uses_the_higher_allowance(database: Database) -> None:
         payment(billing, "plus", 42, recurring=True, first=True, expires=now_ts + 1_000),
     )
     context = RequestContext(42, "private", user_id=42)
-    now = datetime(2026, 8, 22, tzinfo=timezone.utc)
+    now = datetime(2026, 8, 22, tzinfo=UTC)
     await quota.record(context, FREE_DAILY, now=now)
     await quota.check(context, now=now)
     await quota.record(context, PLUS_DAILY - FREE_DAILY, now=now)
@@ -359,7 +359,7 @@ async def test_monthly_copy_is_used_when_the_month_is_the_one_that_hit(
     access = AccessService(database, frozenset({1}))
     quota = QuotaService(database, billing, access)
     context = RequestContext(7, "private", user_id=7)
-    now = datetime(2026, 8, 22, tzinfo=timezone.utc)
+    now = datetime(2026, 8, 22, tzinfo=UTC)
     await quota.record(context, 400_000, now=now)
     with pytest.raises(AllowanceError, match="monthly message allowance") as error:
         await quota.check(context, now=now)
@@ -370,7 +370,7 @@ async def test_owner_and_allowlist_bypass_quota(database: Database) -> None:
     billing = BillingService(database, "secret")
     access = AccessService(database, frozenset({1}))
     quota = QuotaService(database, billing, access)
-    now = datetime(2026, 8, 22, tzinfo=timezone.utc)
+    now = datetime(2026, 8, 22, tzinfo=UTC)
     owner = RequestContext(1, "private", user_id=1)
     allowed = RequestContext(42, "private", user_id=42)
     await database.set_access(Scope("user", 42), "allow", created_by=1)
@@ -381,8 +381,8 @@ async def test_owner_and_allowlist_bypass_quota(database: Database) -> None:
 
 
 async def test_usage_resets_on_a_new_utc_day(database: Database) -> None:
-    first = datetime(2026, 8, 22, 23, 0, tzinfo=timezone.utc)
-    later = datetime(2026, 8, 23, 0, 1, tzinfo=timezone.utc)
+    first = datetime(2026, 8, 22, 23, 0, tzinfo=UTC)
+    later = datetime(2026, 8, 23, 0, 1, tzinfo=UTC)
     await database.add_usage(42, FREE_DAILY, now=first)
     daily, monthly = await database.usage_totals(42, now=later)
     assert daily == 0

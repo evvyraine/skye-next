@@ -4,7 +4,6 @@ import hashlib
 import hmac
 import time
 from dataclasses import dataclass, replace
-from typing import cast
 
 import structlog
 from aiogram import Bot
@@ -29,7 +28,6 @@ log = structlog.get_logger()
 
 STARS_CURRENCY = "XTR"
 SUBSCRIPTION_PERIOD = 2_592_000
-STORED_PLAN_IDS: frozenset[PlanId] = frozenset({"trial", "plus", "super", "ultra"})
 
 
 class BillingError(ValueError):
@@ -104,19 +102,32 @@ def decode_payload(payload: str, secret: str) -> tuple[StarPlan, int]:
 
 
 def stored_plan(plan_id: str) -> StarPlan:
-    if plan_id in PLANS:
-        return PLANS[plan_id]
-    if plan_id in STORED_PLAN_IDS:
-        return StarPlan(
-            id=cast(PlanId, plan_id),
-            name="Skye",
-            emoji="🌙",
-            stars=0,
-            recurring=plan_id != "trial",
-            invoice_title="Skye",
-            invoice_description="Skye access.",
-        )
-    raise BillingError("Unknown Skye plan.")
+    parsed = _as_plan_id(plan_id)
+    if parsed is None:
+        raise BillingError("Unknown Skye plan.")
+    if parsed in PLANS:
+        return PLANS[parsed]
+    return StarPlan(
+        id=parsed,
+        name="Skye",
+        emoji="🌙",
+        stars=0,
+        recurring=parsed != "trial",
+        invoice_title="Skye",
+        invoice_description="Skye access.",
+    )
+
+
+def _as_plan_id(plan_id: str) -> PlanId | None:
+    if plan_id == "trial":
+        return "trial"
+    if plan_id == "plus":
+        return "plus"
+    if plan_id == "super":
+        return "super"
+    if plan_id == "ultra":
+        return "ultra"
+    return None
 
 
 def remaining_copy(entitlement: StarEntitlement, now: int) -> str:
