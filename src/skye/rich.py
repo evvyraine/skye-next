@@ -226,7 +226,8 @@ class RichMessages:
                 InputRichBlockParagraph(
                     text=(
                         "Paid access uses Telegram Stars. Skye Plus is the paid plan. "
-                        "The free plan has a basic daily message allowance."
+                        "The free plan has a basic daily message allowance. "
+                        "Creating and editing agents is on Plus."
                     )
                 ),
                 RichMessages._plan_details(open_by_default=True),
@@ -240,9 +241,10 @@ class RichMessages:
             blocks=[
                 InputRichBlockParagraph(
                     text=(
-                        "Free includes a basic daily message allowance and core features. "
+                        "Free includes a basic daily message allowance. "
+                        "Creating agents is not included. "
                         "Skye Plus, 449 Stars each month, includes an expanded daily "
-                        "message allowance and full features. Paid in Telegram Stars."
+                        "message allowance and your own agents. Paid in Telegram Stars."
                     )
                 ),
             ],
@@ -331,6 +333,13 @@ class RichMessages:
                 InputRichBlockSectionHeading(text="Instructions", size=3),
                 InputRichBlockParagraph(text=instructions[:4000]),
             ]
+        )
+
+    @staticmethod
+    def plus_agents() -> InputRichMessage:
+        return RichMessages.prompt(
+            "Agents",
+            "Creating and editing agents is on Skye Plus. Open /account to upgrade.",
         )
 
     @staticmethod

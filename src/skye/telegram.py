@@ -260,11 +260,7 @@ class TelegramApp:
                 reply_markup=await self._private_reply_keyboard(context),
             )
         elif context.chat_type == "private":
-            await self.rich.send(
-                message,
-                "Hi. I'm Skye. Open /account to subscribe with Telegram Stars, "
-                "or ask the owner for access.",
-            )
+            await self.rich.send(message, "This account is banned.")
         else:
             await self.rich.send(
                 message, "This chat is not allowlisted yet. Ask the bot owner for access."
@@ -582,12 +578,18 @@ class TelegramApp:
             elif action == ["agents", "add"]:
                 if not editable:
                     raise PermissionError("Only chat administrators can add agents here.")
+                if not await self._require_plus(callback.message, context):
+                    await callback.answer()
+                    return
                 await state.set_state(AgentWizard.name)
                 await state.set_data(
                     {"scope_kind": context.scope.kind, "scope_id": context.scope.id}
                 )
                 await self.rich.send(callback.message, self.rich.agent_name_prompt())
             elif action == ["agents", "save"]:
+                if not await self._require_plus(callback.message, context):
+                    await callback.answer()
+                    return
                 await self._save_agent(callback.message, context, state, editable)
             elif action == ["agents", "cancel"]:
                 await state.clear()
@@ -605,6 +607,9 @@ class TelegramApp:
                 installed = await self.custom_agents.require_installed(context.scope, action[2])
                 if installed.profile.owner_id != context.user_id:
                     raise PermissionError("Only the agent owner can edit it.")
+                if not await self._require_plus(callback.message, context):
+                    await callback.answer()
+                    return
                 await state.set_state(AgentWizard.name)
                 await state.set_data(
                     {
@@ -623,6 +628,9 @@ class TelegramApp:
                     self.rich.agent_name_prompt(installed.version.name),
                 )
             elif len(action) == 3 and action[:2] == ["agents", "share"]:
+                if not await self._require_plus(callback.message, context):
+                    await callback.answer()
+                    return
                 token = await self.custom_agents.share(context.scope, action[2], context.user_id)
                 username = (await self.bot.me()).username
                 if not username:
@@ -643,6 +651,9 @@ class TelegramApp:
                     raise ValueError("Unknown capability.")
                 if installed.profile.owner_id != context.user_id:
                     raise PermissionError("Only the agent owner can edit it.")
+                if not await self._require_plus(callback.message, context):
+                    await callback.answer()
+                    return
                 selected = set(installed.version.capabilities)
                 selected.symmetric_difference_update({capability})
                 capabilities = tuple(item for item in AGENT_CAPABILITIES if item in selected)
@@ -662,6 +673,9 @@ class TelegramApp:
     async def agent_wizard(self, message: Message, state: FSMContext) -> None:
         context = self._context(message)
         if context is None or not await self._require_access(message, context):
+            await state.clear()
+            return
+        if not await self._require_plus(message, context):
             await state.clear()
             return
         data = await state.get_data()
@@ -1326,11 +1340,15 @@ class TelegramApp:
         if await self.access.allowed(context):
             return True
         if context.chat_type == "private":
-            await self.rich.send(
-                message, "This chat needs a Skye plan. Open /account to subscribe."
-            )
+            await self.rich.send(message, "This account is banned.")
             return False
         await self.rich.send(message, "This chat is not allowlisted.")
+        return False
+
+    async def _require_plus(self, message: Message, context: RequestContext) -> bool:
+        if await self.access.plus(context):
+            return True
+        await self.rich.send(message, self.rich.plus_agents())
         return False
 
     async def _can_edit(self, context: RequestContext) -> bool:

@@ -96,7 +96,19 @@ async def signed_in(client: TestClient, projects: ProjectService, user_id: int =
 
 
 @pytest.mark.asyncio
-async def test_web_allowlist_denies_unknown_users(database: Database, tmp_path: Path) -> None:
+async def test_web_allows_free_users(database: Database, tmp_path: Path) -> None:
+    client, projects, _runtime = await app_client(database, tmp_path)
+    try:
+        await signed_in(client, projects, user_id=99)
+        response = await client.get("/api/projects")
+        assert response.status == 200
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_web_ban_denies_users(database: Database, tmp_path: Path) -> None:
+    await database.set_access(Scope("user", 99), "ban", created_by=1)
     client, projects, _runtime = await app_client(database, tmp_path)
     try:
         await signed_in(client, projects, user_id=99)

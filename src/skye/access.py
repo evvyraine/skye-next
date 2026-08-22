@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from .db import Database
 from .models import RequestContext, Scope
 
@@ -15,8 +17,16 @@ class AccessService:
             return True
         if await self.database.access_effect(Scope("user", context.user_id)) == "ban":
             return False
+        if context.chat_type == "private":
+            return True
+        return await self.database.access_effect(context.scope) == "allow"
+
+    async def plus(self, context: RequestContext) -> bool:
+        if not await self.allowed(context):
+            return False
+        if self.is_owner(context.user_id):
+            return True
         if await self.database.access_effect(context.scope) == "allow":
             return True
-        if context.chat_type == "private":
-            return await self.database.active_entitlement(context.user_id) is not None
-        return False
+        entitlement = await self.database.active_entitlement(context.user_id)
+        return entitlement is not None and entitlement.plan == "plus"

@@ -112,6 +112,65 @@ def test_private_commands_include_account() -> None:
     assert not any(item.command == "paysupport" for item in PRIVATE_COMMANDS)
 
 
+def _private_message() -> Message:
+    return Message(
+        message_id=1,
+        date=0,
+        chat=Chat(id=42, type="private", first_name="Alice"),
+        from_user=User(id=42, is_bot=False, first_name="Alice"),
+        text="/agents",
+    )
+
+
+async def test_free_user_sees_plus_prompt_when_adding_an_agent() -> None:
+    app = telegram_app()
+    app.access = SimpleNamespace(
+        allowed=AsyncMock(return_value=True),
+        plus=AsyncMock(return_value=False),
+    )
+    app.rich = SimpleNamespace(send=AsyncMock(), plus_agents=RichMessages.plus_agents)
+    app._can_edit = AsyncMock(return_value=True)  # type: ignore[method-assign]
+    callback = SimpleNamespace(
+        message=_private_message(),
+        from_user=User(id=42, is_bot=False, first_name="Alice"),
+        data="agents:add",
+        answer=AsyncMock(),
+    )
+    state = AsyncMock()
+
+    await app.agents_callback(callback, state)  # type: ignore[arg-type]
+
+    state.set_state.assert_not_awaited()
+    callback.answer.assert_awaited()
+    app.rich.send.assert_awaited_once()
+    blob = str(app.rich.send.await_args.args[1])
+    assert "Skye Plus" in blob
+    assert "/account" in blob
+    assert "token" not in blob.lower()
+
+
+async def test_free_user_can_open_agents_list() -> None:
+    app = telegram_app()
+    app.access = SimpleNamespace(
+        allowed=AsyncMock(return_value=True),
+        plus=AsyncMock(return_value=False),
+    )
+    app._can_edit = AsyncMock(return_value=True)  # type: ignore[method-assign]
+    app._edit_agents = AsyncMock()  # type: ignore[method-assign]
+    callback = SimpleNamespace(
+        message=_private_message(),
+        from_user=User(id=42, is_bot=False, first_name="Alice"),
+        data="agents:list",
+        answer=AsyncMock(),
+    )
+
+    await app.agents_callback(callback, AsyncMock())  # type: ignore[arg-type]
+
+    app._edit_agents.assert_awaited_once()
+    app.access.plus.assert_not_awaited()
+    callback.answer.assert_awaited()
+
+
 @pytest.mark.parametrize(
     "text",
     [

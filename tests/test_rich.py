@@ -437,6 +437,21 @@ def test_account_screen_shows_renewal_status() -> None:
     assert "Renews automatically" in str(status.text)
 
 
+def test_plus_agents_prompt_points_to_account() -> None:
+    message = RichMessages.plus_agents()
+    assert message.blocks
+    heading = message.blocks[0]
+    body = message.blocks[1]
+    assert isinstance(heading, InputRichBlockSectionHeading)
+    assert heading.text == "Agents"
+    assert isinstance(body, InputRichBlockParagraph)
+    blob = str(body.text)
+    assert "Skye Plus" in blob
+    assert "/account" in blob
+    assert "token" not in blob.lower()
+    assert "Luna" not in blob
+
+
 def test_plan_checkout_has_a_collapsed_plans_details_block() -> None:
     message = RichMessages.plan_checkout(
         name="Skye Plus",
@@ -453,5 +468,6 @@ def test_plan_checkout_has_a_collapsed_plans_details_block() -> None:
     assert details.is_open is not True
     blob = str(details.blocks[0].text)
     assert "expanded daily message allowance" in blob.lower()
+    assert "your own agents" in blob.lower()
     assert "Luna" not in blob
     assert "token" not in blob.lower()
