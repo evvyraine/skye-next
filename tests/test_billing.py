@@ -108,7 +108,7 @@ def test_remaining_copy_explains_renewal_and_a_hard_end() -> None:
     assert "no further charges" in stop
 
 
-async def test_subscription_grants_private_access_not_group_access(database: Database) -> None:
+async def test_plus_does_not_grant_group_access(database: Database) -> None:
     access = AccessService(database, frozenset({1}))
     billing = BillingService(database, "secret")
     now = int(time.time())
@@ -129,8 +129,11 @@ async def test_subscription_grants_private_access_not_group_access(database: Dat
     other = RequestContext(99, "private", user_id=99)
 
     assert await access.allowed(private)
+    assert await access.plus(private)
     assert not await access.allowed(group)
-    assert not await access.allowed(other)
+    assert not await access.plus(group)
+    assert await access.allowed(other)
+    assert not await access.plus(other)
 
 
 async def test_ban_beats_an_active_subscription(database: Database) -> None:

@@ -66,7 +66,7 @@ PLANS: dict[PlanId, StarPlan] = {
         recurring=True,
         invoice_title="Skye Plus",
         invoice_description=(
-            "Monthly Skye Plus. Expanded daily message allowance. "
+            "Monthly Skye Plus. Expanded daily message allowance and your own agents. "
             "Renews every 30 days in Telegram Stars."
         ),
     ),
@@ -144,7 +144,7 @@ def remaining_copy(entitlement: StarEntitlement, now: int) -> str:
             "at the end of this period."
         )
     return (
-        f"{remaining} This period will end, then access stops. "
+        f"{remaining} This period will end, then Skye Plus stops. "
         "There will be no further charges."
     )
 

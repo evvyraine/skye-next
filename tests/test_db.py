@@ -32,15 +32,17 @@ async def test_settings_are_scoped(database: Database) -> None:
     assert (await database.get_settings(group)).reasoning == "low"
 
 
-async def test_group_access_does_not_grant_private_access(database: Database) -> None:
+async def test_group_allowlist_does_not_grant_other_groups(database: Database) -> None:
     access = AccessService(database, frozenset({1}))
     await database.set_access(Scope("chat", -100), "allow", created_by=1)
 
     group = RequestContext(-100, "supergroup", user_id=42)
+    other_group = RequestContext(-200, "supergroup", user_id=42)
     private = RequestContext(42, "private", user_id=42)
 
     assert await access.allowed(group)
-    assert not await access.allowed(private)
+    assert not await access.allowed(other_group)
+    assert await access.allowed(private)
 
 
 async def test_list_access_returns_typed_entries(database: Database) -> None:
