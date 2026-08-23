@@ -31,7 +31,7 @@ export const strings = {
       "Создавайте и изменяйте изображения — просто скажите, что вы хотите получить. Skye опишет картинку, разберёт и сравнит документы, объяснит данные в таблице и даст краткое содержание текста.",
     f3Title: "Ищите информацию и исследуйте темы",
     f3Body:
-      "Собирайте факты из разных источников, получайте актуальную информацию и экспериментируйте. Skye не только советует, но и действует в подключённых сервисах: Gmail, Github, Notion, Slack.",
+      "Собирайте факты из разных источников, получайте актуальную информацию и экспериментируйте.",
     f4Title: "Создавайте личных агентов",
     f4Body:
       "Организуйте собственную команду агентов, каждый из которых имеет свой характер и специализируется на предметной области. Skye учтёт все инструкции.",
@@ -39,7 +39,7 @@ export const strings = {
     f5Body:
       "Попросите Skye. Она сделает задачу по расписанию или когда что-то произойдёт в другом приложении, и вы увидите это в том же чате.",
     f6Title: "Подключайте свои приложения",
-    f6Body: "Свяжите приложения. Skye будет читать и действовать там вместе с вами.",
+    f6Body: "Подключите Gmail, GitHub, Notion, Slack или любой из тысячи других сервисов. Skye читает и действует там вместе с вами.",
     f7Title: "Сохраняйте свой способ работы",
     f7Body:
       "Опишите порядок действий. Skye будет следовать этим шагам, когда вы попросите.",
@@ -93,7 +93,7 @@ export const strings = {
       "Create and edit images by saying what you want. Skye can describe a picture, read and compare documents, explain a spreadsheet, and summarize a text.",
     f3Title: "Search and follow a thread",
     f3Body:
-      "Gather facts, stay current, and try things. Skye does not only advise — she can act in connected services: Gmail, GitHub, Notion, Slack.",
+      "Gather facts, stay current, and try things.",
     f4Title: "Make your own agents",
     f4Body:
       "Build a small team, each with a character and a specialty. Skye will keep every instruction in view.",
@@ -101,7 +101,7 @@ export const strings = {
     f5Body:
       "Ask Skye. She does the task on a schedule or when something happens in another app, and you see it in the same chat.",
     f6Title: "Connect the apps you already use",
-    f6Body: "Hook them up. Skye reads and acts there with you.",
+    f6Body: "Connect Gmail, GitHub, Notion, Slack, or any of a thousand other apps. Skye reads and acts there with you.",
     f7Title: "Save a way of working",
     f7Body: "Write the steps. Skye follows them whenever you ask.",
     pricingTitle: "Two plans",
