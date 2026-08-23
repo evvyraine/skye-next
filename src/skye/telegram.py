@@ -1263,7 +1263,7 @@ class TelegramApp:
         async def on_text(_text: str) -> None:
             return
 
-        async def on_reply(text: str) -> None:
+        async def on_reply(text: str, reply_to: int | None = None) -> None:
             nonlocal placeholder, last_target
             last_target = await self._post_visible(
                 message,
@@ -1271,6 +1271,7 @@ class TelegramApp:
                 placeholder,
                 text,
                 first=sent_holder["count"] == 0,
+                reply_to=reply_to,
             )
             sent_holder["count"] += 1
             placeholder = None
@@ -1377,7 +1378,7 @@ class TelegramApp:
             identity = context.display_name
             if context.username:
                 identity += f" (@{context.username})"
-            identity += f" [id {context.user_id}]"
+            identity += f" [id {context.user_id}] #{message.message_id}"
             reply = message.reply_to_message
             reply_context = ""
             if reply:
@@ -1429,16 +1430,21 @@ class TelegramApp:
         text: str,
         *,
         first: bool,
+        reply_to: int | None = None,
     ) -> Message | None:
         chunks = self._chunks(text) or [text.strip() or text]
         last: Message | None = placeholder or message
+        quoted = reply_to if reply_to is not None and reply_to > 0 else None
         for index, chunk in enumerate(chunks):
             content = self.rich.output(chunk)
-            if placeholder is not None and index == 0:
+            if placeholder is not None and index == 0 and quoted is None:
                 await self.rich.edit(placeholder, content)
                 last = placeholder
                 placeholder = None
                 continue
+            if placeholder is not None and index == 0:
+                await self.rich.delete(placeholder)
+                placeholder = None
             markup = None
             if (
                 first
@@ -1449,9 +1455,17 @@ class TelegramApp:
             ):
                 markup = await self._private_reply_keyboard(context)
             if message is not None:
-                last = await self.rich.send(message, content, reply_markup=markup)
+                last = await self.rich.send(
+                    message, content, reply_markup=markup, reply_to=quoted
+                )
             else:
-                last = await self.rich.send_chat(context.chat_id, context.thread_id, content)
+                last = await self.rich.send_chat(
+                    context.chat_id,
+                    context.thread_id,
+                    content,
+                    reply_markup=markup,
+                    reply_to=quoted,
+                )
         return last
 
     async def _finish_visible(

@@ -388,7 +388,7 @@ class WebApp:
             last_assistant = message_payload(assistant)
             await self._sse(response, "assistant", last_assistant)
 
-        async def on_reply(text: str) -> None:
+        async def on_reply(text: str, _reply_to: int | None = None) -> None:
             nonlocal sent
             sent += 1
             await persist_assistant(text)

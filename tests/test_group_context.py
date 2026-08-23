@@ -75,6 +75,8 @@ async def test_passive_history_keeps_people_and_replies(group_context: Any) -> N
     history = await service.history(current)
 
     items = json.loads(history.transcript)
+    assert items[0]["message_id"] == 10
+    assert items[1]["message_id"] == 11
     assert items[0]["sender"] == {"id": 1, "name": "Alice", "username": "alice"}
     assert items[1]["sender"] == {"id": 2, "name": "Bob", "username": "bob"}
     assert items[1]["reply"]["message_id"] == 10

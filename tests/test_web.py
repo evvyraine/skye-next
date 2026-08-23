@@ -273,7 +273,7 @@ class TwoBubbleRuntime(AgentRuntime):
         on_reply = kwargs.get("on_reply")
         if on_reply is not None:
             await on_reply("On it.")
-            await on_reply("Here it is.")
+            await on_reply("Here it is.", 999)
         return RunOutput("HIDDEN leftover", (), sent=2)
 
     def stop_key(self, key: str) -> bool:

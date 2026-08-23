@@ -171,6 +171,8 @@ def test_connector_labels_are_private_context_only() -> None:
     assert "Gmail" in cast(str, private.instructions)
     assert "Work CRM" in cast(str, private.instructions)
     assert "Gmail" not in cast(str, group.instructions)
+    assert "includes message_id" in cast(str, group.instructions)
+    assert "free-standing bubble" in cast(str, group.instructions)
 
 
 def test_generated_images_are_extracted() -> None:
@@ -877,10 +879,10 @@ def _tool_context(name: str, payload: str) -> Any:
 
 
 async def test_send_message_delivers_without_echoing_the_text() -> None:
-    delivered: list[str] = []
+    delivered: list[tuple[str, int | None]] = []
 
-    async def on_reply(text: str) -> None:
-        delivered.append(text)
+    async def on_reply(text: str, reply_to: int | None = None) -> None:
+        delivered.append((text, reply_to))
 
     delivery = TurnDelivery(on_reply)
     tool = delivery.tool()
@@ -894,14 +896,44 @@ async def test_send_message_delivers_without_echoing_the_text() -> None:
 
     assert first == "sent"
     assert second == "sent"
-    assert delivered == ["Hi.", "Done."]
+    assert delivered == [("Hi.", None), ("Done.", None)]
     assert delivery.sent == 2
+
+
+async def test_send_message_passes_optional_reply_to() -> None:
+    delivered: list[tuple[str, int | None]] = []
+
+    async def on_reply(text: str, reply_to: int | None = None) -> None:
+        delivered.append((text, reply_to))
+
+    delivery = TurnDelivery(on_reply)
+    tool = delivery.tool()
+    quoted = await tool.on_invoke_tool(
+        _tool_context("send_message", '{"text":"Quoted.","reply_to":123}'),
+        '{"text":"Quoted.","reply_to":123}',
+    )
+    standalone = await tool.on_invoke_tool(
+        _tool_context("send_message", '{"text":"Hi.","reply_to":null}'),
+        '{"text":"Hi.","reply_to":null}',
+    )
+    invalid = await tool.on_invoke_tool(
+        _tool_context("send_message", '{"text":"Nope.","reply_to":0}'),
+        '{"text":"Nope.","reply_to":0}',
+    )
+
+    assert quoted == "sent"
+    assert standalone == "sent"
+    assert invalid == "sent"
+    assert delivered == [("Quoted.", 123), ("Hi.", None), ("Nope.", None)]
+    schema = tool.params_json_schema
+    assert "reply_to" in schema["properties"]
+    assert "text" in schema["required"]
 
 
 async def test_send_message_caps_and_rejects_empty() -> None:
     delivered: list[str] = []
 
-    async def on_reply(text: str) -> None:
+    async def on_reply(text: str, reply_to: int | None = None) -> None:
         delivered.append(text)
 
     delivery = TurnDelivery(on_reply, limit=2)
@@ -925,7 +957,7 @@ async def test_send_message_caps_and_rejects_empty() -> None:
 async def test_run_keeps_inner_monologue_off_the_reply_callback() -> None:
     delivered: list[str] = []
 
-    async def on_reply(text: str) -> None:
+    async def on_reply(text: str, reply_to: int | None = None) -> None:
         delivered.append(text)
 
     runtime = runtime_for_run()

@@ -51,7 +51,7 @@ We do not own a model loop, a provider abstraction, a billing provider, an admin
 - Config is environment only (`pydantic-settings`). No YAML. No per-user API keys.
 - Keep the dependency list short. Standard library for ids, HMAC, zip, paths, queues, and datetimes.
 - One file per feature until the file has two reasons to change. Then split. Do not create empty packages ahead of behavior.
-- All outbound Telegram text goes through the rich-message boundary. User-visible replies are `send_message` bubbles, plus generated photos and files. Assistant prose is a private inner monologue. Thinking placeholders are not a substitute for `send_message`. Do not stream inner monologue.
+- All outbound Telegram text goes through the rich-message boundary. User-visible messages are `send_message` bubbles, plus generated photos and files. Default bubbles are standalone; `reply_to` quotes a prior Telegram `message_id`. Assistant prose is a private inner monologue. Thinking placeholders are not a substitute for `send_message`. Do not stream inner monologue.
 - Bot copy: calm, short, sentence case. No "oops", no cheerleading, no corporate filler.
 - Assemble volatile context per run (identity, active agent, memories, tools that are actually attached). State each rule once. Never describe a tool that is not present. Keep the stable prompt prefix first.
 - Persist every Telegram `update_id` before work; drop `pending` on startup. Serialize Telegram runs per `(chat_id, thread_id)` and web runs per `web:{project_id}`. OpenAI runs wait in one process-wide queue. Rate limits and conversation locks are retried with the official SDK and Tenacity exponential backoff. `/stop` (or the web stop endpoint) cancels the active run.

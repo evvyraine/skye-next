@@ -16,8 +16,18 @@ def api_thread_id(message: Message) -> int | None:
 
 
 def reply_parameters(message: Message) -> ReplyParameters:
-    """Reply to the triggering message so Telegram keeps the conversation thread."""
+    """Quote-reply to a known message. Unknown ids still send."""
     return ReplyParameters(
         message_id=message.message_id,
+        allow_sending_without_reply=True,
+    )
+
+
+def quote_reply(message_id: int | None) -> ReplyParameters | None:
+    """Build quote-reply parameters, or None for a standalone bubble."""
+    if message_id is None or message_id <= 0:
+        return None
+    return ReplyParameters(
+        message_id=message_id,
         allow_sending_without_reply=True,
     )

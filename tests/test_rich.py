@@ -319,7 +319,7 @@ async def test_send_images_uploads_each_image_as_a_photo() -> None:
     )
 
 
-async def test_send_replies_to_the_triggering_message() -> None:
+async def test_send_is_standalone_by_default() -> None:
     bot = AsyncMock()
     incoming = Message(
         message_id=17,
@@ -335,13 +335,29 @@ async def test_send_replies_to_the_triggering_message() -> None:
     assert kwargs["chat_id"] == 42
     assert kwargs["message_thread_id"] is None
     assert kwargs["rich_message"] == InputRichMessage(markdown="Hi.")
-    assert kwargs["reply_parameters"] == ReplyParameters(
+    assert kwargs["reply_parameters"] is None
+
+
+async def test_send_quotes_when_reply_to_is_set() -> None:
+    bot = AsyncMock()
+    incoming = Message(
         message_id=17,
+        date=0,
+        chat=Chat(id=42, type="private", first_name="Alice"),
+        from_user=User(id=42, is_bot=False, first_name="Alice"),
+        text="Hello",
+    )
+
+    await RichMessages(bot).send(incoming, "Hi.", reply_to=123)
+
+    kwargs = bot.send_rich_message.await_args.kwargs
+    assert kwargs["reply_parameters"] == ReplyParameters(
+        message_id=123,
         allow_sending_without_reply=True,
     )
 
 
-async def test_send_keeps_forum_topic_and_still_replies() -> None:
+async def test_send_keeps_forum_topic_without_quoting() -> None:
     bot = AsyncMock()
     incoming = Message(
         message_id=20,
@@ -357,10 +373,10 @@ async def test_send_keeps_forum_topic_and_still_replies() -> None:
 
     kwargs = bot.send_rich_message.await_args.kwargs
     assert kwargs["message_thread_id"] == 9
-    assert kwargs["reply_parameters"].message_id == 20
+    assert kwargs["reply_parameters"] is None
 
 
-async def test_send_ignores_reply_only_thread_id_but_still_replies() -> None:
+async def test_send_ignores_reply_only_thread_id_without_quoting() -> None:
     bot = AsyncMock()
     incoming = Message(
         message_id=21,
@@ -375,7 +391,7 @@ async def test_send_ignores_reply_only_thread_id_but_still_replies() -> None:
 
     kwargs = bot.send_rich_message.await_args.kwargs
     assert kwargs["message_thread_id"] is None
-    assert kwargs["reply_parameters"].message_id == 21
+    assert kwargs["reply_parameters"] is None
 
 
 async def test_edit_ignores_unchanged_content() -> None:
