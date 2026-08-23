@@ -44,7 +44,7 @@ from .models import (
     Skill,
     TelegramProject,
 )
-from .telegram_threads import api_thread_id, reply_parameters
+from .telegram_threads import api_thread_id, quote_reply, reply_parameters
 
 
 class RichMessages:
@@ -58,12 +58,14 @@ class RichMessages:
         target: Message,
         content: str | InputRichMessage,
         reply_markup: InlineKeyboardMarkup | ReplyKeyboardMarkup | None = None,
+        *,
+        reply_to: int | None = None,
     ) -> Message:
         return await self.bot.send_rich_message(
             chat_id=target.chat.id,
             message_thread_id=api_thread_id(target),
             rich_message=self._content(content),
-            reply_parameters=reply_parameters(target),
+            reply_parameters=quote_reply(reply_to),
             reply_markup=reply_markup,
         )
 
@@ -73,11 +75,14 @@ class RichMessages:
         thread_id: int,
         content: str | InputRichMessage,
         reply_markup: InlineKeyboardMarkup | ReplyKeyboardMarkup | None = None,
+        *,
+        reply_to: int | None = None,
     ) -> Message:
         return await self.bot.send_rich_message(
             chat_id=chat_id,
             message_thread_id=thread_id or None,
             rich_message=self._content(content),
+            reply_parameters=quote_reply(reply_to),
             reply_markup=reply_markup,
         )
 

@@ -392,7 +392,9 @@ async def test_group_photo_on_the_current_message_is_attached() -> None:
     result = await app._input(incoming, context)
 
     app.attachments.add.assert_awaited_once()
-    assert result[0]["content"][0]["text"].endswith("Alice [id 42]: Skye, look\n</current_message>")
+    assert result[0]["content"][0]["text"].endswith(
+        "Alice [id 42] #1: Skye, look\n</current_message>"
+    )
 
 
 async def test_group_reply_to_a_photo_is_attached() -> None:
@@ -444,7 +446,7 @@ async def test_group_context_block_is_omitted_when_history_is_empty() -> None:
 
     assert isinstance(result, str)
     assert "<recent_group_context>" not in result
-    assert "<current_message>\nAlice [id 42]: Skye, hello\n</current_message>" in result
+    assert "<current_message>\nAlice [id 42] #1: Skye, hello\n</current_message>" in result
 
 
 async def test_deliver_sends_container_files_without_leftover_prose() -> None:
@@ -501,7 +503,10 @@ async def test_deliver_falls_back_to_one_text_when_send_message_was_skipped() ->
     await app._deliver(incoming, None, RunOutput("Hello from Skye.", ()))
 
     app.rich.send.assert_awaited_once_with(
-        incoming, InputRichMessage(markdown="Hello from Skye."), reply_markup=None
+        incoming,
+        InputRichMessage(markdown="Hello from Skye."),
+        reply_markup=None,
+        reply_to=None,
     )
     app.rich.send_images.assert_not_awaited()
 
@@ -553,7 +558,12 @@ async def test_stream_turn_posts_send_message_bubbles_not_final_output() -> None
     app._can_edit = AsyncMock(return_value=False)  # type: ignore[method-assign]
     app.groups = SimpleNamespace(mark_seen=AsyncMock())
 
-    async def send(target: object, content: object, reply_markup: object = None) -> Message:
+    async def send(
+        target: object,
+        content: object,
+        reply_markup: object = None,
+        reply_to: object = None,
+    ) -> Message:
         posted.append(str(content))
         return incoming
 
@@ -610,7 +620,7 @@ async def test_stream_turn_can_send_during_a_tool_run() -> None:
     app.rich = SimpleNamespace(
         output=RichMessages.output,
         send=AsyncMock(
-            side_effect=lambda _target, content, reply_markup=None: (
+            side_effect=lambda _target, content, reply_markup=None, reply_to=None: (
                 posted.append(str(content)) or incoming
             )
         ),
@@ -627,6 +637,124 @@ async def test_stream_turn_can_send_during_a_tool_run() -> None:
 
     assert any("Looking now." in item for item in posted)
     assert any("Found it." in item for item in posted)
+
+
+async def test_post_visible_is_standalone_by_default() -> None:
+    app = telegram_app()
+    incoming = private_message("hello")
+    app.rich = SimpleNamespace(
+        output=RichMessages.output,
+        send=AsyncMock(return_value=incoming),
+        edit=AsyncMock(),
+        delete=AsyncMock(),
+    )
+    context = app._context(incoming)
+    assert context is not None
+
+    await app._post_visible(incoming, context, None, "Hi.", first=True)
+
+    app.rich.send.assert_awaited_once_with(
+        incoming,
+        InputRichMessage(markdown="Hi."),
+        reply_markup=None,
+        reply_to=None,
+    )
+    app.rich.edit.assert_not_awaited()
+    app.rich.delete.assert_not_awaited()
+
+
+async def test_post_visible_quotes_reply_to() -> None:
+    app = telegram_app()
+    incoming = private_message("hello")
+    app.rich = SimpleNamespace(
+        output=RichMessages.output,
+        send=AsyncMock(return_value=incoming),
+        edit=AsyncMock(),
+        delete=AsyncMock(),
+    )
+    context = app._context(incoming)
+    assert context is not None
+
+    await app._post_visible(incoming, context, None, "Quoted.", first=True, reply_to=123)
+
+    app.rich.send.assert_awaited_once_with(
+        incoming,
+        InputRichMessage(markdown="Quoted."),
+        reply_markup=None,
+        reply_to=123,
+    )
+
+
+async def test_post_visible_deletes_placeholder_when_quoting() -> None:
+    app = telegram_app()
+    incoming = group_message("hello")
+    placeholder = group_message("Thinking…")
+    app.rich = SimpleNamespace(
+        output=RichMessages.output,
+        send=AsyncMock(return_value=incoming),
+        edit=AsyncMock(),
+        delete=AsyncMock(),
+    )
+    context = app._context(incoming)
+    assert context is not None
+
+    await app._post_visible(
+        incoming, context, placeholder, "Quoted.", first=True, reply_to=10
+    )
+
+    app.rich.delete.assert_awaited_once_with(placeholder)
+    app.rich.edit.assert_not_awaited()
+    app.rich.send.assert_awaited_once_with(
+        incoming,
+        InputRichMessage(markdown="Quoted."),
+        reply_markup=None,
+        reply_to=10,
+    )
+
+
+async def test_stream_turn_passes_reply_to_through_send_message() -> None:
+    from skye.models import ChatSettings
+
+    class QuoteRuntime(AgentRuntime):
+        def __init__(self) -> None:
+            return
+
+        async def run(self, *args: Any, **kwargs: Any) -> RunOutput:  # type: ignore[override]
+            on_reply = kwargs.get("on_reply")
+            if on_reply is not None:
+                await on_reply("Standalone.")
+                await on_reply("Quoted.", 42)
+            return RunOutput("HIDDEN leftover", (), sent=2)
+
+    app = telegram_app()
+    app.access = SimpleNamespace(billed_user_id=AsyncMock(return_value=1))
+    app.quota = SimpleNamespace(check=AsyncMock(), record=AsyncMock())
+    app.runtime = QuoteRuntime()  # type: ignore[assignment]
+    app.database = SimpleNamespace(
+        get_settings=AsyncMock(return_value=ChatSettings("gpt-5.6-luna", "medium"))
+    )
+    app.billing = SimpleNamespace(
+        clamp_settings=AsyncMock(side_effect=lambda _context, current, _access: current)
+    )
+    app._can_edit = AsyncMock(return_value=False)  # type: ignore[method-assign]
+    app.groups = SimpleNamespace(mark_seen=AsyncMock())
+    incoming = private_message("hello")
+    app.rich = SimpleNamespace(
+        output=RichMessages.output,
+        send=AsyncMock(return_value=incoming),
+        edit=AsyncMock(),
+        delete=AsyncMock(),
+        draft=AsyncMock(),
+        send_images=AsyncMock(),
+        send_documents=AsyncMock(),
+    )
+    context = app._context(incoming)
+    assert context is not None
+
+    await app._stream_turn(incoming, context, "hello")
+
+    assert app.rich.send.await_args_list[0].kwargs["reply_to"] is None
+    assert app.rich.send.await_args_list[1].kwargs["reply_to"] == 42
 
 
 async def test_hidden_turn_stays_quiet_without_send_message_or_media() -> None:
