@@ -39,6 +39,24 @@ def test_output_keeps_markdown_without_media() -> None:
     assert output == InputRichMessage(markdown="# Result\n\n**Ready**")
 
 
+def test_output_and_content_strip_citation_tokens() -> None:
+    token = "\ue200cite\ue202turn0view0\ue201"
+    text = f"Paris is the capital. {token} See https://example.com/report"
+
+    output = RichMessages.output(text)
+    wrapped = RichMessages._content(text)
+    already = RichMessages._content(InputRichMessage(markdown=text))
+
+    assert output == InputRichMessage(
+        markdown="Paris is the capital. See https://example.com/report"
+    )
+    assert wrapped == output
+    assert already == output
+    assert RichMessages.output(token) == InputRichMessage(markdown="Done.")
+    settings = RichMessages.settings(ChatSettings(model="gpt-5.6-luna", reasoning="medium"))
+    assert RichMessages._content(settings) is settings
+
+
 def test_settings_use_a_native_rich_table() -> None:
     message = RichMessages.settings(ChatSettings(model="gpt-5.6-sol", reasoning="high"))
 
