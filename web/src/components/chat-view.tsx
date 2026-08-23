@@ -145,6 +145,13 @@ export function ChatView({
           release(localAttachments)
           setSendingAttachments([])
         },
+        onAssistant: (message) => {
+          nextMessages = [
+            ...nextMessages.filter((item) => item.id !== message.id),
+            message,
+          ]
+          onMessages(nextMessages, nextFiles)
+        },
         onDelta: setPendingText,
         onTool: (tool) => {
           setTools((current) => {

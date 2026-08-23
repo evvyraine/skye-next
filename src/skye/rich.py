@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from contextlib import suppress
 from pathlib import PurePosixPath
 from urllib.parse import urlsplit
 
@@ -97,24 +98,56 @@ class RichMessages:
             if "message is not modified" not in error.message.lower():
                 raise
 
+    async def send_images(self, target: Message, images: Sequence[bytes]) -> None:
+        await self.send_images_chat(
+            target.chat.id,
+            api_thread_id(target) or 0,
+            images,
+            reply=target,
+        )
+
+    async def send_images_chat(
+        self,
+        chat_id: int,
+        thread_id: int,
+        images: Sequence[bytes],
+        reply: Message | None = None,
+    ) -> None:
+        for index, image in enumerate(images, start=1):
+            await self.bot.send_photo(
+                chat_id=chat_id,
+                message_thread_id=thread_id or None,
+                photo=BufferedInputFile(image, filename=f"skye-{index}.png"),
+                reply_parameters=reply_parameters(reply) if reply is not None else None,
+            )
+
     async def send_documents(self, target: Message, files: Sequence[GeneratedFile]) -> None:
+        await self.send_documents_chat(
+            target.chat.id,
+            api_thread_id(target) or 0,
+            files,
+            reply=target,
+        )
+
+    async def send_documents_chat(
+        self,
+        chat_id: int,
+        thread_id: int,
+        files: Sequence[GeneratedFile],
+        reply: Message | None = None,
+    ) -> None:
         for item in files:
             await self.bot.send_document(
-                chat_id=target.chat.id,
-                message_thread_id=api_thread_id(target),
+                chat_id=chat_id,
+                message_thread_id=thread_id or None,
                 document=BufferedInputFile(item.data, filename=item.filename),
-                reply_parameters=reply_parameters(target),
+                reply_parameters=reply_parameters(reply) if reply is not None else None,
                 disable_content_type_detection=True,
             )
 
-    async def send_images(self, target: Message, images: Sequence[bytes]) -> None:
-        for index, image in enumerate(images, start=1):
-            await self.bot.send_photo(
-                chat_id=target.chat.id,
-                message_thread_id=api_thread_id(target),
-                photo=BufferedInputFile(image, filename=f"skye-{index}.png"),
-                reply_parameters=reply_parameters(target),
-            )
+    async def delete(self, message: Message) -> None:
+        with suppress(TelegramBadRequest):
+            await self.bot.delete_message(chat_id=message.chat.id, message_id=message.message_id)
 
     async def draft(self, target: Message, text: str | None = None) -> None:
         content = (
@@ -186,9 +219,7 @@ class RichMessages:
         if notice:
             blocks.append(InputRichBlockParagraph(text=notice))
         if owner:
-            blocks.append(
-                InputRichBlockParagraph(text="Owner access. No Stars plan is required.")
-            )
+            blocks.append(InputRichBlockParagraph(text="Owner access. No Stars plan is required."))
             return InputRichMessage(blocks=blocks)
         if plan_name and plan_emoji and status:
             blocks.append(InputRichBlockSectionHeading(text=f"{plan_emoji} {plan_name}", size=3))
@@ -196,9 +227,7 @@ class RichMessages:
         elif status:
             blocks.append(InputRichBlockParagraph(text=status))
         elif complimentary:
-            blocks.append(
-                InputRichBlockParagraph(text="Complimentary access from the allowlist.")
-            )
+            blocks.append(InputRichBlockParagraph(text="Complimentary access from the allowlist."))
         else:
             blocks.append(
                 InputRichBlockParagraph(
@@ -418,9 +447,7 @@ class RichMessages:
     @staticmethod
     def project_name_prompt(current: str | None = None) -> InputRichMessage:
         if current is None:
-            body: RichTextUnion = (
-                "Send a name (up to 64 characters). You can start with an emoji."
-            )
+            body: RichTextUnion = "Send a name (up to 64 characters). You can start with an emoji."
         else:
             body = ["Send a new name, or ", _code("."), f" to keep “{current}”."]
         return RichMessages.prompt("Project name", body)

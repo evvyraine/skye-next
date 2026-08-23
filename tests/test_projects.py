@@ -144,3 +144,22 @@ def test_describe_tool_event_hides_payloads() -> None:
     assert described.tool_status == "running"
     assert "secret" not in described.tool_label
     assert described.image == b""
+
+
+def test_describe_tool_event_hides_send_message() -> None:
+    event = type(
+        "Event",
+        (),
+        {
+            "name": "tool_called",
+            "item": type(
+                "Item",
+                (),
+                {
+                    "title": None,
+                    "raw_item": type("Raw", (), {"name": "send_message", "call_id": "c2"})(),
+                },
+            )(),
+        },
+    )()
+    assert describe_tool_event(event) is None

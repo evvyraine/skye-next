@@ -35,7 +35,7 @@ from .projects import (
     project_payload,
 )
 from .quota import AllowanceError, QuotaService
-from .runtime import AgentRuntime, RunEvent, web_run_key
+from .runtime import AgentRuntime, RunEvent, RunOutput, leftover_reply, web_run_key
 
 log = structlog.get_logger()
 
@@ -368,19 +368,33 @@ class WebApp:
         for saved in uploaded_files:
             await self._sse(response, "file", file_payload(saved))
         await self._sse(response, "user", message_payload(user_message))
-        assistant_text = ""
         assistant_file_ids: list[str] = []
         seen_tools: set[str] = set()
+        sent = 0
+        last_assistant: dict[str, Any] | None = None
 
         async def on_text(_text: str) -> None:
             return
 
+        async def persist_assistant(text: str, file_ids: tuple[str, ...] = ()) -> None:
+            nonlocal last_assistant
+            assistant = await self.projects.add_message(
+                session.user_id,
+                project_id,
+                role="assistant",
+                text=text,
+                file_ids=file_ids,
+            )
+            last_assistant = message_payload(assistant)
+            await self._sse(response, "assistant", last_assistant)
+
+        async def on_reply(text: str) -> None:
+            nonlocal sent
+            sent += 1
+            await persist_assistant(text)
+
         async def on_event(event: RunEvent) -> None:
-            nonlocal assistant_text
-            if event.kind == "text":
-                assistant_text = event.text
-                await self._sse(response, "delta", {"text": event.text})
-            elif event.kind == "tool":
+            if event.kind == "tool":
                 payload = {
                     "id": event.tool_id,
                     "name": event.tool_name,
@@ -421,31 +435,21 @@ class WebApp:
                 conversation_id=conversation_id,
                 extra_instructions=project.instructions,
                 on_event=on_event,
+                on_reply=on_reply,
                 input_file_ids=tuple(openai_file_ids),
+                awaiting_reply=True,
             )
             await self.quota.record(context, output.usage_tokens)
         except asyncio.CancelledError:
-            if assistant_text.strip():
-                await self.projects.add_message(
-                    session.user_id,
-                    project_id,
-                    role="assistant",
-                    text=assistant_text.strip(),
-                    file_ids=tuple(assistant_file_ids),
-                )
+            if assistant_file_ids:
+                await persist_assistant("", tuple(assistant_file_ids))
             await self._sse(response, "error", {"message": "Stopped."})
             await response.write_eof()
             return response
         except Exception:
             log.exception("web_run_failed", project_id=project_id)
-            if assistant_text.strip():
-                await self.projects.add_message(
-                    session.user_id,
-                    project_id,
-                    role="assistant",
-                    text=assistant_text.strip(),
-                    file_ids=tuple(assistant_file_ids),
-                )
+            if assistant_file_ids:
+                await persist_assistant("", tuple(assistant_file_ids))
             await self._sse(response, "error", {"message": "Something went wrong. Try again."})
             await response.write_eof()
             return response
@@ -461,15 +465,16 @@ class WebApp:
             )
             assistant_file_ids.append(saved.id)
             await self._sse(response, "file", file_payload(saved))
-        final_text = output.text or assistant_text
-        assistant = await self.projects.add_message(
-            session.user_id,
-            project_id,
-            role="assistant",
-            text=final_text,
-            file_ids=tuple(assistant_file_ids),
-        )
-        await self._sse(response, "done", message_payload(assistant))
+        if assistant_file_ids:
+            await persist_assistant("", tuple(assistant_file_ids))
+        elif max(output.sent, sent) == 0:
+            leftover = leftover_reply(
+                RunOutput(output.text, (), sent=0),
+                awaiting_reply=True,
+            )
+            if leftover:
+                await persist_assistant(leftover)
+        await self._sse(response, "done", last_assistant or {"text": ""})
         await response.write_eof()
         return response
 

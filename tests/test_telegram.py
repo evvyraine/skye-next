@@ -1,6 +1,7 @@
 import json
 from datetime import datetime
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
@@ -21,9 +22,9 @@ from aiogram.types import (
 
 from skye.artifacts import GeneratedFile
 from skye.group_context import GroupHistory
-from skye.models import AccessEntry, Scope
+from skye.models import AccessEntry, RequestContext, Scope
 from skye.rich import RichMessages
-from skye.runtime import RunOutput
+from skye.runtime import AgentRuntime, RunOutput
 from skye.telegram import AdminPrompt, TelegramApp, dump_update
 
 
@@ -446,12 +447,13 @@ async def test_group_context_block_is_omitted_when_history_is_empty() -> None:
     assert "<current_message>\nAlice [id 42]: Skye, hello\n</current_message>" in result
 
 
-async def test_deliver_sends_container_files_after_the_text() -> None:
+async def test_deliver_sends_container_files_without_leftover_prose() -> None:
     app = telegram_app()
     app.rich = SimpleNamespace(
         output=RichMessages.output,
         send=AsyncMock(),
         edit=AsyncMock(),
+        delete=AsyncMock(),
         send_images=AsyncMock(),
         send_documents=AsyncMock(),
     )
@@ -460,16 +462,17 @@ async def test_deliver_sends_container_files_after_the_text() -> None:
 
     await app._deliver(incoming, None, RunOutput("Ready.", (), files))
 
-    app.rich.send.assert_awaited_once()
+    app.rich.send.assert_not_awaited()
     app.rich.send_documents.assert_awaited_once_with(incoming, files)
 
 
-async def test_deliver_sends_generated_images_after_the_text() -> None:
+async def test_deliver_sends_generated_images_without_leftover_prose() -> None:
     app = telegram_app()
     app.rich = SimpleNamespace(
         output=RichMessages.output,
         send=AsyncMock(),
         edit=AsyncMock(),
+        delete=AsyncMock(),
         send_images=AsyncMock(),
         send_documents=AsyncMock(),
     )
@@ -478,11 +481,193 @@ async def test_deliver_sends_generated_images_after_the_text() -> None:
 
     await app._deliver(incoming, None, RunOutput("Here it is.", images))
 
-    app.rich.send.assert_awaited_once_with(
-        incoming, InputRichMessage(markdown="Here it is."), reply_markup=None
-    )
+    app.rich.send.assert_not_awaited()
     app.rich.send_images.assert_awaited_once_with(incoming, images)
     app.rich.send_documents.assert_not_awaited()
+
+
+async def test_deliver_falls_back_to_one_text_when_send_message_was_skipped() -> None:
+    app = telegram_app()
+    app.rich = SimpleNamespace(
+        output=RichMessages.output,
+        send=AsyncMock(),
+        edit=AsyncMock(),
+        delete=AsyncMock(),
+        send_images=AsyncMock(),
+        send_documents=AsyncMock(),
+    )
+    incoming = private_message("hello")
+
+    await app._deliver(incoming, None, RunOutput("Hello from Skye.", ()))
+
+    app.rich.send.assert_awaited_once_with(
+        incoming, InputRichMessage(markdown="Hello from Skye."), reply_markup=None
+    )
+    app.rich.send_images.assert_not_awaited()
+
+
+async def test_deliver_does_not_post_final_output_after_send_message() -> None:
+    app = telegram_app()
+    app.rich = SimpleNamespace(
+        output=RichMessages.output,
+        send=AsyncMock(),
+        edit=AsyncMock(),
+        delete=AsyncMock(),
+        send_images=AsyncMock(),
+        send_documents=AsyncMock(),
+    )
+    incoming = private_message("hello")
+
+    await app._deliver(incoming, None, RunOutput("HIDDEN leftover", (), sent=2))
+
+    app.rich.send.assert_not_awaited()
+    app.rich.send_images.assert_not_awaited()
+
+
+async def test_stream_turn_posts_send_message_bubbles_not_final_output() -> None:
+    from skye.models import ChatSettings
+
+    posted: list[str] = []
+
+    class ReplyRuntime(AgentRuntime):
+        def __init__(self) -> None:
+            return
+
+        async def run(self, *args: Any, **kwargs: Any) -> RunOutput:  # type: ignore[override]
+            on_reply = kwargs.get("on_reply")
+            if on_reply is not None:
+                await on_reply("On it.")
+                await on_reply("Done.")
+            return RunOutput("HIDDEN leftover", (), sent=2)
+
+    app = telegram_app()
+    app.access = SimpleNamespace(billed_user_id=AsyncMock(return_value=1))
+    app.quota = SimpleNamespace(check=AsyncMock(), record=AsyncMock())
+    app.runtime = ReplyRuntime()  # type: ignore[assignment]
+    app.database = SimpleNamespace(
+        get_settings=AsyncMock(return_value=ChatSettings("gpt-5.6-luna", "medium"))
+    )
+    app.billing = SimpleNamespace(
+        clamp_settings=AsyncMock(side_effect=lambda _context, current, _access: current)
+    )
+    app._can_edit = AsyncMock(return_value=False)  # type: ignore[method-assign]
+    app.groups = SimpleNamespace(mark_seen=AsyncMock())
+
+    async def send(target: object, content: object, reply_markup: object = None) -> Message:
+        posted.append(str(content))
+        return incoming
+
+    incoming = private_message("hello")
+    app.rich = SimpleNamespace(
+        output=RichMessages.output,
+        send=AsyncMock(side_effect=send),
+        edit=AsyncMock(),
+        delete=AsyncMock(),
+        draft=AsyncMock(),
+        send_images=AsyncMock(),
+        send_documents=AsyncMock(),
+        send_chat=AsyncMock(return_value=incoming),
+    )
+    context = app._context(incoming)
+    assert context is not None
+
+    await app._stream_turn(incoming, context, "hello")
+
+    assert any("On it." in item for item in posted)
+    assert any("Done." in item for item in posted)
+    assert not any("HIDDEN leftover" in item for item in posted)
+
+
+async def test_stream_turn_can_send_during_a_tool_run() -> None:
+    from skye.models import ChatSettings
+
+    posted: list[str] = []
+
+    class WorkingRuntime(AgentRuntime):
+        def __init__(self) -> None:
+            return
+
+        async def run(self, *args: Any, **kwargs: Any) -> RunOutput:  # type: ignore[override]
+            on_reply = kwargs.get("on_reply")
+            if on_reply is not None:
+                await on_reply("Looking now.")
+                await on_reply("Found it.")
+            return RunOutput("hidden", (), sent=2)
+
+    app = telegram_app()
+    app.access = SimpleNamespace(billed_user_id=AsyncMock(return_value=1))
+    app.quota = SimpleNamespace(check=AsyncMock(), record=AsyncMock())
+    app.runtime = WorkingRuntime()  # type: ignore[assignment]
+    app.database = SimpleNamespace(
+        get_settings=AsyncMock(return_value=ChatSettings("gpt-5.6-luna", "medium"))
+    )
+    app.billing = SimpleNamespace(
+        clamp_settings=AsyncMock(side_effect=lambda _context, current, _access: current)
+    )
+    app._can_edit = AsyncMock(return_value=True)  # type: ignore[method-assign]
+    app.groups = SimpleNamespace(mark_seen=AsyncMock())
+    incoming = private_message("search")
+    app.rich = SimpleNamespace(
+        output=RichMessages.output,
+        send=AsyncMock(
+            side_effect=lambda _target, content, reply_markup=None: (
+                posted.append(str(content)) or incoming
+            )
+        ),
+        edit=AsyncMock(),
+        delete=AsyncMock(),
+        draft=AsyncMock(),
+        send_images=AsyncMock(),
+        send_documents=AsyncMock(),
+    )
+    context = app._context(incoming)
+    assert context is not None
+
+    await app._stream_turn(incoming, context, "search")
+
+    assert any("Looking now." in item for item in posted)
+    assert any("Found it." in item for item in posted)
+
+
+async def test_hidden_turn_stays_quiet_without_send_message_or_media() -> None:
+    from skye.models import ChatSettings
+
+    class QuietRuntime(AgentRuntime):
+        def __init__(self) -> None:
+            return
+
+        async def run(self, *args: Any, **kwargs: Any) -> RunOutput:  # type: ignore[override]
+            assert kwargs.get("awaiting_reply") is False
+            return RunOutput("nothing to say", (), sent=0)
+
+    app = telegram_app()
+    app.access = SimpleNamespace(billed_user_id=AsyncMock(return_value=1))
+    app.quota = SimpleNamespace(check=AsyncMock(), record=AsyncMock())
+    app.runtime = QuietRuntime()  # type: ignore[assignment]
+    app.database = SimpleNamespace(
+        get_settings=AsyncMock(return_value=ChatSettings("gpt-5.6-luna", "medium"))
+    )
+    app.billing = SimpleNamespace(
+        clamp_settings=AsyncMock(side_effect=lambda _context, current, _access: current)
+    )
+    app._can_edit = AsyncMock(return_value=True)  # type: ignore[method-assign]
+    app.groups = SimpleNamespace(mark_seen=AsyncMock())
+    app.rich = SimpleNamespace(
+        output=RichMessages.output,
+        send=AsyncMock(),
+        edit=AsyncMock(),
+        delete=AsyncMock(),
+        draft=AsyncMock(),
+        send_images=AsyncMock(),
+        send_documents=AsyncMock(),
+        send_chat=AsyncMock(),
+    )
+    context = RequestContext(7, "private", 7)
+
+    await app._stream_turn(None, context, "Scheduled automation fired.")
+
+    app.rich.send.assert_not_awaited()
+    app.rich.send_chat.assert_not_awaited()
 
 
 def private_message(

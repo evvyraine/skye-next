@@ -3,9 +3,7 @@ from __future__ import annotations
 import asyncio
 import io
 import re
-import time
 from collections.abc import Awaitable, Callable, Sequence
-from contextlib import suppress
 from typing import Any, Literal, cast
 
 import structlog
@@ -13,7 +11,7 @@ from agents.items import TResponseInputItem
 from aiogram import BaseMiddleware, Bot, F, Router
 from aiogram.client.default import Default
 from aiogram.dispatcher.event.bases import UNHANDLED
-from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
+from aiogram.exceptions import TelegramAPIError
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -64,7 +62,7 @@ from .models import (
 )
 from .quota import AllowanceError, QuotaService
 from .rich import RichMessages
-from .runtime import AgentRuntime, ContextLimitError, RunOutput, StreamStartedError
+from .runtime import AgentRuntime, ContextLimitError, RunOutput, StreamStartedError, leftover_reply
 from .skills import SkillError, SkillPanel, SkillService, SkillWizard
 from .telegram_projects import (
     PROJECT_KEYBOARD_CATCHUP,
@@ -1252,29 +1250,31 @@ class TelegramApp:
             manage_automations = False
         placeholder: Message | None = None
         use_draft = False
+        awaiting_reply = message is not None
         if message is not None:
             use_draft = context.chat_type == "private" if draft is None else draft
-        if use_draft and message is not None:
-            await self.rich.draft(message)
-        else:
-            placeholder = await self._thinking(message, context)
-        last_edit = 0.0
-        streamed_text = ""
+            if use_draft:
+                await self.rich.draft(message)
+            else:
+                placeholder = await self._thinking(message, context)
+        last_target = message or placeholder
+        sent_holder = {"count": 0}
 
-        async def on_text(text: str) -> None:
-            nonlocal last_edit, streamed_text
-            streamed_text = text
-            now = time.monotonic()
-            if now - last_edit < 0.8:
-                return
-            last_edit = now
-            with suppress(TelegramBadRequest):
-                if use_draft and message is not None:
-                    await self.rich.draft(message, text[:32000])
-                elif placeholder:
-                    await self.rich.edit(placeholder, text[:32000] or "Thinking…")
+        async def on_text(_text: str) -> None:
+            return
 
-        target = message or placeholder
+        async def on_reply(text: str) -> None:
+            nonlocal placeholder, last_target
+            last_target = await self._post_visible(
+                message,
+                context,
+                placeholder,
+                text,
+                first=sent_holder["count"] == 0,
+            )
+            sent_holder["count"] += 1
+            placeholder = None
+
         try:
             output = await self.runtime.run(
                 context,
@@ -1285,33 +1285,43 @@ class TelegramApp:
                 conversation_id=conversation_id,
                 extra_instructions=extra_instructions,
                 manage_automations=manage_automations,
+                on_reply=on_reply,
+                awaiting_reply=awaiting_reply,
             )
             await self.quota.record(context, output.usage_tokens, billed_user_id=billed_user_id)
             if message is not None and context.chat_type != "private":
                 await self.groups.mark_seen(message)
-            if target is not None:
-                await self._deliver(target, placeholder, output)
-        except AllowanceError as error:
-            await self._finish_turn(message, context, placeholder, error.message)
-        except TimeoutError:
-            await self._finish_turn(
-                message, context, placeholder, "This took too long, so I stopped it."
+            await self._finish_visible(
+                message,
+                context,
+                last_target,
+                placeholder,
+                output,
+                awaiting_reply=awaiting_reply,
             )
-        except asyncio.CancelledError:
-            await self._finish_turn(message, context, placeholder, "Stopped.")
-        except ContextLimitError as error:
-            await self._finish_turn(message, context, placeholder, str(error))
-        except StreamStartedError:
-            content = streamed_text.strip()
-            if content:
-                content += "\n\n_Response interrupted. Please continue with a new message._"
+        except AllowanceError as error:
+            if sent_holder["count"] == 0:
+                await self._finish_turn(message, context, placeholder, error.message)
+        except TimeoutError:
+            if sent_holder["count"] == 0:
                 await self._finish_turn(
-                    message, context, placeholder, self.rich.output(content)
+                    message, context, placeholder, "This took too long, so I stopped it."
                 )
-            else:
+        except asyncio.CancelledError:
+            if sent_holder["count"] == 0 and awaiting_reply:
+                await self._finish_turn(message, context, placeholder, "Stopped.")
+            elif placeholder is not None and sent_holder["count"] == 0:
+                await self.rich.delete(placeholder)
+        except ContextLimitError as error:
+            if sent_holder["count"] == 0:
+                await self._finish_turn(message, context, placeholder, str(error))
+        except StreamStartedError:
+            if sent_holder["count"] == 0 and awaiting_reply:
                 await self._finish_turn(
                     message, context, placeholder, "The response was interrupted. Try again."
                 )
+            elif placeholder is not None and sent_holder["count"] == 0:
+                await self.rich.delete(placeholder)
         except Exception as error:
             log.exception(
                 "agent_run_failed",
@@ -1320,9 +1330,10 @@ class TelegramApp:
                 error=type(error).__name__,
                 error_detail=str(error)[:300],
             )
-            await self._finish_turn(
-                message, context, placeholder, "Something went wrong. Please try again."
-            )
+            if sent_holder["count"] == 0:
+                await self._finish_turn(
+                    message, context, placeholder, "Something went wrong. Please try again."
+                )
 
     async def _thinking(self, message: Message | None, context: RequestContext) -> Message:
         if message is not None:
@@ -1410,19 +1421,100 @@ class TelegramApp:
             file_ids.extend(attached_file_ids)
         return cast(list[TResponseInputItem], [{"role": "user", "content": content}])
 
+    async def _post_visible(
+        self,
+        message: Message | None,
+        context: RequestContext,
+        placeholder: Message | None,
+        text: str,
+        *,
+        first: bool,
+    ) -> Message | None:
+        chunks = self._chunks(text) or [text.strip() or text]
+        last: Message | None = placeholder or message
+        for index, chunk in enumerate(chunks):
+            content = self.rich.output(chunk)
+            if placeholder is not None and index == 0:
+                await self.rich.edit(placeholder, content)
+                last = placeholder
+                placeholder = None
+                continue
+            markup = None
+            if (
+                first
+                and index == 0
+                and message is not None
+                and context.chat_type == "private"
+                and getattr(self, "telegram_projects", None) is not None
+            ):
+                markup = await self._private_reply_keyboard(context)
+            if message is not None:
+                last = await self.rich.send(message, content, reply_markup=markup)
+            else:
+                last = await self.rich.send_chat(context.chat_id, context.thread_id, content)
+        return last
+
+    async def _finish_visible(
+        self,
+        message: Message | None,
+        context: RequestContext,
+        last_target: Message | None,
+        placeholder: Message | None,
+        output: RunOutput,
+        *,
+        awaiting_reply: bool,
+    ) -> None:
+        leftover = leftover_reply(output, awaiting_reply=awaiting_reply)
+        if leftover:
+            last_target = await self._post_visible(
+                message,
+                context,
+                placeholder,
+                leftover,
+                first=True,
+            )
+            placeholder = None
+        elif placeholder is not None:
+            await self.rich.delete(placeholder)
+            placeholder = None
+        await self._flush_media(message, context, last_target, output)
+
+    async def _flush_media(
+        self,
+        message: Message | None,
+        context: RequestContext,
+        target: Message | None,
+        output: RunOutput,
+    ) -> None:
+        if not output.images and not output.files:
+            return
+        if target is not None:
+            if output.images:
+                await self.rich.send_images(target, output.images)
+            if output.files:
+                await self.rich.send_documents(target, output.files)
+            return
+        if output.images:
+            await self.rich.send_images_chat(
+                context.chat_id, context.thread_id, output.images, reply=message
+            )
+        if output.files:
+            await self.rich.send_documents_chat(
+                context.chat_id, context.thread_id, output.files, reply=message
+            )
+
     async def _deliver(
         self, target: Message, placeholder: Message | None, output: RunOutput
     ) -> None:
-        chunks = self._chunks(output.text)
-        chunks = chunks or [""]
-        first = self.rich.output(chunks[0])
-        await self._finish(target, placeholder, first)
-        for chunk in chunks[1:]:
-            await self.rich.send(target, self.rich.output(chunk))
-        if output.images:
-            await self.rich.send_images(target, output.images)
-        if output.files:
-            await self.rich.send_documents(target, output.files)
+        context = self._context(target) or RequestContext(target.chat.id, "private", 0)
+        await self._finish_visible(
+            target,
+            context,
+            target,
+            placeholder,
+            output,
+            awaiting_reply=True,
+        )
 
     async def _finish(
         self, target: Message, placeholder: Message | None, content: str | InputRichMessage

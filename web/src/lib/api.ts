@@ -113,6 +113,7 @@ export async function transcribe(file: Blob): Promise<string> {
 
 export type StreamHandlers = {
   onUser?: (message: ChatMessage) => void
+  onAssistant?: (message: ChatMessage) => void
   onDelta?: (text: string) => void
   onTool?: (tool: { id: string; name: string; label: string; status: string }) => void
   onImage?: (file: ChatFile) => void
@@ -184,6 +185,8 @@ function dispatch(event: { event: string; data: unknown }, handlers: StreamHandl
   const data = event.data as never
   if (event.event === "user") {
     handlers.onUser?.(data)
+  } else if (event.event === "assistant") {
+    handlers.onAssistant?.(data)
   } else if (event.event === "delta") {
     handlers.onDelta?.((data as { text: string }).text)
   } else if (event.event === "tool") {

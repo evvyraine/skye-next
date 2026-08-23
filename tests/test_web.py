@@ -48,9 +48,9 @@ class FakeRuntime(AgentRuntime):
 
     async def run(self, *args: Any, **kwargs: Any) -> RunOutput:  # type: ignore[override]
         self.calls.append({"args": args, "kwargs": kwargs})
+        on_reply = kwargs.get("on_reply")
         on_event = kwargs.get("on_event")
         if on_event is not None:
-            await on_event(RunEvent(kind="text", text="Hello from Skye."))
             await on_event(
                 RunEvent(
                     kind="tool",
@@ -60,6 +60,9 @@ class FakeRuntime(AgentRuntime):
                     tool_status="done",
                 )
             )
+        if on_reply is not None:
+            await on_reply("Hello from Skye.")
+            return RunOutput("Hello from Skye.", (), sent=1)
         return RunOutput("Hello from Skye.", ())
 
     def stop_key(self, key: str) -> bool:
@@ -186,9 +189,7 @@ async def test_stream_shows_tool_markers_and_keeps_telegram_conversation_separat
         await signed_in(client, projects)
         listed = await client.get("/api/projects")
         skye_id = (await listed.json())["projects"][0]["id"]
-        response = await client.post(
-            f"/api/projects/{skye_id}/messages", json={"text": "hello"}
-        )
+        response = await client.post(f"/api/projects/{skye_id}/messages", json={"text": "hello"})
         assert response.status == 200
         body = await response.text()
         assert "Searched the web" in body
@@ -253,13 +254,146 @@ async def test_web_blocks_when_the_daily_allowance_is_used(
         await projects.ensure_skye(99)
         listed = await client.get("/api/projects")
         skye_id = (await listed.json())["projects"][0]["id"]
-        response = await client.post(
-            f"/api/projects/{skye_id}/messages", json={"text": "hello"}
-        )
+        response = await client.post(f"/api/projects/{skye_id}/messages", json={"text": "hello"})
         assert response.status == 429
         body = await response.text()
         assert "daily message allowance" in body
         assert "token" not in body.lower()
         assert runtime.calls == []
+    finally:
+        await client.close()
+
+
+class TwoBubbleRuntime(AgentRuntime):
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    async def run(self, *args: Any, **kwargs: Any) -> RunOutput:  # type: ignore[override]
+        self.calls.append({"args": args, "kwargs": kwargs})
+        on_reply = kwargs.get("on_reply")
+        if on_reply is not None:
+            await on_reply("On it.")
+            await on_reply("Here it is.")
+        return RunOutput("HIDDEN leftover", (), sent=2)
+
+    def stop_key(self, key: str) -> bool:
+        return True
+
+
+class FallbackRuntime(AgentRuntime):
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    async def run(self, *args: Any, **kwargs: Any) -> RunOutput:  # type: ignore[override]
+        self.calls.append({"args": args, "kwargs": kwargs})
+        return RunOutput("Fallback from leftover.", (), sent=0)
+
+    def stop_key(self, key: str) -> bool:
+        return True
+
+
+class ImageRuntime(AgentRuntime):
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    async def run(self, *args: Any, **kwargs: Any) -> RunOutput:  # type: ignore[override]
+        self.calls.append({"args": args, "kwargs": kwargs})
+        on_event = kwargs.get("on_event")
+        if on_event is not None:
+            await on_event(RunEvent(kind="image", image=b"png-bytes"))
+        return RunOutput("inner monologue about the picture", (b"png-bytes",), sent=0)
+
+    def stop_key(self, key: str) -> bool:
+        return True
+
+
+async def _client_with_runtime(
+    database: Database, tmp_path: Path, runtime: AgentRuntime
+) -> tuple[TestClient, ProjectService]:
+    config = settings()
+    client = AsyncMock()
+    client.conversations.create = AsyncMock(return_value=SimpleNamespace(id="conv_web"))
+    projects = ProjectService(database, client, tmp_path / "web-files")
+    auth = TelegramAuth(config, database, projects)
+    web_app = WebApp(
+        config,
+        database,
+        AccessService(database, frozenset({1})),
+        runtime,  # type: ignore[arg-type]
+        projects,
+        auth,
+        cast(Any, AsyncMock()),
+    )
+    http = TestClient(TestServer(web_app.app))
+    await http.start_server()
+    return http, projects
+
+
+@pytest.mark.asyncio
+async def test_web_two_send_message_calls_do_not_post_final_output(
+    database: Database, tmp_path: Path
+) -> None:
+    client, projects = await _client_with_runtime(database, tmp_path, TwoBubbleRuntime())
+    try:
+        await signed_in(client, projects)
+        listed = await client.get("/api/projects")
+        skye_id = (await listed.json())["projects"][0]["id"]
+        response = await client.post(f"/api/projects/{skye_id}/messages", json={"text": "hello"})
+        body = await response.text()
+        assert "On it." in body
+        assert "Here it is." in body
+        assert body.index("On it.") < body.index("Here it is.")
+        assert "HIDDEN leftover" not in body
+        messages = await client.get(f"/api/projects/{skye_id}/messages")
+        assistant = [
+            item for item in (await messages.json())["messages"] if item["role"] == "assistant"
+        ]
+        assert {item["text"] for item in assistant} == {"On it.", "Here it is."}
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_web_falls_back_when_send_message_is_never_called(
+    database: Database, tmp_path: Path
+) -> None:
+    client, projects = await _client_with_runtime(database, tmp_path, FallbackRuntime())
+    try:
+        await signed_in(client, projects)
+        listed = await client.get("/api/projects")
+        skye_id = (await listed.json())["projects"][0]["id"]
+        response = await client.post(f"/api/projects/{skye_id}/messages", json={"text": "hello"})
+        body = await response.text()
+        assert "Fallback from leftover." in body
+        messages = await client.get(f"/api/projects/{skye_id}/messages")
+        assistant = [
+            item for item in (await messages.json())["messages"] if item["role"] == "assistant"
+        ]
+        assert [item["text"] for item in assistant] == ["Fallback from leftover."]
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_web_image_only_turn_still_stores_the_image(
+    database: Database, tmp_path: Path
+) -> None:
+    client, projects = await _client_with_runtime(database, tmp_path, ImageRuntime())
+    try:
+        await signed_in(client, projects)
+        listed = await client.get("/api/projects")
+        skye_id = (await listed.json())["projects"][0]["id"]
+        response = await client.post(
+            f"/api/projects/{skye_id}/messages", json={"text": "draw a cat"}
+        )
+        body = await response.text()
+        assert "inner monologue about the picture" not in body
+        messages = await client.get(f"/api/projects/{skye_id}/messages")
+        payload = await messages.json()
+        assistant = [item for item in payload["messages"] if item["role"] == "assistant"]
+        assert len(assistant) == 1
+        assert assistant[0]["text"] == ""
+        assert assistant[0]["file_ids"]
+        assert payload["files"]
     finally:
         await client.close()
