@@ -35,6 +35,14 @@ export const strings = {
     f4Title: "Создавайте личных агентов",
     f4Body:
       "Организуйте собственную команду агентов, каждый из которых имеет свой характер и специализируется на предметной области. Skye учтёт все инструкции.",
+    f5Title: "Поручайте дела на потом",
+    f5Body:
+      "Попросите Skye один раз. Она сделает задачу по расписанию или когда что-то произойдёт в другом приложении, и вы увидите это в том же чате.",
+    f6Title: "Подключайте свои приложения",
+    f6Body: "Свяжите их один раз. Skye будет читать и действовать там вместе с вами.",
+    f7Title: "Сохраняйте свой способ работы",
+    f7Body:
+      "Опишите порядок действий один раз. Skye будет следовать этим шагам, когда вы попросите.",
     pricingTitle: "Два тарифа",
     pricingNote: "Оплата в Telegram Stars",
     perMonth: "в месяц",
@@ -89,6 +97,13 @@ export const strings = {
     f4Title: "Make your own agents",
     f4Body:
       "Build a small team, each with a character and a specialty. Skye will keep every instruction in view.",
+    f5Title: "Have Skye do it later",
+    f5Body:
+      "Ask Skye once. She does the task on a schedule or when something happens in another app, and you see it in the same chat.",
+    f6Title: "Connect the apps you already use",
+    f6Body: "Hook them up once. Skye reads and acts there with you.",
+    f7Title: "Save a way of working",
+    f7Body: "Write the steps once. Skye follows them whenever you ask.",
     pricingTitle: "Two plans",
     pricingNote: "Paid in Telegram Stars",
     perMonth: "per month",
