@@ -262,6 +262,7 @@ class AutomationService:
         cron: str,
         task: str,
         timezone: str = "UTC",
+        once: bool = False,
         created_by: int | None = None,
         now: datetime | None = None,
     ) -> Automation:
@@ -285,6 +286,7 @@ class AutomationService:
                 cron=cron.strip(),
                 timezone=zone,
                 next_run_at=next_run,
+                once=once,
             )
         )
 
@@ -324,6 +326,7 @@ class AutomationService:
         timezone: str | None = None,
         task: str | None = None,
         enabled: bool | None = None,
+        once: bool | None = None,
         now: datetime | None = None,
     ) -> Automation:
         current = await self.require(context, automation_id)
@@ -333,6 +336,7 @@ class AutomationService:
         cron_value = current.cron
         zone = current.timezone
         next_run = current.next_run_at
+        once_value = current.once if once is None else once
         if current.kind == "schedule":
             if cron is not None:
                 cron_value = cron.strip()
@@ -346,6 +350,8 @@ class AutomationService:
             reenabled = enabled is True and not current.enabled
             if schedule_changed or reenabled:
                 next_run = next_cron_run(cron_value, zone, now=now)
+        elif once is not None:
+            raise AutomationError("Webhook automations cannot be one-shot.")
         elif cron is not None or timezone is not None:
             raise AutomationError("Webhook automations do not use a cron schedule.")
         return await self.database.update_automation(
@@ -364,6 +370,7 @@ class AutomationService:
                 webhook_authorization=current.webhook_authorization,
                 last_fired_at=current.last_fired_at,
                 next_run_at=next_run,
+                once=once_value,
             )
         )
 
@@ -391,7 +398,11 @@ class AutomationService:
 
         @function_tool
         async def create_scheduled_automation(
-            name: str, cron: str, task: str, timezone: str = "UTC"
+            name: str,
+            cron: str,
+            task: str,
+            timezone: str = "UTC",
+            once: bool = False,
         ) -> str:
             """Create a cron-scheduled automation that runs a Skye turn in this chat.
 
@@ -400,17 +411,17 @@ class AutomationService:
                 cron: 5-field cron (minute hour day-of-month month day-of-week).
                 task: What Skye should do when it fires.
                 timezone: IANA timezone. Defaults to UTC.
+                once: If true, run at the next matching time, then delete. Defaults to false.
             """
             try:
                 item = await self.create_schedule(
-                    context, name=name, cron=cron, task=task, timezone=timezone
+                    context, name=name, cron=cron, task=task, timezone=timezone, once=once
                 )
             except AutomationError as error:
                 return str(error)
-            zone = item.timezone or "UTC"
             return (
                 f"Created scheduled automation {item.id} “{item.name}” "
-                f"({item.cron} {zone})."
+                f"({item.trigger_label})."
             )
 
         @function_tool
@@ -441,6 +452,7 @@ class AutomationService:
             timezone: str | None = None,
             task: str | None = None,
             enabled: bool | None = None,
+            once: bool | None = None,
         ) -> str:
             """Update an automation in this chat by id.
 
@@ -451,6 +463,7 @@ class AutomationService:
                 timezone: New IANA timezone for a scheduled automation.
                 task: New task prompt.
                 enabled: True to enable, false to pause.
+                once: True for a one-shot schedule, false to keep repeating.
             """
             try:
                 item = await self.update(
@@ -461,6 +474,7 @@ class AutomationService:
                     timezone=timezone,
                     task=task,
                     enabled=enabled,
+                    once=once,
                 )
             except AutomationError as error:
                 return str(error)
@@ -518,24 +532,33 @@ class AutomationService:
                 continue
             if item.cron is None or item.timezone is None or item.next_run_at is None:
                 continue
-            try:
-                next_run = next_cron_run(
-                    item.cron,
-                    item.timezone,
-                    now=datetime.fromtimestamp(current, UTC),
+            if item.once:
+                claimed = await self.database.claim_due_once_automation(
+                    item.id, item.next_run_at, current
                 )
-            except AutomationError:
-                log.warning("automation_cron_invalid", automation_id=item.id)
-                continue
-            claimed = await self.database.claim_due_automation(
-                item.id, item.next_run_at, next_run, current
-            )
+            else:
+                try:
+                    next_run = next_cron_run(
+                        item.cron,
+                        item.timezone,
+                        now=datetime.fromtimestamp(current, UTC),
+                    )
+                except AutomationError:
+                    log.warning("automation_cron_invalid", automation_id=item.id)
+                    continue
+                claimed = await self.database.claim_due_automation(
+                    item.id, item.next_run_at, next_run, current
+                )
             if not claimed:
                 continue
             try:
                 await fire(item)
             except Exception:
                 log.exception("automation_fire_failed", automation_id=item.id)
+            if item.once:
+                await self.database.delete_automation(
+                    item.scope, item.thread_id, item.id
+                )
             fired += 1
         return fired
 
@@ -581,8 +604,7 @@ def _clean_prompt(task: str) -> str:
 def _tool_summary(item: Automation) -> str:
     state = "on" if item.enabled else "paused"
     if item.kind == "schedule":
-        zone = item.timezone or "UTC"
-        return f"{item.id} [{state}] schedule {item.cron} {zone} — {item.name}"
+        return f"{item.id} [{state}] schedule {item.trigger_label} — {item.name}"
     return f"{item.id} [{state}] webhook — {item.name}"
 
 
@@ -621,17 +643,8 @@ def automation_keyboard(
 
 
 def _button_label(item: Automation) -> str:
-    kind = _kind_label(item)
-    label = f"{item.name} · {kind}"
+    label = f"{item.name} · {item.trigger_label}"
     return label if len(label) <= 64 else label[:63].rstrip() + "…"
-
-
-def _kind_label(item: Automation) -> str:
-    if item.kind == "schedule":
-        cron = item.cron or "*"
-        zone = item.timezone or "UTC"
-        return f"{cron} {zone}"
-    return "webhook"
 
 
 class AutomationPanel:

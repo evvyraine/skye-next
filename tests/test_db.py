@@ -228,3 +228,47 @@ async def test_existing_settings_tables_are_migrated(tmp_path: Path) -> None:
         assert await database.conversation_context_message_id(-100, 0) == 0
     finally:
         await database.close()
+
+
+async def test_existing_automations_table_gains_once_column(tmp_path: Path) -> None:
+    path = tmp_path / "old.db"
+    connection = sqlite3.connect(path)
+    connection.executescript(
+        """
+        CREATE TABLE automations (
+            id TEXT PRIMARY KEY,
+            scope_kind TEXT NOT NULL,
+            scope_id INTEGER NOT NULL,
+            thread_id INTEGER NOT NULL DEFAULT 0,
+            created_by INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            prompt TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            cron TEXT,
+            timezone TEXT,
+            webhook_authorization TEXT,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            last_fired_at INTEGER,
+            next_run_at INTEGER
+        );
+        INSERT INTO automations (
+            id, scope_kind, scope_id, thread_id, created_by, name, prompt, kind,
+            cron, timezone, enabled, next_run_at
+        ) VALUES (
+            'auto1', 'user', 42, 0, 42, 'Briefing', 'Send it.', 'schedule',
+            '0 9 * * *', 'UTC', 1, 1
+        );
+        """
+    )
+    connection.close()
+
+    database = Database(path, "gpt-5.6-luna", "medium")
+    await database.open()
+    try:
+        item = await database.automation("auto1")
+        assert item is not None
+        assert not item.once
+        assert item.name == "Briefing"
+    finally:
+        await database.close()

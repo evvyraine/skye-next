@@ -1005,14 +1005,14 @@ class RichMessages:
             )
 
         rows = [[cell("Name", header=True), cell("Trigger", header=True)]]
-        rows.extend([cell(item.name), cell(_automation_trigger(item))] for item in items)
+        rows.extend([cell(item.name), cell(item.trigger_label)] for item in items)
         blocks.append(InputRichBlockTable(cells=rows, is_bordered=True, is_striped=True))
         return InputRichMessage(blocks=blocks)
 
     @staticmethod
     def automation_item(item: Automation) -> InputRichMessage:
         state = "On" if item.enabled else "Paused"
-        trigger = _automation_trigger(item)
+        trigger = item.trigger_label
         return RichMessages.prompt("Automation", f"{item.name} · {trigger} · {state}")
 
     @staticmethod
@@ -1059,11 +1059,3 @@ def _safe_url(url: str) -> str:
     host = parts.netloc.split("@")[-1]
     path = parts.path or "/"
     return f"https://{host}{path}"
-
-
-def _automation_trigger(item: Automation) -> str:
-    if item.kind == "schedule":
-        cron = item.cron or "*"
-        zone = item.timezone or "UTC"
-        return f"{cron} {zone}"
-    return "webhook"

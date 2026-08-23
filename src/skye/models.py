@@ -309,11 +309,12 @@ class Automation:
     webhook_authorization: str | None = None
     last_fired_at: int | None = None
     next_run_at: int | None = None
+    once: bool = False
 
     def __repr__(self) -> str:
         return (
             f"Automation(id={self.id!r}, kind={self.kind!r}, enabled={self.enabled}, "
-            f"scope={self.scope!r}, thread_id={self.thread_id})"
+            f"once={self.once}, scope={self.scope!r}, thread_id={self.thread_id})"
         )
 
     @property
@@ -323,6 +324,15 @@ class Automation:
     @property
     def chat_type(self) -> ChatType:
         return "private" if self.scope.kind == "user" else "supergroup"
+
+    @property
+    def trigger_label(self) -> str:
+        if self.kind == "schedule":
+            cron = self.cron or "*"
+            zone = self.timezone or "UTC"
+            label = f"{cron} {zone}"
+            return f"once {label}" if self.once else label
+        return "webhook"
 
 
 @dataclass(frozen=True, slots=True)
