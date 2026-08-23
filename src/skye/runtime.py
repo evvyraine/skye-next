@@ -53,21 +53,29 @@ from .skills import SkillService, hosted_skill_refs
 log = structlog.get_logger()
 TextCallback = Callable[[str], Awaitable[None]]
 ReplyCallback = Callable[[str, int | None], Awaitable[None]]
+VoiceCallback = Callable[[bytes, int | None], Awaitable[None]]
 EventCallback = Callable[["RunEvent"], Awaitable[None]]
 # Keep transport retries small; the runtime owns the visible retry policy.
 OPENAI_MAX_RETRIES = 0
 OPENAI_RUN_ATTEMPTS = 2
 SEND_MESSAGE_LIMIT = 8
+SPEECH_MODEL = "gpt-4o-mini-tts"
+SPEECH_VOICE = "nova"
+SPEECH_INPUT_LIMIT = 4_096
 FALLBACK_EMPTY = "Something went wrong."
 SEND_MESSAGE_VOICE = (
     "Your written assistant text is a private inner monologue. The user never sees it. "
-    "send_message is your only voice. Deciding to send is not sending. "
+    "send_message and send_voice are your only ways to speak to the user. Deciding to "
+    "send is not sending. Use send_voice when the user asks for a voice message, and "
+    "choose suitable delivery instructions for the speech in that tool call. When the "
+    "voice message itself is the requested response, call send_voice directly without "
+    "a text acknowledgment. "
     "On a user-visible turn, send a short first message before other tools, then work, "
     "then send the result. An opening ack is not delivery. Prefer two or three short "
     "bubbles, each a sentence or two. Keep the user posted on meaningful beats, not "
     "tool play-by-play. Default to a free-standing bubble. In Telegram groups, you may "
     "pass reply_to with a message_id from recent group context to quote that line, or "
-    "omit it. Never mention send_message, inner monologue, or this plumbing in "
+    "omit it. Never mention send_message, send_voice, inner monologue, or this plumbing in "
     "user-visible text."
 )
 HIDDEN_TURN_VOICE = (
@@ -110,6 +118,9 @@ class RunOutput:
 @dataclass(slots=True)
 class TurnDelivery:
     on_reply: ReplyCallback | None = None
+    on_voice: VoiceCallback | None = None
+    client: AsyncOpenAI | None = None
+    max_audio_bytes: int = 25 * 1024 * 1024
     sent: int = 0
     limit: int = SEND_MESSAGE_LIMIT
 
@@ -132,7 +143,7 @@ class TurnDelivery:
         async def send_message(text: str, reply_to: int | None = None) -> str:
             """Send a user-visible message in this chat.
 
-            This is your only voice. The user never sees your other assistant text.
+            This is a user-visible delivery tool. The user never sees your other assistant text.
             Omit reply_to for a standalone bubble. Pass a Telegram message_id to quote
             that line. Unknown ids still send as a standalone message.
 
@@ -143,6 +154,67 @@ class TurnDelivery:
             return await delivery.send(text, reply_to)
 
         return send_message
+
+    def voice_tool(self) -> FunctionTool:
+        delivery = self
+
+        @function_tool
+        async def send_voice(
+            text: str,
+            instructions: str,
+            reply_to: int | None = None,
+        ) -> str:
+            """Generate and send a user-visible voice message in this chat.
+
+            Use this when the user asks for spoken audio. Write the exact words to speak
+            in text and choose natural delivery instructions that fit their content and
+            context. Omit reply_to for a standalone voice message. Pass a Telegram
+            message_id to quote that line. Unknown ids still send standalone.
+
+            Args:
+                text: Exact words to speak, up to 4096 characters.
+                instructions: How Nova should deliver the speech, such as tone, pace,
+                    emotion, emphasis, pauses, pronunciation, or speaking style.
+                reply_to: Telegram message_id to quote-reply. Omit for a free-standing voice.
+            """
+            return await delivery.send_voice(text, instructions, reply_to)
+
+        return send_voice
+
+    async def send_voice(
+        self,
+        text: str,
+        instructions: str,
+        reply_to: int | None = None,
+    ) -> str:
+        spoken = sanitize_citations(text).strip()
+        delivery_instructions = instructions.strip()
+        if not spoken:
+            return "Nothing sent."
+        if len(spoken) > SPEECH_INPUT_LIMIT:
+            return "Voice text is too long. Keep it within 4096 characters."
+        if not delivery_instructions:
+            return "Add voice delivery instructions."
+        if self.sent >= self.limit:
+            return "Send limit reached for this turn."
+        if self.client is None or self.on_voice is None:
+            return "Voice delivery is unavailable."
+        response = await self.client.audio.speech.create(
+            model=SPEECH_MODEL,
+            voice=SPEECH_VOICE,
+            input=spoken,
+            instructions=delivery_instructions,
+            response_format="opus",
+        )
+        audio = response.content
+        if not audio:
+            return "No voice audio was generated."
+        if len(audio) > self.max_audio_bytes:
+            return "Voice message is too large. Try a shorter message."
+        quoted = reply_to if isinstance(reply_to, int) and reply_to > 0 else None
+        await self.on_voice(audio, quoted)
+        self.sent += 1
+        return "sent"
 
 
 def leftover_reply(output: RunOutput, *, awaiting_reply: bool) -> str | None:
@@ -572,12 +644,18 @@ class AgentRuntime:
         extra_instructions: str = "",
         on_event: EventCallback | None = None,
         on_reply: ReplyCallback | None = None,
+        on_voice: VoiceCallback | None = None,
         input_file_ids: tuple[str, ...] = (),
         manage_automations: bool = False,
         awaiting_reply: bool = True,
     ) -> RunOutput:
         key = run_key or telegram_run_key(context.chat_id, context.thread_id)
-        delivery = TurnDelivery(on_reply)
+        delivery = TurnDelivery(
+            on_reply=on_reply,
+            on_voice=on_voice,
+            client=self.client,
+            max_audio_bytes=self.config.skye_max_attachment_bytes,
+        )
         _ = on_text
         async with self._locks[key]:
             active = _ActiveRun()
@@ -821,6 +899,7 @@ class AgentRuntime:
         )
         tools = self._hosted_tools(capabilities, skills, input_file_ids)
         tools.append(delivery.tool())
+        tools.append(delivery.voice_tool())
         tools.extend(connector_tools.tools)
         if settings.memory_enabled:
             tools.extend(self.memory.tools(context.scope))
@@ -1113,7 +1192,7 @@ def describe_tool_event(event: object) -> RunEvent | None:
         return None
     raw: Any = getattr(item, "raw_item", item)
     name = _tool_name(item, raw)
-    if name == "send_message":
+    if name in {"send_message", "send_voice"}:
         return None
     label = _TOOL_LABELS.get(name, _fallback_tool_label(name))
     tool_id = _tool_id(raw, name)

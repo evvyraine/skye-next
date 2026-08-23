@@ -307,6 +307,21 @@ class ImageRuntime(AgentRuntime):
         return True
 
 
+class VoiceRuntime(AgentRuntime):
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    async def run(self, *args: Any, **kwargs: Any) -> RunOutput:  # type: ignore[override]
+        self.calls.append({"args": args, "kwargs": kwargs})
+        on_voice = kwargs.get("on_voice")
+        if on_voice is not None:
+            await on_voice(b"opus-audio")
+        return RunOutput("inner monologue about the voice", (), sent=1)
+
+    def stop_key(self, key: str) -> bool:
+        return True
+
+
 async def _client_with_runtime(
     database: Database, tmp_path: Path, runtime: AgentRuntime
 ) -> tuple[TestClient, ProjectService]:
@@ -395,5 +410,31 @@ async def test_web_image_only_turn_still_stores_the_image(
         assert assistant[0]["text"] == ""
         assert assistant[0]["file_ids"]
         assert payload["files"]
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_web_voice_turn_stores_playable_audio(
+    database: Database, tmp_path: Path
+) -> None:
+    client, projects = await _client_with_runtime(database, tmp_path, VoiceRuntime())
+    try:
+        await signed_in(client, projects)
+        listed = await client.get("/api/projects")
+        skye_id = (await listed.json())["projects"][0]["id"]
+        response = await client.post(
+            f"/api/projects/{skye_id}/messages", json={"text": "say it aloud"}
+        )
+        body = await response.text()
+        assert "inner monologue about the voice" not in body
+        messages = await client.get(f"/api/projects/{skye_id}/messages")
+        payload = await messages.json()
+        assistant = [item for item in payload["messages"] if item["role"] == "assistant"]
+        assert len(assistant) == 1
+        voice = next(item for item in payload["files"] if item["id"] in assistant[0]["file_ids"])
+        assert voice["filename"] == "voice.ogg"
+        assert voice["mime"] == "audio/ogg"
+        assert voice["kind"] == "document"
     finally:
         await client.close()

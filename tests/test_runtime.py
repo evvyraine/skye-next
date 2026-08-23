@@ -68,9 +68,11 @@ def test_agent_uses_only_hosted_capabilities() -> None:
         FunctionTool,
         FunctionTool,
         FunctionTool,
+        FunctionTool,
     ]
     assert [cast(FunctionTool, tool).name for tool in agent.tools[3:]] == [
         "send_message",
+        "send_voice",
         "remember",
         "recall",
         "forget",
@@ -109,12 +111,13 @@ def test_disabled_memory_is_not_injected_or_exposed() -> None:
         "secret memory",
     )
 
-    assert len(agent.tools) == 4
+    assert len(agent.tools) == 5
     assert "secret memory" not in cast(str, agent.instructions)
     names = {
         cast(FunctionTool, tool).name for tool in agent.tools if isinstance(tool, FunctionTool)
     }
     assert "send_message" in names
+    assert "send_voice" in names
 
 
 def test_memory_prompt_saves_what_the_user_wants() -> None:
@@ -284,14 +287,16 @@ def test_active_agent_and_specialist_are_composed() -> None:
     assert agent.model == "gpt-5.6-luna"
     assert "Follow the Researcher method." in cast(str, agent.instructions)
     assert "You are Skye." not in cast(str, agent.instructions)
-    assert "send_message is your only voice" in cast(str, agent.instructions)
+    assert "send_message and send_voice are your only ways" in cast(str, agent.instructions)
     assert isinstance(agent.tools[0], WebSearchTool)
     specialist_tool = cast(FunctionTool, agent.tools[-1])
     assert specialist_tool.name == "agent_b2"
     nested = cast(Any, specialist_tool)._agent_instance
     assert nested.name == "Coder"
     assert "You are Skye." not in cast(str, nested.instructions)
-    assert "send_message is your only voice" not in cast(str, nested.instructions)
+    assert "send_message and send_voice are your only ways" not in cast(
+        str, nested.instructions
+    )
     assert isinstance(nested.tools[0], ShellTool)
 
 
@@ -955,6 +960,53 @@ async def test_send_message_caps_and_rejects_empty() -> None:
     assert delivery.sent == 2
 
 
+async def test_send_voice_generates_nova_opus_with_model_instructions() -> None:
+    delivered: list[tuple[bytes, int | None]] = []
+    create = AsyncMock(return_value=SimpleNamespace(content=b"opus-audio"))
+    client = SimpleNamespace(audio=SimpleNamespace(speech=SimpleNamespace(create=create)))
+
+    async def on_voice(audio: bytes, reply_to: int | None = None) -> None:
+        delivered.append((audio, reply_to))
+
+    delivery = TurnDelivery(on_voice=on_voice, client=cast(Any, client))
+    tool = delivery.voice_tool()
+    payload = (
+        '{"text":"Good morning.","instructions":"Warm, calm, and unhurried.",'
+        '"reply_to":123}'
+    )
+
+    result = await tool.on_invoke_tool(_tool_context("send_voice", payload), payload)
+
+    assert result == "sent"
+    create.assert_awaited_once_with(
+        model="gpt-4o-mini-tts",
+        voice="nova",
+        input="Good morning.",
+        instructions="Warm, calm, and unhurried.",
+        response_format="opus",
+    )
+    assert delivered == [(b"opus-audio", 123)]
+    assert delivery.sent == 1
+    schema = tool.params_json_schema
+    assert set(schema["required"]) == {"text", "instructions", "reply_to"}
+    assert "reply_to" in schema["properties"]
+
+
+async def test_send_voice_validates_before_generating_audio() -> None:
+    create = AsyncMock()
+    client = SimpleNamespace(audio=SimpleNamespace(speech=SimpleNamespace(create=create)))
+
+    async def on_voice(_audio: bytes, _reply_to: int | None = None) -> None:
+        return
+
+    delivery = TurnDelivery(on_voice=on_voice, client=cast(Any, client))
+
+    assert await delivery.send_voice(" ", "Calm") == "Nothing sent."
+    assert await delivery.send_voice("Hello", " ") == "Add voice delivery instructions."
+    assert "too long" in await delivery.send_voice("x" * 4097, "Calm")
+    create.assert_not_awaited()
+
+
 async def test_run_keeps_inner_monologue_off_the_reply_callback() -> None:
     delivered: list[str] = []
 
@@ -1095,4 +1147,4 @@ async def test_hidden_turn_prompt_asks_skye_to_stay_quiet() -> None:
     )
     assert "background automation" not in cast(str, visible.instructions)
     assert "background automation" in cast(str, hidden.instructions)
-    assert "send_message is your only voice" in cast(str, visible.instructions)
+    assert "send_message and send_voice are your only ways" in cast(str, visible.instructions)

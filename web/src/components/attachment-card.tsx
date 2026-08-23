@@ -1,5 +1,5 @@
 import { useState } from "react"
-import { ExternalLink, FileText, X } from "lucide-react"
+import { AudioLines, ExternalLink, FileText, X } from "lucide-react"
 import { AnimatePresence, motion, useReducedMotion } from "motion/react"
 import { Button } from "@/components/ui/button"
 import {
@@ -65,6 +65,7 @@ function AttachmentCard({
   onRemove?: () => void
 }) {
   const image = item.mime.startsWith("image/")
+  const audio = item.mime.startsWith("audio/")
   const reducedMotion = useReducedMotion()
 
   return (
@@ -97,6 +98,13 @@ function AttachmentCard({
             alt={item.filename}
             eager={Boolean(onRemove)}
           />
+        ) : audio ? (
+          <div className="flex aspect-[4/3] items-center justify-center bg-muted">
+            <AudioLines
+              className="size-8 text-muted-foreground sm:size-10"
+              aria-hidden="true"
+            />
+          </div>
         ) : (
           <div className="flex aspect-[4/3] items-center justify-center bg-muted">
             <FileText
@@ -232,6 +240,7 @@ export function AttachmentPreview({
 }) {
   const image = item?.mime.startsWith("image/")
   const pdf = item?.mime === "application/pdf"
+  const audio = item?.mime.startsWith("audio/")
 
   return (
     <Dialog open={Boolean(item)} onOpenChange={onOpenChange}>
@@ -251,7 +260,12 @@ export function AttachmentPreview({
             className="h-[75dvh] w-full rounded-2xl bg-muted"
           />
         ) : null}
-        {item && !image && !pdf ? (
+        {item && audio ? (
+          <div className="flex min-h-40 items-center justify-center rounded-2xl bg-muted p-6">
+            <audio src={item.url} controls autoPlay className="w-full max-w-xl" />
+          </div>
+        ) : null}
+        {item && !image && !pdf && !audio ? (
           <div className="flex min-h-64 flex-col items-center justify-center gap-4 rounded-2xl bg-muted p-6 text-center">
             <FileText
               className="size-12 text-muted-foreground"

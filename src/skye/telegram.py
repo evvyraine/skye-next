@@ -1276,6 +1276,36 @@ class TelegramApp:
             sent_holder["count"] += 1
             placeholder = None
 
+        async def on_voice(audio: bytes, reply_to: int | None = None) -> None:
+            nonlocal placeholder, last_target
+            if placeholder is not None:
+                await self.rich.delete(placeholder)
+                placeholder = None
+            markup = None
+            if (
+                sent_holder["count"] == 0
+                and message is not None
+                and context.chat_type == "private"
+                and getattr(self, "telegram_projects", None) is not None
+            ):
+                markup = await self._private_reply_keyboard(context)
+            if message is not None:
+                last_target = await self.rich.send_voice(
+                    message,
+                    audio,
+                    reply_markup=markup,
+                    reply_to=reply_to,
+                )
+            else:
+                last_target = await self.rich.send_voice_chat(
+                    context.chat_id,
+                    context.thread_id,
+                    audio,
+                    reply_markup=markup,
+                    reply_to=reply_to,
+                )
+            sent_holder["count"] += 1
+
         try:
             output = await self.runtime.run(
                 context,
@@ -1287,6 +1317,7 @@ class TelegramApp:
                 extra_instructions=extra_instructions,
                 manage_automations=manage_automations,
                 on_reply=on_reply,
+                on_voice=on_voice,
                 awaiting_reply=awaiting_reply,
             )
             await self.quota.record(context, output.usage_tokens, billed_user_id=billed_user_id)

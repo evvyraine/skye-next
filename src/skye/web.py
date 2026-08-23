@@ -393,6 +393,20 @@ class WebApp:
             sent += 1
             await persist_assistant(text)
 
+        async def on_voice(audio: bytes, _reply_to: int | None = None) -> None:
+            nonlocal sent
+            saved = await self.projects.save_file(
+                session.user_id,
+                project_id,
+                filename="voice.ogg",
+                mime="audio/ogg",
+                data=audio,
+                kind="document",
+            )
+            await self._sse(response, "file", file_payload(saved))
+            await persist_assistant("", (saved.id,))
+            sent += 1
+
         async def on_event(event: RunEvent) -> None:
             if event.kind == "tool":
                 payload = {
@@ -436,6 +450,7 @@ class WebApp:
                 extra_instructions=project.instructions,
                 on_event=on_event,
                 on_reply=on_reply,
+                on_voice=on_voice,
                 input_file_ids=tuple(openai_file_ids),
                 awaiting_reply=True,
             )

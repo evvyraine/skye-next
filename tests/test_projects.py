@@ -146,7 +146,8 @@ def test_describe_tool_event_hides_payloads() -> None:
     assert described.image == b""
 
 
-def test_describe_tool_event_hides_send_message() -> None:
+@pytest.mark.parametrize("tool_name", ["send_message", "send_voice"])
+def test_describe_tool_event_hides_delivery_tools(tool_name: str) -> None:
     event = type(
         "Event",
         (),
@@ -157,7 +158,7 @@ def test_describe_tool_event_hides_send_message() -> None:
                 (),
                 {
                     "title": None,
-                    "raw_item": type("Raw", (), {"name": "send_message", "call_id": "c2"})(),
+                    "raw_item": type("Raw", (), {"name": tool_name, "call_id": "c2"})(),
                 },
             )(),
         },

@@ -757,6 +757,56 @@ async def test_stream_turn_passes_reply_to_through_send_message() -> None:
     assert app.rich.send.await_args_list[1].kwargs["reply_to"] == 42
 
 
+async def test_stream_turn_sends_standalone_and_quoted_voice_messages() -> None:
+    from skye.models import ChatSettings
+
+    class VoiceRuntime(AgentRuntime):
+        def __init__(self) -> None:
+            return
+
+        async def run(self, *args: Any, **kwargs: Any) -> RunOutput:  # type: ignore[override]
+            on_voice = kwargs.get("on_voice")
+            assert on_voice is not None
+            await on_voice(b"standalone")
+            await on_voice(b"quoted", 42)
+            return RunOutput("HIDDEN leftover", (), sent=2)
+
+    app = telegram_app()
+    app.access = SimpleNamespace(billed_user_id=AsyncMock(return_value=1))
+    app.quota = SimpleNamespace(check=AsyncMock(), record=AsyncMock())
+    app.runtime = VoiceRuntime()  # type: ignore[assignment]
+    app.database = SimpleNamespace(
+        get_settings=AsyncMock(return_value=ChatSettings("gpt-5.6-luna", "medium"))
+    )
+    app.billing = SimpleNamespace(
+        clamp_settings=AsyncMock(side_effect=lambda _context, current, _access: current)
+    )
+    app._can_edit = AsyncMock(return_value=False)  # type: ignore[method-assign]
+    app.groups = SimpleNamespace(mark_seen=AsyncMock())
+    incoming = private_message("send voice")
+    app.rich = SimpleNamespace(
+        output=RichMessages.output,
+        send=AsyncMock(return_value=incoming),
+        edit=AsyncMock(),
+        delete=AsyncMock(),
+        draft=AsyncMock(),
+        send_voice=AsyncMock(return_value=incoming),
+        send_images=AsyncMock(),
+        send_documents=AsyncMock(),
+    )
+    context = app._context(incoming)
+    assert context is not None
+
+    await app._stream_turn(incoming, context, "send voice")
+
+    first, second = app.rich.send_voice.await_args_list
+    assert first.args[:2] == (incoming, b"standalone")
+    assert first.kwargs["reply_to"] is None
+    assert second.args[:2] == (incoming, b"quoted")
+    assert second.kwargs["reply_to"] == 42
+    app.rich.send.assert_not_awaited()
+
+
 async def test_hidden_turn_stays_quiet_without_send_message_or_media() -> None:
     from skye.models import ChatSettings
 

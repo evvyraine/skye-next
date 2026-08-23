@@ -375,6 +375,30 @@ async def test_send_quotes_when_reply_to_is_set() -> None:
     )
 
 
+async def test_send_voice_uses_native_voice_and_optional_quote() -> None:
+    bot = AsyncMock()
+    incoming = Message(
+        message_id=17,
+        date=0,
+        chat=Chat(id=42, type="private", first_name="Alice"),
+        from_user=User(id=42, is_bot=False, first_name="Alice"),
+        text="Hello",
+    )
+
+    await RichMessages(bot).send_voice(incoming, b"opus", reply_to=123)
+
+    kwargs = bot.send_voice.await_args.kwargs
+    assert kwargs["chat_id"] == 42
+    assert kwargs["message_thread_id"] is None
+    assert kwargs["reply_parameters"] == ReplyParameters(
+        message_id=123,
+        allow_sending_without_reply=True,
+    )
+    voice = kwargs["voice"]
+    assert isinstance(voice, BufferedInputFile)
+    assert voice.filename == "voice.ogg"
+
+
 async def test_send_keeps_forum_topic_without_quoting() -> None:
     bot = AsyncMock()
     incoming = Message(
