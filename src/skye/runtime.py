@@ -14,6 +14,7 @@ from typing import Any, cast
 import structlog
 from agents import (
     Agent,
+    FunctionTool,
     ImageGenerationTool,
     ModelSettings,
     RunConfig,
@@ -21,6 +22,7 @@ from agents import (
     ShellTool,
     Tool,
     WebSearchTool,
+    function_tool,
 )
 from agents.items import TResponseInputItem
 from agents.models.interface import Model, ModelProvider
@@ -49,10 +51,26 @@ from .skills import SkillService, hosted_skill_refs
 
 log = structlog.get_logger()
 TextCallback = Callable[[str], Awaitable[None]]
+ReplyCallback = Callable[[str], Awaitable[None]]
 EventCallback = Callable[["RunEvent"], Awaitable[None]]
 # Keep transport retries small; the runtime owns the visible retry policy.
 OPENAI_MAX_RETRIES = 0
 OPENAI_RUN_ATTEMPTS = 2
+SEND_MESSAGE_LIMIT = 8
+FALLBACK_EMPTY = "Something went wrong."
+SEND_MESSAGE_VOICE = (
+    "Your written assistant text is a private inner monologue. The user never sees it. "
+    "send_message is your only voice. Deciding to send is not sending. "
+    "On a user-visible turn, send a short first message before other tools, then work, "
+    "then send the result. An opening ack is not delivery. Prefer two or three short "
+    "bubbles, each a sentence or two. Keep the user posted on meaningful beats, not "
+    "tool play-by-play. Never mention send_message, inner monologue, or this plumbing "
+    "in user-visible text."
+)
+HIDDEN_TURN_VOICE = (
+    "This turn is a background automation. Stay quiet unless there is something to "
+    "report. If you send nothing, the user is not notified. Do not send filler."
+)
 _RETRY_IN = re.compile(r"try again in\s+([0-9]+(?:\.[0-9]+)?)\s*s", re.IGNORECASE)
 _WAIT = wait_random_exponential(min=1, max=60)
 _IMAGE_GENERATION_CALL_FIELDS = frozenset({"id", "type", "status", "result"})
@@ -83,6 +101,52 @@ class RunOutput:
     images: tuple[bytes, ...]
     files: tuple[GeneratedFile, ...] = ()
     usage_tokens: int = 0
+    sent: int = 0
+
+
+@dataclass(slots=True)
+class TurnDelivery:
+    on_reply: ReplyCallback | None = None
+    sent: int = 0
+    limit: int = SEND_MESSAGE_LIMIT
+
+    async def send(self, text: str) -> str:
+        cleaned = text.strip()
+        if not cleaned:
+            return "Nothing sent."
+        if self.sent >= self.limit:
+            return "Send limit reached for this turn."
+        if self.on_reply is not None:
+            await self.on_reply(cleaned)
+        self.sent += 1
+        return "sent"
+
+    def tool(self) -> FunctionTool:
+        delivery = self
+
+        @function_tool
+        async def send_message(text: str) -> str:
+            """Send a user-visible message in this chat.
+
+            This is your only voice. The user never sees your other assistant text.
+
+            Args:
+                text: What the user should see. Keep it to a sentence or two.
+            """
+            return await delivery.send(text)
+
+        return send_message
+
+
+def leftover_reply(output: RunOutput, *, awaiting_reply: bool) -> str | None:
+    """Return hatch text when a waiting person got no send_message and no media."""
+    if output.sent > 0 or output.images or output.files:
+        return None
+    if not awaiting_reply:
+        return None
+    text = output.text.strip()
+    log.info("send_message_fallback", empty=not bool(text))
+    return text or FALLBACK_EMPTY
 
 
 @dataclass(frozen=True, slots=True)
@@ -500,10 +564,14 @@ class AgentRuntime:
         conversation_id: str | None = None,
         extra_instructions: str = "",
         on_event: EventCallback | None = None,
+        on_reply: ReplyCallback | None = None,
         input_file_ids: tuple[str, ...] = (),
         manage_automations: bool = False,
+        awaiting_reply: bool = True,
     ) -> RunOutput:
         key = run_key or telegram_run_key(context.chat_id, context.thread_id)
+        delivery = TurnDelivery(on_reply)
+        _ = on_text
         async with self._locks[key]:
             active = _ActiveRun()
             self._active[key] = active
@@ -543,6 +611,8 @@ class AgentRuntime:
                     extra_instructions,
                     tuple(attached_file_ids),
                     manage_automations,
+                    delivery,
+                    awaiting_reply,
                 )
                 if self._queue.locked():
                     log.info(
@@ -555,14 +625,20 @@ class AgentRuntime:
                     if active.cancel.is_set():
                         raise asyncio.CancelledError
                     async with asyncio.timeout(self.config.skye_run_timeout_seconds):
-                        return await self._run_stream(
+                        output = await self._run_stream(
                             agent,
                             user_input,
                             openai_conversation_id,
-                            on_text,
                             active,
                             context,
                             on_event,
+                        )
+                        return RunOutput(
+                            output.text,
+                            output.images,
+                            output.files,
+                            output.usage_tokens,
+                            delivery.sent,
                         )
             finally:
                 self._active.pop(key, None)
@@ -587,7 +663,6 @@ class AgentRuntime:
         agent: Agent[None],
         user_input: str | list[TResponseInputItem],
         conversation_id: str,
-        on_text: TextCallback,
         active: _ActiveRun,
         context: RequestContext,
         on_event: EventCallback | None = None,
@@ -622,7 +697,7 @@ class AgentRuntime:
                 if active.cancel.is_set():
                     raise asyncio.CancelledError
                 return await self._consume_stream(
-                    agent, user_input, conversation_id, on_text, active, on_event
+                    agent, user_input, conversation_id, active, on_event
                 )
         raise RuntimeError("OpenAI run retry loop exited without a result.")
 
@@ -631,7 +706,6 @@ class AgentRuntime:
         agent: Agent[None],
         user_input: str | list[TResponseInputItem],
         conversation_id: str,
-        on_text: TextCallback,
         active: _ActiveRun,
         on_event: EventCallback | None = None,
     ) -> RunOutput:
@@ -661,9 +735,6 @@ class AgentRuntime:
                 ):
                     started_streaming = True
                     text += event.data.delta
-                    await on_text(text)
-                    if on_event is not None:
-                        await on_event(RunEvent(kind="text", text=text))
                     continue
                 if on_event is None:
                     continue
@@ -716,9 +787,12 @@ class AgentRuntime:
         extra_instructions: str = "",
         input_file_ids: tuple[str, ...] = (),
         manage_automations: bool = False,
+        delivery: TurnDelivery | None = None,
+        awaiting_reply: bool = True,
     ) -> Agent[None]:
         composition = composition or AgentComposition(None, ())
         connector_tools = connector_tools or ConnectorTools((), ())
+        delivery = delivery or TurnDelivery()
         active = composition.active
         capabilities = active.version.capabilities if active else AGENT_CAPABILITIES
         instructions = self._instructions(
@@ -731,8 +805,11 @@ class AgentRuntime:
             skills,
             extra_instructions,
             include_automations=manage_automations,
+            awaiting_reply=awaiting_reply,
+            include_send_message=True,
         )
         tools = self._hosted_tools(capabilities, skills, input_file_ids)
+        tools.append(delivery.tool())
         tools.extend(connector_tools.tools)
         if settings.memory_enabled:
             tools.extend(self.memory.tools(context.scope))
@@ -771,6 +848,8 @@ class AgentRuntime:
         extra_instructions: str = "",
         *,
         include_automations: bool = False,
+        awaiting_reply: bool = True,
+        include_send_message: bool = True,
     ) -> str:
         instructions = active.version.instructions if active else self.base_prompt
         capabilities = (
@@ -778,6 +857,10 @@ class AgentRuntime:
             if capabilities is not None
             else (active.version.capabilities if active else AGENT_CAPABILITIES)
         )
+        if include_send_message:
+            instructions += f"\n\n{SEND_MESSAGE_VOICE}"
+            if not awaiting_reply:
+                instructions += f"\n\n{HIDDEN_TURN_VOICE}"
         if context.chat_type != "private":
             instructions += (
                 "\n\nYou are speaking in a Telegram group. Address the current sender when useful, "
@@ -872,7 +955,12 @@ class AgentRuntime:
         input_file_ids: tuple[str, ...] = (),
     ) -> Agent[None]:
         instructions = self._instructions(
-            context, settings, memory_context, installed, skills=skills
+            context,
+            settings,
+            memory_context,
+            installed,
+            skills=skills,
+            include_send_message=False,
         )
         tools = self._hosted_tools(installed.version.capabilities, skills, input_file_ids)
         return Agent(
@@ -883,9 +971,7 @@ class AgentRuntime:
             tools=tools,
         )
 
-    def _model_settings(
-        self, context: RequestContext, settings: ChatSettings
-    ) -> ModelSettings:
+    def _model_settings(self, context: RequestContext, settings: ChatSettings) -> ModelSettings:
         safety_id = hmac.new(
             self.config.telegram_bot_token.encode(),
             str(context.user_id).encode(),
@@ -930,9 +1016,7 @@ class AgentRuntime:
         return tuple(images)
 
 
-def estimate_usage_tokens(
-    user_input: str | list[TResponseInputItem], output_text: str
-) -> int:
+def estimate_usage_tokens(user_input: str | list[TResponseInputItem], output_text: str) -> int:
     text = AgentRuntime._query(user_input) + output_text
     return max(1, (len(text) + 1) // 2)
 
@@ -1017,6 +1101,8 @@ def describe_tool_event(event: object) -> RunEvent | None:
         return None
     raw: Any = getattr(item, "raw_item", item)
     name = _tool_name(item, raw)
+    if name == "send_message":
+        return None
     label = _TOOL_LABELS.get(name, _fallback_tool_label(name))
     tool_id = _tool_id(raw, name)
     status = "running" if event_name == "tool_called" else "done"

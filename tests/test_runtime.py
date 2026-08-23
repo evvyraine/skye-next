@@ -24,13 +24,17 @@ from skye.models import (
     Skill,
 )
 from skye.runtime import (
+    FALLBACK_EMPTY,
     AgentRuntime,
     ContextLimitError,
     GuardedResponsesModel,
+    RunOutput,
     StreamStartedError,
     TokenRateLimiter,
+    TurnDelivery,
     _dump_conversation_item,
     is_transient,
+    leftover_reply,
     retry_after,
 )
 
@@ -63,8 +67,10 @@ def test_agent_uses_only_hosted_capabilities() -> None:
         FunctionTool,
         FunctionTool,
         FunctionTool,
+        FunctionTool,
     ]
-    assert [cast(FunctionTool, tool).name for tool in agent.tools[-3:]] == [
+    assert [cast(FunctionTool, tool).name for tool in agent.tools[3:]] == [
+        "send_message",
         "remember",
         "recall",
         "forget",
@@ -103,8 +109,12 @@ def test_disabled_memory_is_not_injected_or_exposed() -> None:
         "secret memory",
     )
 
-    assert len(agent.tools) == 3
+    assert len(agent.tools) == 4
     assert "secret memory" not in cast(str, agent.instructions)
+    names = {
+        cast(FunctionTool, tool).name for tool in agent.tools if isinstance(tool, FunctionTool)
+    }
+    assert "send_message" in names
 
 
 def test_memory_prompt_saves_what_the_user_wants() -> None:
@@ -135,9 +145,7 @@ def test_automation_tools_are_attached_when_managing() -> None:
         manage_automations=True,
     )
     names = [
-        cast(FunctionTool, tool).name
-        for tool in agent.tools
-        if isinstance(tool, FunctionTool)
+        cast(FunctionTool, tool).name for tool in agent.tools if isinstance(tool, FunctionTool)
     ]
     assert "create_scheduled_automation" in names
     assert "create_webhook_automation" in names
@@ -274,12 +282,14 @@ def test_active_agent_and_specialist_are_composed() -> None:
     assert agent.model == "gpt-5.6-luna"
     assert "Follow the Researcher method." in cast(str, agent.instructions)
     assert "You are Skye." not in cast(str, agent.instructions)
+    assert "send_message is your only voice" in cast(str, agent.instructions)
     assert isinstance(agent.tools[0], WebSearchTool)
     specialist_tool = cast(FunctionTool, agent.tools[-1])
     assert specialist_tool.name == "agent_b2"
     nested = cast(Any, specialist_tool)._agent_instance
     assert nested.name == "Coder"
     assert "You are Skye." not in cast(str, nested.instructions)
+    assert "send_message is your only voice" not in cast(str, nested.instructions)
     assert isinstance(nested.tools[0], ShellTool)
 
 
@@ -509,7 +519,7 @@ async def test_run_does_not_retry_after_streaming_started() -> None:
             callback,
         )
 
-    callback.assert_awaited_once_with("partial")
+    callback.assert_not_awaited()
     assert run_streamed.call_count == 1
 
 
@@ -520,9 +530,7 @@ def test_model_settings_enable_compaction_and_disable_implicit_truncation() -> N
         ChatSettings("gpt-5.6-luna", "medium", memory_enabled=False),
     )
 
-    assert settings.context_management == [
-        {"type": "compaction", "compact_threshold": 40_000}
-    ]
+    assert settings.context_management == [{"type": "compaction", "compact_threshold": 40_000}]
     assert settings.truncation == "disabled"
 
 
@@ -590,9 +598,7 @@ async def test_guard_counts_a_snapshot_without_locking_the_conversation() -> Non
     client.conversations.items.list.return_value = type(
         "Page", (), {"data": [history], "has_next_page": lambda self: False}
     )()
-    client.responses.input_tokens.count.return_value = type(
-        "Count", (), {"input_tokens": 100}
-    )()
+    client.responses.input_tokens.count.return_value = type("Count", (), {"input_tokens": 100})()
     limiter = AsyncMock()
     model = GuardedResponsesModel("gpt-5.6-luna", client, limiter, 50_000, 4_000)
 
@@ -641,9 +647,7 @@ async def test_guard_replaces_incomplete_images_in_conversation_snapshots() -> N
     client.conversations.items.list.return_value = type(
         "Page", (), {"data": [history], "has_next_page": lambda self: False}
     )()
-    client.responses.input_tokens.count.return_value = type(
-        "Count", (), {"input_tokens": 100}
-    )()
+    client.responses.input_tokens.count.return_value = type("Count", (), {"input_tokens": 100})()
     limiter = AsyncMock()
     model = GuardedResponsesModel("gpt-5.6-luna", client, limiter, 50_000, 4_000)
 
@@ -679,9 +683,7 @@ async def test_guard_drops_image_generation_action_from_conversation_snapshots()
     client.conversations.items.list.return_value = type(
         "Page", (), {"data": [history], "has_next_page": lambda self: False}
     )()
-    client.responses.input_tokens.count.return_value = type(
-        "Count", (), {"input_tokens": 100}
-    )()
+    client.responses.input_tokens.count.return_value = type("Count", (), {"input_tokens": 100})()
     limiter = AsyncMock()
     model = GuardedResponsesModel("gpt-5.6-luna", client, limiter, 50_000, 4_000)
 
@@ -860,3 +862,120 @@ def test_usage_falls_back_to_a_conservative_length_estimate() -> None:
     assert _usage_value(SimpleNamespace(prompt_tokens=4, completion_tokens=6)) == 10
     assert _usage_value({"total_tokens": 8}) == 8
     assert _usage_value(None) is None
+
+
+def _tool_context(name: str, payload: str) -> Any:
+    from agents.tool_context import ToolContext
+
+    return ToolContext(
+        context=None,
+        tool_name=name,
+        tool_arguments=payload,
+        tool_call_id="call_1",
+        run_config=None,
+    )
+
+
+async def test_send_message_delivers_without_echoing_the_text() -> None:
+    delivered: list[str] = []
+
+    async def on_reply(text: str) -> None:
+        delivered.append(text)
+
+    delivery = TurnDelivery(on_reply)
+    tool = delivery.tool()
+    first = await tool.on_invoke_tool(
+        _tool_context("send_message", '{"text":"Hi."}'),
+        '{"text":"Hi."}',
+    )
+    second = await tool.on_invoke_tool(
+        _tool_context("send_message", '{"text":"Done."}'), '{"text":"Done."}'
+    )
+
+    assert first == "sent"
+    assert second == "sent"
+    assert delivered == ["Hi.", "Done."]
+    assert delivery.sent == 2
+
+
+async def test_send_message_caps_and_rejects_empty() -> None:
+    delivered: list[str] = []
+
+    async def on_reply(text: str) -> None:
+        delivered.append(text)
+
+    delivery = TurnDelivery(on_reply, limit=2)
+    tool = delivery.tool()
+    await tool.on_invoke_tool(_tool_context("send_message", '{"text":"one"}'), '{"text":"one"}')
+    await tool.on_invoke_tool(_tool_context("send_message", '{"text":"two"}'), '{"text":"two"}')
+    capped = await tool.on_invoke_tool(
+        _tool_context("send_message", '{"text":"three"}'), '{"text":"three"}'
+    )
+    empty = await tool.on_invoke_tool(
+        _tool_context("send_message", '{"text":"  "}'),
+        '{"text":"  "}',
+    )
+
+    assert capped == "Send limit reached for this turn."
+    assert empty == "Nothing sent."
+    assert delivered == ["one", "two"]
+    assert delivery.sent == 2
+
+
+async def test_run_keeps_inner_monologue_off_the_reply_callback() -> None:
+    delivered: list[str] = []
+
+    async def on_reply(text: str) -> None:
+        delivered.append(text)
+
+    runtime = runtime_for_run()
+    stream = FakeStream(output="HIDDEN leftover prose")
+    with (
+        patch("skye.runtime.Runner.run_streamed", return_value=stream),
+        patch("skye.runtime.collect_container_files", AsyncMock(return_value=())),
+    ):
+        output = await runtime.run(
+            RequestContext(1, "private", 1),
+            ChatSettings("gpt-5.6-luna", "medium", memory_enabled=False),
+            "hello",
+            AsyncMock(),
+            on_reply=on_reply,
+        )
+
+    assert output.text == "HIDDEN leftover prose"
+    assert output.sent == 0
+    assert delivered == []
+    assert leftover_reply(output, awaiting_reply=True) == "HIDDEN leftover prose"
+    assert leftover_reply(output, awaiting_reply=False) is None
+
+
+def test_leftover_reply_hides_prose_when_media_or_send_message_exists() -> None:
+    text_only = RunOutput("inner thoughts", ())
+    assert leftover_reply(text_only, awaiting_reply=True) == "inner thoughts"
+    assert leftover_reply(RunOutput("", ()), awaiting_reply=True) == FALLBACK_EMPTY
+    assert leftover_reply(RunOutput("inner", (), sent=2), awaiting_reply=True) is None
+    assert leftover_reply(RunOutput("inner", (b"png",)), awaiting_reply=True) is None
+    media = leftover_reply(
+        RunOutput("inner", (), files=(GeneratedFile("a.md", b"x"),)),
+        awaiting_reply=True,
+    )
+    assert media is None
+    assert leftover_reply(text_only, awaiting_reply=False) is None
+
+
+async def test_hidden_turn_prompt_asks_skye_to_stay_quiet() -> None:
+    memory = MemoryService(cast(Any, None))
+    runtime = AgentRuntime(config(), cast(Any, None), memory, "You are Skye.")
+    visible = runtime._agent(
+        RequestContext(1, "private", 1),
+        ChatSettings("gpt-5.6-luna", "medium", memory_enabled=False),
+        awaiting_reply=True,
+    )
+    hidden = runtime._agent(
+        RequestContext(1, "private", 1),
+        ChatSettings("gpt-5.6-luna", "medium", memory_enabled=False),
+        awaiting_reply=False,
+    )
+    assert "background automation" not in cast(str, visible.instructions)
+    assert "background automation" in cast(str, hidden.instructions)
+    assert "send_message is your only voice" in cast(str, visible.instructions)
