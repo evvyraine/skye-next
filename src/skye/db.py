@@ -20,6 +20,8 @@ from .models import (
     AgentProfile,
     AgentVersion,
     AgentVisibility,
+    Automation,
+    AutomationKind,
     ChatSettings,
     ConnectorKind,
     ConnectorShare,
@@ -434,6 +436,30 @@ CREATE TABLE IF NOT EXISTS group_plus_payers (
     user_id INTEGER NOT NULL,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS automations (
+    id TEXT PRIMARY KEY,
+    scope_kind TEXT NOT NULL CHECK (scope_kind IN ('user', 'chat')),
+    scope_id INTEGER NOT NULL,
+    thread_id INTEGER NOT NULL DEFAULT 0,
+    created_by INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    prompt TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('schedule', 'webhook')),
+    cron TEXT,
+    timezone TEXT,
+    webhook_authorization TEXT,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    last_fired_at INTEGER,
+    next_run_at INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS automations_scope
+ON automations(scope_kind, scope_id, thread_id, created_at);
+
+CREATE INDEX IF NOT EXISTS automations_due
+ON automations(kind, enabled, next_run_at);
 """
 
 
@@ -2360,6 +2386,137 @@ class Database:
             size=int(row["size"]),
             kind=cast(WebFileKind, row["kind"]),
             created_at=cast(str, row["created_at"]),
+        )
+
+    async def save_automation(self, automation: Automation) -> Automation:
+        await self._write(
+            """INSERT INTO automations (
+                   id, scope_kind, scope_id, thread_id, created_by, name, prompt, kind,
+                   cron, timezone, webhook_authorization, enabled, last_fired_at, next_run_at
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                automation.id,
+                automation.scope.kind,
+                automation.scope.id,
+                automation.thread_id,
+                automation.created_by,
+                automation.name,
+                automation.prompt,
+                automation.kind,
+                automation.cron,
+                automation.timezone,
+                automation.webhook_authorization,
+                int(automation.enabled),
+                automation.last_fired_at,
+                automation.next_run_at,
+            ),
+        )
+        saved = await self.automation(automation.id)
+        if saved is None:
+            raise RuntimeError("Automation was not saved")
+        return saved
+
+    async def automation(self, automation_id: str) -> Automation | None:
+        cursor = await self.conn.execute(
+            "SELECT * FROM automations WHERE id = ?",
+            (automation_id,),
+        )
+        row = await cursor.fetchone()
+        return self._automation(row) if row else None
+
+    async def list_automations(self, scope: Scope, thread_id: int) -> list[Automation]:
+        cursor = await self.conn.execute(
+            """SELECT * FROM automations
+               WHERE scope_kind = ? AND scope_id = ? AND thread_id = ?
+               ORDER BY lower(name), created_at""",
+            (scope.kind, scope.id, thread_id),
+        )
+        return [self._automation(row) for row in await cursor.fetchall()]
+
+    async def count_automations(self, scope: Scope, thread_id: int) -> int:
+        cursor = await self.conn.execute(
+            """SELECT COUNT(*) FROM automations
+               WHERE scope_kind = ? AND scope_id = ? AND thread_id = ?""",
+            (scope.kind, scope.id, thread_id),
+        )
+        row = await cursor.fetchone()
+        return int(row[0]) if row else 0
+
+    async def update_automation(self, automation: Automation) -> Automation:
+        await self._write(
+            """UPDATE automations
+               SET name = ?, prompt = ?, cron = ?, timezone = ?, enabled = ?,
+                   last_fired_at = ?, next_run_at = ?
+               WHERE id = ? AND scope_kind = ? AND scope_id = ? AND thread_id = ?""",
+            (
+                automation.name,
+                automation.prompt,
+                automation.cron,
+                automation.timezone,
+                int(automation.enabled),
+                automation.last_fired_at,
+                automation.next_run_at,
+                automation.id,
+                automation.scope.kind,
+                automation.scope.id,
+                automation.thread_id,
+            ),
+        )
+        saved = await self.automation(automation.id)
+        if saved is None:
+            raise LookupError("Automation not found.")
+        return saved
+
+    async def delete_automation(self, scope: Scope, thread_id: int, automation_id: str) -> bool:
+        cursor = await self._write(
+            """DELETE FROM automations
+               WHERE id = ? AND scope_kind = ? AND scope_id = ? AND thread_id = ?""",
+            (automation_id, scope.kind, scope.id, thread_id),
+        )
+        return cursor.rowcount > 0
+
+    async def due_automations(self, now: int) -> list[Automation]:
+        cursor = await self.conn.execute(
+            """SELECT * FROM automations
+               WHERE kind = 'schedule' AND enabled = 1
+                 AND next_run_at IS NOT NULL AND next_run_at <= ?
+               ORDER BY next_run_at, id LIMIT 50""",
+            (now,),
+        )
+        return [self._automation(row) for row in await cursor.fetchall()]
+
+    async def claim_due_automation(
+        self,
+        automation_id: str,
+        expected_next_run_at: int,
+        next_run_at: int,
+        last_fired_at: int,
+    ) -> bool:
+        cursor = await self._write(
+            """UPDATE automations
+               SET next_run_at = ?, last_fired_at = ?
+               WHERE id = ? AND kind = 'schedule' AND enabled = 1 AND next_run_at = ?""",
+            (next_run_at, last_fired_at, automation_id, expected_next_run_at),
+        )
+        return cursor.rowcount > 0
+
+    @staticmethod
+    def _automation(row: aiosqlite.Row) -> Automation:
+        return Automation(
+            id=cast(str, row["id"]),
+            scope=Scope(cast(ScopeKind, row["scope_kind"]), int(row["scope_id"])),
+            thread_id=int(row["thread_id"]),
+            created_by=int(row["created_by"]),
+            name=cast(str, row["name"]),
+            prompt=cast(str, row["prompt"]),
+            kind=cast(AutomationKind, row["kind"]),
+            enabled=bool(row["enabled"]),
+            created_at=cast(str, row["created_at"]),
+            cron=cast(str | None, row["cron"]),
+            timezone=cast(str | None, row["timezone"]),
+            webhook_authorization=cast(str | None, row["webhook_authorization"]),
+            last_fired_at=cast(int | None, row["last_fired_at"]),
+            next_run_at=cast(int | None, row["next_run_at"]),
         )
 
 

@@ -31,6 +31,7 @@ from .models import (
     AccessEffect,
     AccessEntry,
     AppConnector,
+    Automation,
     ChatSettings,
     ConnectorShare,
     ConnectorSnapshot,
@@ -62,6 +63,20 @@ class RichMessages:
             message_thread_id=api_thread_id(target),
             rich_message=self._content(content),
             reply_parameters=reply_parameters(target),
+            reply_markup=reply_markup,
+        )
+
+    async def send_chat(
+        self,
+        chat_id: int,
+        thread_id: int,
+        content: str | InputRichMessage,
+        reply_markup: InlineKeyboardMarkup | ReplyKeyboardMarkup | None = None,
+    ) -> Message:
+        return await self.bot.send_rich_message(
+            chat_id=chat_id,
+            message_thread_id=thread_id or None,
+            rich_message=self._content(content),
             reply_markup=reply_markup,
         )
 
@@ -969,6 +984,58 @@ class RichMessages:
         )
 
     @staticmethod
+    def automations(items: Sequence[Automation]) -> InputRichMessage:
+        blocks: list[InputRichBlockUnion] = [
+            InputRichBlockSectionHeading(text="Automations", size=2),
+        ]
+        if not items:
+            blocks.append(
+                InputRichBlockParagraph(
+                    text="None in this chat. Ask Skye to create a scheduled or webhook automation."
+                )
+            )
+            return InputRichMessage(blocks=blocks)
+
+        def cell(text: str | RichTextUnion, *, header: bool = False) -> RichBlockTableCell:
+            return RichBlockTableCell(
+                text=text,
+                is_header=header or None,
+                align="left",
+                valign="middle",
+            )
+
+        rows = [[cell("Name", header=True), cell("Trigger", header=True)]]
+        rows.extend([cell(item.name), cell(_automation_trigger(item))] for item in items)
+        blocks.append(InputRichBlockTable(cells=rows, is_bordered=True, is_striped=True))
+        return InputRichMessage(blocks=blocks)
+
+    @staticmethod
+    def automation_item(item: Automation) -> InputRichMessage:
+        state = "On" if item.enabled else "Paused"
+        trigger = _automation_trigger(item)
+        return RichMessages.prompt("Automation", f"{item.name} · {trigger} · {state}")
+
+    @staticmethod
+    def automation_hook(url: str, authorization: str) -> InputRichMessage:
+        return InputRichMessage(
+            blocks=[
+                InputRichBlockSectionHeading(text="Webhook", size=2),
+                InputRichBlockParagraph(
+                    text="POST to this URL. Send this Authorization header exactly."
+                ),
+                InputRichBlockParagraph(text=["URL: ", _code(url)]),
+                InputRichBlockParagraph(text=["Authorization: ", _code(authorization)]),
+            ]
+        )
+
+    @staticmethod
+    def automation_delete_confirm(name: str) -> InputRichMessage:
+        return RichMessages.prompt(
+            "Delete this automation?",
+            f"“{name}” will be removed. This cannot be undone.",
+        )
+
+    @staticmethod
     def output(markdown: str) -> InputRichMessage:
         return InputRichMessage(markdown=markdown.strip() or "Done.")
 
@@ -992,3 +1059,11 @@ def _safe_url(url: str) -> str:
     host = parts.netloc.split("@")[-1]
     path = parts.path or "/"
     return f"https://{host}{path}"
+
+
+def _automation_trigger(item: Automation) -> str:
+    if item.kind == "schedule":
+        cron = item.cron or "*"
+        zone = item.timezone or "UTC"
+        return f"{cron} {zone}"
+    return "webhook"

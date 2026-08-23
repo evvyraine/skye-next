@@ -15,6 +15,7 @@ ProjectKind = Literal["skye", "custom"]
 WebMessageRole = Literal["user", "assistant", "tool", "system"]
 WebFileKind = Literal["upload", "image", "document"]
 ToolStatus = Literal["running", "done"]
+AutomationKind = Literal["schedule", "webhook"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -290,6 +291,38 @@ class GroupMessage:
     reply_sender_username: str | None
     reply_excerpt: str | None
     sent_at: int
+
+
+@dataclass(frozen=True, slots=True)
+class Automation:
+    id: str
+    scope: Scope
+    thread_id: int
+    created_by: int
+    name: str
+    prompt: str
+    kind: AutomationKind
+    enabled: bool
+    created_at: str
+    cron: str | None = None
+    timezone: str | None = None
+    webhook_authorization: str | None = None
+    last_fired_at: int | None = None
+    next_run_at: int | None = None
+
+    def __repr__(self) -> str:
+        return (
+            f"Automation(id={self.id!r}, kind={self.kind!r}, enabled={self.enabled}, "
+            f"scope={self.scope!r}, thread_id={self.thread_id})"
+        )
+
+    @property
+    def chat_id(self) -> int:
+        return self.scope.id
+
+    @property
+    def chat_type(self) -> ChatType:
+        return "private" if self.scope.kind == "user" else "supergroup"
 
 
 @dataclass(frozen=True, slots=True)

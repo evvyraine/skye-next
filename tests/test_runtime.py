@@ -121,6 +121,29 @@ def test_memory_prompt_saves_what_the_user_wants() -> None:
     assert "Never save secrets" not in instructions
 
 
+def test_automation_tools_are_attached_when_managing() -> None:
+    from skye.automations import AutomationService
+
+    memory = MemoryService(cast(Any, None))
+    automations = AutomationService(cast(Any, None), "https://chat.skye-bot.com")
+    runtime = AgentRuntime(
+        config(), cast(Any, None), memory, "You are Skye.", automations=automations
+    )
+    agent = runtime._agent(
+        RequestContext(1, "private", 1),
+        ChatSettings("gpt-5.6-luna", "medium"),
+        manage_automations=True,
+    )
+    names = [
+        cast(FunctionTool, tool).name
+        for tool in agent.tools
+        if isinstance(tool, FunctionTool)
+    ]
+    assert "create_scheduled_automation" in names
+    assert "create_webhook_automation" in names
+    assert "You can create scheduled or webhook automations" in cast(str, agent.instructions)
+
+
 def test_connector_labels_are_private_context_only() -> None:
     memory = MemoryService(cast(Any, None))
     runtime = AgentRuntime(config(), cast(Any, None), memory, "You are Skye.")

@@ -18,6 +18,7 @@ from pydantic import ValidationError
 from .access import AccessService, ChatAdministrator
 from .attachments import AttachmentService
 from .auth import TelegramAuth
+from .automations import AutomationService
 from .billing import BillingService
 from .config import Settings
 from .connectors import ComposioClient, ConnectorService
@@ -107,6 +108,7 @@ async def run() -> None:
     )
     billing = BillingService(database, config.telegram_bot_token)
     skills = SkillService(database, client, config.skye_max_attachment_bytes)
+    automations = AutomationService(database, config.skye_web_origin)
     runtime = AgentRuntime(
         config,
         conversations,
@@ -116,11 +118,11 @@ async def run() -> None:
         connectors,
         client,
         skills,
+        automations,
     )
     projects = ProjectService(database, client, config.skye_web_files_path)
     telegram_projects = TelegramProjectService(database, client)
     auth = TelegramAuth(config, database, projects)
-    web_app = WebApp(config, database, access, runtime, projects, auth, client)
     telegram = TelegramApp(
         config,
         bot,
@@ -137,6 +139,18 @@ async def run() -> None:
         skills,
         telegram_projects,
         billing,
+        automations,
+    )
+    web_app = WebApp(
+        config,
+        database,
+        access,
+        runtime,
+        projects,
+        auth,
+        client,
+        automations,
+        telegram.enqueue_automation,
     )
     dispatcher.update.outer_middleware(UpdateMiddleware(database, groups, media_groups))
     dispatcher.include_router(telegram.router)
@@ -155,6 +169,9 @@ async def run() -> None:
             log.info("pending_updates_dropped", count=dropped)
         await bot.delete_webhook(drop_pending_updates=True)
         runner = await serve_web(web_app)
+        scheduler = asyncio.create_task(
+            automations.run_loop(telegram.fire_automation, runtime.busy)
+        )
         stop = asyncio.Event()
         loop = asyncio.get_running_loop()
         for sig in (signal.SIGINT, signal.SIGTERM):
@@ -173,8 +190,11 @@ async def run() -> None:
             await stop.wait()
         finally:
             polling.cancel()
+            scheduler.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await polling
+            with contextlib.suppress(asyncio.CancelledError):
+                await scheduler
             await runner.cleanup()
     finally:
         await connectors.aclose()

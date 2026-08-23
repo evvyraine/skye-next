@@ -13,7 +13,7 @@ from agents.items import TResponseInputItem
 from aiogram import BaseMiddleware, Bot, F, Router
 from aiogram.client.default import Default
 from aiogram.dispatcher.event.bases import UNHANDLED
-from aiogram.exceptions import TelegramBadRequest
+from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -34,6 +34,12 @@ from aiogram.types import (
 
 from .access import AccessService
 from .attachments import AttachmentService
+from .automations import (
+    AutomationPanel,
+    AutomationService,
+    automation_context,
+    automation_turn_text,
+)
 from .billing import AccountPanel, BillingError, BillingService
 from .config import Reasoning, Settings
 from .connectors import ConnectorError, ConnectorPanel, ConnectorService, ConnectorWizard
@@ -47,6 +53,7 @@ from .models import (
     AccessEffect,
     AccessEntry,
     AgentCapability,
+    Automation,
     ChatSettings,
     ChatType,
     InstalledAgent,
@@ -142,6 +149,7 @@ class TelegramApp:
         skills: SkillService,
         telegram_projects: TelegramProjectService,
         billing: BillingService,
+        automations: AutomationService | None = None,
     ) -> None:
         self.config = config
         self.bot = bot
@@ -158,12 +166,17 @@ class TelegramApp:
         self.skill_service = skills
         self.telegram_projects = telegram_projects
         self.billing = billing
+        self.automations = automations
         self.quota = QuotaService(database, billing, access)
         self.rich = RichMessages(bot)
         self.connectors = ConnectorPanel(connectors, self.rich, bot)
         self.skill_panel = SkillPanel(skills, self.rich, bot)
         self.project_panel = ProjectPanel(telegram_projects, self.rich, bot)
         self.account = AccountPanel(billing, access, self.rich, bot)
+        self.automation_panel = (
+            AutomationPanel(automations, self.rich) if automations is not None else None
+        )
+        self._automation_tasks: set[asyncio.Task[None]] = set()
         self.router = Router(name="skye")
         self._register()
 
@@ -269,7 +282,7 @@ class TelegramApp:
             "I can chat, search the web, work with images, "
             "run code in an isolated container, and use apps and skills you add.\n\n"
             "/account — Skye plans, Telegram Stars, and cancellation\n\n"
-            "/settings — reasoning, agent, memory, connectors, and skills\n\n"
+            "/settings — reasoning, agent, memory, connectors, skills, and automations\n\n"
             "/projects — switch and manage project chats\n\n"
             "/agents — create, install, select, and share agents\n\n"
             "/catchup — summarize this conversation\n\n"
@@ -350,6 +363,29 @@ class TelegramApp:
             return
         editable = await self._can_edit(context)
         action = callback.data.split(":")
+        if action == ["settings", "autos"]:
+            if self.automation_panel is None:
+                await callback.answer()
+                return
+            await self.automation_panel.show_list(callback.message, context, editable=editable)
+            await callback.answer()
+            return
+        if (
+            len(action) == 3
+            and action[0] == "settings"
+            and action[1] in {"auto", "ahook", "adel", "arm"}
+        ):
+            if self.automation_panel is None:
+                await callback.answer()
+                return
+            notice = await self.automation_panel.handle(
+                callback.message, context, action[1], action[2], editable=editable
+            )
+            if notice:
+                await callback.answer(notice, show_alert=True)
+                return
+            await callback.answer()
+            return
         current = await self.database.get_settings(context.scope)
         agent_name = await self.custom_agents.active_name(context.scope, current.active_agent_id)
 
@@ -1158,9 +1194,42 @@ class TelegramApp:
             input_file_ids=tuple(input_file_ids),
         )
 
+    def enqueue_automation(self, item: Automation, body: str = "") -> None:
+        task = asyncio.create_task(self.fire_automation(item, body))
+        self._automation_tasks.add(task)
+        task.add_done_callback(self._automation_tasks.discard)
+
+    async def fire_automation(self, item: Automation, body: str = "") -> None:
+        context = automation_context(item)
+        if not await self.access.allowed(context):
+            log.info("automation_skipped", automation_id=item.id, reason="access")
+            return
+        conversation_id: str | None = None
+        extra_instructions = ""
+        if context.chat_type == "private":
+            project = await self.telegram_projects.active(context.user_id)
+            conversation_id = await self.telegram_projects.conversation_id(project)
+            extra_instructions = project.instructions
+        try:
+            await self._stream_turn(
+                None,
+                context,
+                automation_turn_text(item, body),
+                conversation_id=conversation_id,
+                extra_instructions=extra_instructions,
+                draft=False,
+            )
+        except TelegramAPIError:
+            log.warning(
+                "automation_delivery_failed",
+                automation_id=item.id,
+                chat_id=context.chat_id,
+                thread_id=context.thread_id,
+            )
+
     async def _stream_turn(
         self,
-        message: Message,
+        message: Message | None,
         context: RequestContext,
         user_input: str | list[TResponseInputItem],
         *,
@@ -1175,14 +1244,20 @@ class TelegramApp:
         try:
             await self.quota.check(context, billed_user_id=billed_user_id)
         except AllowanceError as error:
-            await self.rich.send(message, error.message)
+            await self._notify(message, context, error.message)
             return
+        try:
+            manage_automations = await self._can_edit(context)
+        except TelegramAPIError:
+            manage_automations = False
         placeholder: Message | None = None
-        use_draft = context.chat_type == "private" if draft is None else draft
-        if use_draft:
+        use_draft = False
+        if message is not None:
+            use_draft = context.chat_type == "private" if draft is None else draft
+        if use_draft and message is not None:
             await self.rich.draft(message)
         else:
-            placeholder = await self.rich.send(message, "Thinking…")
+            placeholder = await self._thinking(message, context)
         last_edit = 0.0
         streamed_text = ""
 
@@ -1194,11 +1269,12 @@ class TelegramApp:
                 return
             last_edit = now
             with suppress(TelegramBadRequest):
-                if use_draft:
+                if use_draft and message is not None:
                     await self.rich.draft(message, text[:32000])
                 elif placeholder:
                     await self.rich.edit(placeholder, text[:32000] or "Thinking…")
 
+        target = message or placeholder
         try:
             output = await self.runtime.run(
                 context,
@@ -1208,26 +1284,34 @@ class TelegramApp:
                 input_file_ids=input_file_ids,
                 conversation_id=conversation_id,
                 extra_instructions=extra_instructions,
+                manage_automations=manage_automations,
             )
             await self.quota.record(context, output.usage_tokens, billed_user_id=billed_user_id)
-            if context.chat_type != "private":
+            if message is not None and context.chat_type != "private":
                 await self.groups.mark_seen(message)
-            await self._deliver(message, placeholder, output)
+            if target is not None:
+                await self._deliver(target, placeholder, output)
         except AllowanceError as error:
-            await self._finish(message, placeholder, error.message)
+            await self._finish_turn(message, context, placeholder, error.message)
         except TimeoutError:
-            await self._finish(message, placeholder, "This took too long, so I stopped it.")
+            await self._finish_turn(
+                message, context, placeholder, "This took too long, so I stopped it."
+            )
         except asyncio.CancelledError:
-            await self._finish(message, placeholder, "Stopped.")
+            await self._finish_turn(message, context, placeholder, "Stopped.")
         except ContextLimitError as error:
-            await self._finish(message, placeholder, str(error))
+            await self._finish_turn(message, context, placeholder, str(error))
         except StreamStartedError:
             content = streamed_text.strip()
             if content:
                 content += "\n\n_Response interrupted. Please continue with a new message._"
-                await self._finish(message, placeholder, self.rich.output(content))
+                await self._finish_turn(
+                    message, context, placeholder, self.rich.output(content)
+                )
             else:
-                await self._finish(message, placeholder, "The response was interrupted. Try again.")
+                await self._finish_turn(
+                    message, context, placeholder, "The response was interrupted. Try again."
+                )
         except Exception as error:
             log.exception(
                 "agent_run_failed",
@@ -1236,7 +1320,35 @@ class TelegramApp:
                 error=type(error).__name__,
                 error_detail=str(error)[:300],
             )
-            await self._finish(message, placeholder, "Something went wrong. Please try again.")
+            await self._finish_turn(
+                message, context, placeholder, "Something went wrong. Please try again."
+            )
+
+    async def _thinking(self, message: Message | None, context: RequestContext) -> Message:
+        if message is not None:
+            return await self.rich.send(message, "Thinking…")
+        return await self.rich.send_chat(context.chat_id, context.thread_id, "Thinking…")
+
+    async def _notify(
+        self, message: Message | None, context: RequestContext, content: str | InputRichMessage
+    ) -> None:
+        if message is not None:
+            await self.rich.send(message, content)
+            return
+        await self.rich.send_chat(context.chat_id, context.thread_id, content)
+
+    async def _finish_turn(
+        self,
+        message: Message | None,
+        context: RequestContext,
+        placeholder: Message | None,
+        content: str | InputRichMessage,
+    ) -> None:
+        target = placeholder or message
+        if target is None:
+            await self.rich.send_chat(context.chat_id, context.thread_id, content)
+            return
+        await self._finish(target, placeholder, content)
 
     async def _input(
         self,
@@ -1542,6 +1654,7 @@ class TelegramApp:
                 [
                     [InlineKeyboardButton(text="Connectors", callback_data="settings:connectors")],
                     [InlineKeyboardButton(text="Skills", callback_data="settings:skills")],
+                    [InlineKeyboardButton(text="Automations", callback_data="settings:autos")],
                 ]
             )
             return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -1559,6 +1672,7 @@ class TelegramApp:
                     InlineKeyboardButton(text="Skills", callback_data="settings:skills"),
                 ],
                 [InlineKeyboardButton(text="Memory", callback_data="settings:memory")],
+                [InlineKeyboardButton(text="Automations", callback_data="settings:autos")],
             ]
         )
         return InlineKeyboardMarkup(inline_keyboard=rows)

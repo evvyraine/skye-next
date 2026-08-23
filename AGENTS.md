@@ -20,7 +20,7 @@ Skye's voice is calm, short, warm, and grounded. She is female. Identity and ton
 
 - Telegram identity, permissions, updates, buttons, streaming, and files
 - Web chat at `chat.skye-bot.com`: Telegram Login, private projects, streaming, and files
-- Durable product data: settings, allowlist, memories, custom agents, connectors, skills, web projects, Telegram Stars entitlements
+- Durable product data: settings, allowlist, memories, custom agents, connectors, skills, web projects, Telegram Stars entitlements, automations
 - Safe composition of the active agent and its tools
 - Reliability, observability, and lifecycle
 
@@ -31,6 +31,7 @@ We do not own a model loop, a provider abstraction, a billing provider, an admin
 - **One provider.** OpenAI Responses API through `openai-agents`. Every normal chat turn is `Agent` + `Runner.run_streamed()`. Use the official `openai` client only for resource lifecycle (conversations, files, skills). No Chat Completions fallback. No second-provider interface until a second real provider exists.
 - **One hosted model.** Chat turns use `gpt-5.6-luna`. There is no user-facing model picker. Public copy never names Luna, Terra, Sol, GPT, or other model IDs. If asked, Skye says she works on Sun Engine.
 - **No Mini App.** Telegram settings stay inline-keyboard messages edited in place. Callback data is a short action plus an opaque id — never JSON, never trusted client state. The web app at `chat.skye-bot.com` is a second transport for private project chats, not a Mini App and not an admin panel.
+- **Automations are in-process.** Scheduled cron and webhook triggers run a normal Skye turn in the bound Telegram chat or forum topic, with that chat's tools and conversation. The scheduler is an asyncio loop in the bot process. Webhooks are `POST /automations/{id}/hook` on the web app, authenticated by a stored Authorization header. Skye creates them with function tools; `/settings` lists and deletes one at a time. Anyone who can edit settings can manage them.
 - **Connectors are per user.** Hosted apps connect through Composio; custom HTTPS MCP is stored locally. A group run receives a connector only after the owner explicitly shares that one item with that group. The owner or a group admin can revoke the share.
 - **Explicit composition.** One typed app container, one startup function. Features expose services; they do not register themselves.
 - **Two memories, never mixed.** OpenAI `conversation_id` is the working context for a Telegram thread or a web project — send only the new turn; `/reset` (or web reset) starts a new conversation. Skye memories are small, inspectable, scoped facts (`remember` / `recall` / `forget`). Private memories are `scope=user`. Group memories are `scope=chat`. A group run never sees a participant's private memories. Never combine an Agents SDK `Session` with `conversation_id` on the same run. Telegram stores the OpenAI conversation id, not a duplicate transcript. The web UI may keep a display/search event log; that log is never sent back as model history. Web projects never share a conversation id with a Telegram DM.

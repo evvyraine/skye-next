@@ -17,10 +17,15 @@ from .attachments import (
     upload_openai_file,
 )
 from .auth import COOKIE_NAME, OIDC_COOKIE, AuthError, TelegramAuth
+from .automations import (
+    AutomationService,
+    authorization_matches,
+    sanitize_webhook_body,
+)
 from .billing import BillingService
 from .config import Settings
 from .db import Database
-from .models import RequestContext, WebFile, WebSession
+from .models import Automation, RequestContext, WebFile, WebSession
 from .projects import (
     PROJECT_COLORS,
     PROJECT_ICONS,
@@ -47,6 +52,8 @@ class WebApp:
         projects: ProjectService,
         auth: TelegramAuth,
         client: AsyncOpenAI,
+        automations: AutomationService | None = None,
+        fire_automation: Callable[[Automation, str], None] | None = None,
     ) -> None:
         self.config = config
         self.database = database
@@ -55,6 +62,8 @@ class WebApp:
         self.projects = projects
         self.auth = auth
         self.client = client
+        self.automations = automations
+        self.fire_automation = fire_automation
         self.billing = BillingService(database, config.telegram_bot_token)
         self.quota = QuotaService(database, self.billing, access)
         self.app = web.Application(
@@ -85,6 +94,7 @@ class WebApp:
         add("GET", "/api/files/{id}", self.get_file)
         add("GET", "/api/files/{id}/thumbnail", self.get_thumbnail)
         add("GET", "/api/meta", self.meta)
+        add("POST", "/automations/{id}/hook", self.automation_hook)
 
     @web.middleware
     async def _headers(self, request: web.Request, handler: Handler) -> web.StreamResponse:
@@ -95,6 +105,23 @@ class WebApp:
 
     async def health(self, request: web.Request) -> web.Response:
         return web.json_response({"ok": True})
+
+    async def automation_hook(self, request: web.Request) -> web.Response:
+        if self.automations is None:
+            raise web.HTTPNotFound()
+        item = await self.automations.get(request.match_info["id"])
+        if item is None or item.kind != "webhook":
+            raise web.HTTPNotFound()
+        if not authorization_matches(
+            item.webhook_authorization or "", request.headers.get("Authorization")
+        ):
+            raise web.HTTPUnauthorized()
+        if not item.enabled:
+            raise web.HTTPNotFound()
+        body = sanitize_webhook_body(await request.read())
+        if self.fire_automation is not None:
+            self.fire_automation(item, body)
+        return web.Response(status=202)
 
     async def meta(self, request: web.Request) -> web.Response:
         return web.json_response({"icons": list(PROJECT_ICONS), "colors": list(PROJECT_COLORS)})
