@@ -218,6 +218,7 @@ def test_settings_keyboard_adds_connectors_in_private() -> None:
         "Connectors",
         "Skills",
         "Memory",
+        "Automations",
     ]
     assert group_labels == [
         "Reasoning",
@@ -225,8 +226,9 @@ def test_settings_keyboard_adds_connectors_in_private() -> None:
         "Connectors",
         "Skills",
         "Memory",
+        "Automations",
     ]
-    assert inspect_labels == ["Connectors", "Skills"]
+    assert inspect_labels == ["Connectors", "Skills", "Automations"]
 
 
 def _group_message(chat_id: int, sender_id: int, message_id: int = 1) -> GroupMessage:

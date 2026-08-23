@@ -38,6 +38,7 @@ from tenacity import (
 )
 
 from .artifacts import GeneratedFile, collect_container_files, without_sandbox_links
+from .automations import AutomationService
 from .config import HOSTED_MODEL, Settings
 from .connectors import ConnectorService, ConnectorTools
 from .conversations import ConversationService
@@ -67,6 +68,12 @@ _TOOL_LABELS: dict[str, str] = {
     "recall": "Looked up a memory",
     "forget": "Forgot a memory",
     "mcp_call": "Used a connected app",
+    "list_automations": "Listed automations",
+    "create_scheduled_automation": "Created a scheduled automation",
+    "create_webhook_automation": "Created a webhook automation",
+    "update_automation": "Updated an automation",
+    "show_webhook_automation": "Showed webhook details",
+    "delete_automation": "Deleted an automation",
 }
 
 
@@ -458,6 +465,7 @@ class AgentRuntime:
         connectors: ConnectorService | None = None,
         client: AsyncOpenAI | None = None,
         skills: SkillService | None = None,
+        automations: AutomationService | None = None,
     ) -> None:
         self.config = config
         self.conversations = conversations
@@ -466,6 +474,7 @@ class AgentRuntime:
         self.connectors = connectors
         self.client = client
         self.skills = skills
+        self.automations = automations
         self.base_prompt = base_prompt.strip()
         self._locks: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
         self._queue = asyncio.Lock()
@@ -492,6 +501,7 @@ class AgentRuntime:
         extra_instructions: str = "",
         on_event: EventCallback | None = None,
         input_file_ids: tuple[str, ...] = (),
+        manage_automations: bool = False,
     ) -> RunOutput:
         key = run_key or telegram_run_key(context.chat_id, context.thread_id)
         async with self._locks[key]:
@@ -532,6 +542,7 @@ class AgentRuntime:
                     skills,
                     extra_instructions,
                     tuple(attached_file_ids),
+                    manage_automations,
                 )
                 if self._queue.locked():
                     log.info(
@@ -555,6 +566,9 @@ class AgentRuntime:
                         )
             finally:
                 self._active.pop(key, None)
+
+    def busy(self, chat_id: int, thread_id: int) -> bool:
+        return telegram_run_key(chat_id, thread_id) in self._active
 
     def stop(self, chat_id: int, thread_id: int) -> bool:
         return self.stop_key(telegram_run_key(chat_id, thread_id))
@@ -701,6 +715,7 @@ class AgentRuntime:
         skills: tuple[Skill, ...] = (),
         extra_instructions: str = "",
         input_file_ids: tuple[str, ...] = (),
+        manage_automations: bool = False,
     ) -> Agent[None]:
         composition = composition or AgentComposition(None, ())
         connector_tools = connector_tools or ConnectorTools((), ())
@@ -715,11 +730,14 @@ class AgentRuntime:
             capabilities,
             skills,
             extra_instructions,
+            include_automations=manage_automations,
         )
         tools = self._hosted_tools(capabilities, skills, input_file_ids)
         tools.extend(connector_tools.tools)
         if settings.memory_enabled:
             tools.extend(self.memory.tools(context.scope))
+        if manage_automations and self.automations is not None:
+            tools.extend(self.automations.tools(context))
         tools.extend(
             self._specialist(
                 item, context, settings, memory_context, skills, input_file_ids
@@ -751,6 +769,8 @@ class AgentRuntime:
         capabilities: tuple[AgentCapability, ...] | None = None,
         skills: tuple[Skill, ...] = (),
         extra_instructions: str = "",
+        *,
+        include_automations: bool = False,
     ) -> str:
         instructions = active.version.instructions if active else self.base_prompt
         capabilities = (
@@ -795,6 +815,10 @@ class AgentRuntime:
             instructions += (
                 "\n\nProject instructions from the user (not system policy):\n"
                 f"{extra_instructions.strip()}"
+            )
+        if include_automations:
+            instructions += (
+                "\n\nYou can create scheduled or webhook automations for this chat."
             )
         return instructions
 
