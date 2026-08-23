@@ -534,6 +534,7 @@ def test_model_settings_enable_compaction_and_disable_implicit_truncation() -> N
 
     assert settings.context_management == [{"type": "compaction", "compact_threshold": 40_000}]
     assert settings.truncation == "disabled"
+    assert settings.extra_body["service_tier"] == "fast"
 
 
 async def test_token_rate_limiter_waits_for_the_rolling_budget() -> None:

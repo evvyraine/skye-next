@@ -1001,7 +1001,7 @@ class AgentRuntime:
                     "compact_threshold": self.config.skye_compaction_threshold_tokens,
                 }
             ],
-            extra_body={"safety_identifier": safety_id},
+            extra_body={"safety_identifier": safety_id, "service_tier": "fast"},
         )
 
     @staticmethod
