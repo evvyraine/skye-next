@@ -818,7 +818,8 @@ class AgentRuntime:
             )
         if include_automations:
             instructions += (
-                "\n\nYou can create scheduled or webhook automations for this chat."
+                "\n\nYou can create scheduled or webhook automations for this chat. "
+                "A schedule can repeat, or run once at the next matching time."
             )
         return instructions
 

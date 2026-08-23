@@ -452,7 +452,8 @@ CREATE TABLE IF NOT EXISTS automations (
     enabled INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     last_fired_at INTEGER,
-    next_run_at INTEGER
+    next_run_at INTEGER,
+    once INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS automations_scope
@@ -490,6 +491,7 @@ class Database:
             "conversations", "context_message_id", "INTEGER NOT NULL DEFAULT 0"
         )
         await self._ensure_column("user_settings", "active_telegram_project_id", "TEXT")
+        await self._ensure_column("automations", "once", "INTEGER NOT NULL DEFAULT 0")
         await self._normalize_group_message_threads()
         await self._migrate_composio_sessions()
         await self.connection.commit()
@@ -2392,8 +2394,9 @@ class Database:
         await self._write(
             """INSERT INTO automations (
                    id, scope_kind, scope_id, thread_id, created_by, name, prompt, kind,
-                   cron, timezone, webhook_authorization, enabled, last_fired_at, next_run_at
-               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   cron, timezone, webhook_authorization, enabled, last_fired_at, next_run_at,
+                   once
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 automation.id,
                 automation.scope.kind,
@@ -2409,6 +2412,7 @@ class Database:
                 int(automation.enabled),
                 automation.last_fired_at,
                 automation.next_run_at,
+                int(automation.once),
             ),
         )
         saved = await self.automation(automation.id)
@@ -2446,7 +2450,7 @@ class Database:
         await self._write(
             """UPDATE automations
                SET name = ?, prompt = ?, cron = ?, timezone = ?, enabled = ?,
-                   last_fired_at = ?, next_run_at = ?
+                   last_fired_at = ?, next_run_at = ?, once = ?
                WHERE id = ? AND scope_kind = ? AND scope_id = ? AND thread_id = ?""",
             (
                 automation.name,
@@ -2456,6 +2460,7 @@ class Database:
                 int(automation.enabled),
                 automation.last_fired_at,
                 automation.next_run_at,
+                int(automation.once),
                 automation.id,
                 automation.scope.kind,
                 automation.scope.id,
@@ -2495,8 +2500,24 @@ class Database:
         cursor = await self._write(
             """UPDATE automations
                SET next_run_at = ?, last_fired_at = ?
-               WHERE id = ? AND kind = 'schedule' AND enabled = 1 AND next_run_at = ?""",
+               WHERE id = ? AND kind = 'schedule' AND enabled = 1 AND once = 0
+                 AND next_run_at = ?""",
             (next_run_at, last_fired_at, automation_id, expected_next_run_at),
+        )
+        return cursor.rowcount > 0
+
+    async def claim_due_once_automation(
+        self,
+        automation_id: str,
+        expected_next_run_at: int,
+        last_fired_at: int,
+    ) -> bool:
+        cursor = await self._write(
+            """UPDATE automations
+               SET next_run_at = NULL, last_fired_at = ?, enabled = 0
+               WHERE id = ? AND kind = 'schedule' AND enabled = 1 AND once = 1
+                 AND next_run_at = ?""",
+            (last_fired_at, automation_id, expected_next_run_at),
         )
         return cursor.rowcount > 0
 
@@ -2517,6 +2538,7 @@ class Database:
             webhook_authorization=cast(str | None, row["webhook_authorization"]),
             last_fired_at=cast(int | None, row["last_fired_at"]),
             next_run_at=cast(int | None, row["next_run_at"]),
+            once=bool(row["once"]),
         )
 
 
