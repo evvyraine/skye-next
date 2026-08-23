@@ -41,6 +41,7 @@ from tenacity import (
 
 from .artifacts import GeneratedFile, collect_container_files, without_sandbox_links
 from .automations import AutomationService
+from .citations import sanitize_citations, url_citations
 from .config import HOSTED_MODEL, Settings
 from .connectors import ConnectorService, ConnectorTools
 from .conversations import ConversationService
@@ -113,7 +114,7 @@ class TurnDelivery:
     limit: int = SEND_MESSAGE_LIMIT
 
     async def send(self, text: str, reply_to: int | None = None) -> str:
-        cleaned = text.strip()
+        cleaned = sanitize_citations(text).strip()
         if not cleaned:
             return "Nothing sent."
         if self.sent >= self.limit:
@@ -150,7 +151,7 @@ def leftover_reply(output: RunOutput, *, awaiting_reply: bool) -> str | None:
         return None
     if not awaiting_reply:
         return None
-    text = output.text.strip()
+    text = sanitize_citations(output.text).strip()
     log.info("send_message_fallback", empty=not bool(text))
     return text or FALLBACK_EMPTY
 
@@ -771,7 +772,11 @@ class AgentRuntime:
         usage = _usage_tokens(result)
         if usage is None:
             usage = estimate_usage_tokens(user_input, final)
-        return RunOutput(without_sandbox_links(final.strip()), images, files, usage)
+        cleaned = sanitize_citations(
+            without_sandbox_links(final.strip()),
+            annotations=url_citations(result),
+        )
+        return RunOutput(cleaned, images, files, usage)
 
     async def _delay(self, active: _ActiveRun, seconds: float) -> None:
         if active.cancel.is_set():

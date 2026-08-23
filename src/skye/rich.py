@@ -27,6 +27,7 @@ from aiogram.types import (
 )
 
 from .artifacts import GeneratedFile
+from .citations import sanitize_citations
 from .config import Reasoning
 from .models import (
     AccessEffect,
@@ -156,7 +157,7 @@ class RichMessages:
 
     async def draft(self, target: Message, text: str | None = None) -> None:
         content = (
-            InputRichMessage(markdown=text)
+            self._content(text)
             if text
             else InputRichMessage(blocks=[InputRichBlockThinking(text="Thinking…")])
         )
@@ -1069,13 +1070,18 @@ class RichMessages:
 
     @staticmethod
     def output(markdown: str) -> InputRichMessage:
-        return InputRichMessage(markdown=markdown.strip() or "Done.")
+        return InputRichMessage(markdown=sanitize_citations(markdown).strip() or "Done.")
 
     @staticmethod
     def _content(content: str | InputRichMessage) -> InputRichMessage:
-        if isinstance(content, InputRichMessage):
-            return content
-        return InputRichMessage(markdown=content)
+        if isinstance(content, str):
+            return InputRichMessage(markdown=sanitize_citations(content))
+        markdown = getattr(content, "markdown", None)
+        if isinstance(markdown, str) and markdown:
+            cleaned = sanitize_citations(markdown)
+            if cleaned != markdown:
+                return content.model_copy(update={"markdown": cleaned})
+        return content
 
 
 def _bold(text: str) -> RichTextBold:

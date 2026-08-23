@@ -995,6 +995,90 @@ def test_leftover_reply_hides_prose_when_media_or_send_message_exists() -> None:
     assert leftover_reply(text_only, awaiting_reply=False) is None
 
 
+async def test_run_replaces_cited_tokens_from_web_search_annotations() -> None:
+    token = "\ue200cite\ue202turn0view0\ue201"
+    text = f"Paris is the capital. {token}"
+    start = text.index(token)
+    stream = FakeStream(output=text)
+    stream.raw_responses = [
+        SimpleNamespace(
+            output=[
+                SimpleNamespace(
+                    type="message",
+                    content=[
+                        SimpleNamespace(
+                            type="output_text",
+                            annotations=[
+                                SimpleNamespace(
+                                    type="url_citation",
+                                    start_index=start,
+                                    end_index=start + len(token),
+                                    url="https://example.com/paris",
+                                    title="Paris",
+                                )
+                            ],
+                        )
+                    ],
+                )
+            ]
+        )
+    ]
+    runtime = runtime_for_run()
+    with (
+        patch("skye.runtime.Runner.run_streamed", return_value=stream),
+        patch("skye.runtime.collect_container_files", AsyncMock(return_value=())),
+    ):
+        output = await runtime.run(
+            RequestContext(1, "private", 1),
+            ChatSettings("gpt-5.6-luna", "medium", memory_enabled=False),
+            "hello",
+            AsyncMock(),
+        )
+
+    assert output.text == "Paris is the capital. [Paris](https://example.com/paris)"
+    assert leftover_reply(output, awaiting_reply=True) == output.text
+    assert "cite" not in output.text
+    assert "turn0view0" not in output.text
+
+
+def test_leftover_reply_strips_citation_tokens() -> None:
+    token = "\ue200cite\ue202turn0view0\ue201"
+    cleaned = leftover_reply(
+        RunOutput(f"Paris is the capital. {token}", ()),
+        awaiting_reply=True,
+    )
+    assert cleaned == "Paris is the capital."
+    assert leftover_reply(RunOutput(token, ()), awaiting_reply=True) == FALLBACK_EMPTY
+    surviving = leftover_reply(
+        RunOutput(f"See https://example.com/report {token}", ()),
+        awaiting_reply=True,
+    )
+    assert surviving == "See https://example.com/report"
+
+
+async def test_send_message_sanitizes_citation_tokens() -> None:
+    delivered: list[str] = []
+
+    async def on_reply(text: str, reply_to: int | None = None) -> None:
+        delivered.append(text)
+
+    delivery = TurnDelivery(on_reply)
+    tool = delivery.tool()
+    token = "\ue200cite\ue202turn0view0\ue201"
+    payload = '{"text":"Paris is the capital. ' + token + ' See https://example.com/report"}'
+    result = await tool.on_invoke_tool(_tool_context("send_message", payload), payload)
+    empty = await tool.on_invoke_tool(
+        _tool_context("send_message", '{"text":"' + token + '"}'),
+        '{"text":"' + token + '"}',
+    )
+
+    assert result == "sent"
+    assert empty == "Nothing sent."
+    assert delivered == ["Paris is the capital. See https://example.com/report"]
+    assert "cite" not in delivered[0]
+    assert "turn0view0" not in delivered[0]
+
+
 async def test_hidden_turn_prompt_asks_skye_to_stay_quiet() -> None:
     memory = MemoryService(cast(Any, None))
     runtime = AgentRuntime(config(), cast(Any, None), memory, "You are Skye.")
