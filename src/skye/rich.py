@@ -14,7 +14,6 @@ from aiogram.types import (
     InputRichBlockParagraph,
     InputRichBlockSectionHeading,
     InputRichBlockTable,
-    InputRichBlockThinking,
     InputRichBlockUnion,
     InputRichMessage,
     Message,
@@ -46,6 +45,7 @@ from .models import (
     TelegramProject,
 )
 from .telegram_threads import api_thread_id, quote_reply, reply_parameters
+from .ui import activity_message, decorate_keyboard
 
 
 class RichMessages:
@@ -67,7 +67,7 @@ class RichMessages:
             message_thread_id=api_thread_id(target),
             rich_message=self._content(content),
             reply_parameters=quote_reply(reply_to),
-            reply_markup=reply_markup,
+            reply_markup=decorate_keyboard(reply_markup),
         )
 
     async def send_chat(
@@ -84,7 +84,7 @@ class RichMessages:
             message_thread_id=thread_id or None,
             rich_message=self._content(content),
             reply_parameters=quote_reply(reply_to),
-            reply_markup=reply_markup,
+            reply_markup=decorate_keyboard(reply_markup),
         )
 
     async def edit(
@@ -98,7 +98,7 @@ class RichMessages:
                 chat_id=message.chat.id,
                 message_id=message.message_id,
                 rich_message=self._content(content),
-                reply_markup=reply_markup,
+                reply_markup=decorate_keyboard(reply_markup),
             )
         except TelegramBadRequest as error:
             if "message is not modified" not in error.message.lower():
@@ -163,7 +163,7 @@ class RichMessages:
             target.chat.id,
             api_thread_id(target) or 0,
             audio,
-            reply_markup=reply_markup,
+            reply_markup=decorate_keyboard(reply_markup),
             reply_to=reply_to,
         )
 
@@ -189,11 +189,7 @@ class RichMessages:
             await self.bot.delete_message(chat_id=message.chat.id, message_id=message.message_id)
 
     async def draft(self, target: Message, text: str | None = None) -> None:
-        content = (
-            self._content(text)
-            if text
-            else InputRichMessage(blocks=[InputRichBlockThinking(text="Thinking…")])
-        )
+        content = self._content(text) if text else activity_message(draft=True)
         await self.bot.send_rich_message_draft(
             chat_id=target.chat.id,
             message_thread_id=api_thread_id(target),

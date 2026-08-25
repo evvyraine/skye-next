@@ -26,8 +26,8 @@ from .rich import RichMessages
 log = structlog.get_logger()
 
 DEFAULT_EMOJI = "☁️"
-PROJECT_KEYBOARD_PROJECTS = "💼 Projects"
-PROJECT_KEYBOARD_CATCHUP = "📝 Catch up"
+PROJECT_KEYBOARD_PROJECTS = "Projects"
+PROJECT_KEYBOARD_CATCHUP = "Catch up"
 PRESET_EMOJIS: tuple[str, ...] = (
     "☁️",
     "💬",

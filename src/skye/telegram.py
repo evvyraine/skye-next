@@ -74,6 +74,7 @@ from .telegram_projects import (
     project_reply_keyboard,
 )
 from .telegram_threads import thread_id
+from .ui import activity_message
 
 log = structlog.get_logger()
 REASONING: tuple[Reasoning, ...] = ("none", "low", "medium", "high", "xhigh", "max")
@@ -187,12 +188,16 @@ class TelegramApp:
         self.router.message.register(self.settings, Command("settings"))
         self.router.message.register(self.projects, Command("projects"))
         self.router.message.register(
-            self.projects, F.chat.type == "private", F.text == PROJECT_KEYBOARD_PROJECTS
+            self.projects,
+            F.chat.type == "private",
+            F.text.in_({PROJECT_KEYBOARD_PROJECTS, "💼 Projects"}),
         )
         self.router.message.register(self.agents, Command("agents"))
         self.router.message.register(self.catchup, Command("catchup"))
         self.router.message.register(
-            self.catchup, F.chat.type == "private", F.text == PROJECT_KEYBOARD_CATCHUP
+            self.catchup,
+            F.chat.type == "private",
+            F.text.in_({PROJECT_KEYBOARD_CATCHUP, "📝 Catch up"}),
         )
         self.router.message.register(self.reset, Command("reset"))
         self.router.message.register(self.stop, Command("stop"))
@@ -1369,8 +1374,10 @@ class TelegramApp:
 
     async def _thinking(self, message: Message | None, context: RequestContext) -> Message:
         if message is not None:
-            return await self.rich.send(message, "Thinking…")
-        return await self.rich.send_chat(context.chat_id, context.thread_id, "Thinking…")
+            return await self.rich.send(message, activity_message(draft=False))
+        return await self.rich.send_chat(
+            context.chat_id, context.thread_id, activity_message(draft=False)
+        )
 
     async def _notify(
         self, message: Message | None, context: RequestContext, content: str | InputRichMessage

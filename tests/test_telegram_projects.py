@@ -206,7 +206,7 @@ async def test_project_reply_keyboard_uses_plain_labels() -> None:
     markup = project_reply_keyboard(project)
     labels = [button.text for row in markup.keyboard for button in row]
     assert labels == [PROJECT_KEYBOARD_PROJECTS, PROJECT_KEYBOARD_CATCHUP]
-    assert labels == ["💼 Projects", "📝 Catch up"]
+    assert labels == ["Projects", "Catch up"]
     assert markup.input_field_placeholder == "🧠 Research"
     assert markup.is_persistent is True
 
