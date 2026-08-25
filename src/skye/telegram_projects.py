@@ -117,9 +117,12 @@ def origin_suffix(from_settings: bool) -> str:
 
 
 class TelegramProjectService:
-    def __init__(self, database: Database, client: AsyncOpenAI) -> None:
+    def __init__(
+        self, database: Database, client: AsyncOpenAI, *, remote_conversations: bool = True
+    ) -> None:
         self.database = database
         self.client = client
+        self.remote_conversations = remote_conversations
         self._locks: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
 
     async def ensure_skye(self, user_id: int) -> TelegramProject:
@@ -248,16 +251,20 @@ class TelegramProjectService:
             current = await self.require(project.user_id, project.id)
             if current.openai_conversation_id:
                 return current.openai_conversation_id
-            conversation = await self.client.conversations.create(
-                metadata={
-                    "telegram_user": str(project.user_id),
-                    "telegram_project": project.id,
-                }
-            )
+            if self.remote_conversations:
+                conversation = await self.client.conversations.create(
+                    metadata={
+                        "telegram_user": str(project.user_id),
+                        "telegram_project": project.id,
+                    }
+                )
+                conversation_id = conversation.id
+            else:
+                conversation_id = f"telegram-project:{project.id}"
             await self.database.set_telegram_conversation(
-                project.user_id, project.id, conversation.id
+                project.user_id, project.id, conversation_id
             )
-            return conversation.id
+            return conversation_id
 
     async def _ensure_active(self, user_id: int, project: TelegramProject) -> None:
         active_id = await self.database.active_telegram_project_id(user_id)
@@ -269,6 +276,9 @@ class TelegramProjectService:
 
     async def _delete_conversation(self, conversation_id: str | None) -> None:
         if not conversation_id:
+            return
+        if not self.remote_conversations:
+            await self.database.clear_session(conversation_id)
             return
         try:
             await self.client.conversations.delete(conversation_id)

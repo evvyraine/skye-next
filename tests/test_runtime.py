@@ -6,7 +6,14 @@ from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
-from agents import FunctionTool, ImageGenerationTool, ModelSettings, ShellTool, WebSearchTool
+from agents import (
+    FunctionTool,
+    HostedMCPTool,
+    ImageGenerationTool,
+    ModelSettings,
+    ShellTool,
+    WebSearchTool,
+)
 from openai import APIError, BadRequestError, RateLimitError
 
 from skye.artifacts import GeneratedFile
@@ -128,6 +135,34 @@ def test_attached_files_are_mounted_in_the_hosted_sandbox() -> None:
         "network_policy": sandbox_network_policy(),
         "file_ids": ["file_1", "file_2"],
     }
+
+
+def test_openrouter_uses_only_openrouter_server_tools() -> None:
+    memory = MemoryService(cast(Any, None))
+    runtime = AgentRuntime(
+        config(
+            openai_api_key=None,
+            openrouter_api_key="sk-or-test",
+            skye_default_model="anthropic/claude-sonnet-4.6",
+            skye_image_model="openai/gpt-5-image",
+        ),
+        cast(Any, None),
+        memory,
+        "You are Skye.",
+    )
+
+    tools = runtime._hosted_tools(("web", "image", "shell"), input_file_ids=("or_file_1",))
+
+    assert all(isinstance(tool, HostedMCPTool) for tool in tools)
+    configs = [cast(HostedMCPTool, tool).tool_config for tool in tools]
+    assert [item["type"] for item in configs] == [
+        "openrouter:web_search",
+        "openrouter:web_fetch",
+        "openrouter:image_generation",
+        "openrouter:shell",
+    ]
+    assert configs[2]["parameters"] == {"model": "openai/gpt-5-image"}
+    assert configs[3]["parameters"]["environment"]["file_ids"] == ["or_file_1"]
 
 
 def test_disabled_memory_is_not_injected_or_exposed() -> None:
@@ -322,9 +357,7 @@ def test_active_agent_and_specialist_are_composed() -> None:
     nested = cast(Any, specialist_tool)._agent_instance
     assert nested.name == "Coder"
     assert "You are Skye." not in cast(str, nested.instructions)
-    assert "send_message and send_voice are your only ways" not in cast(
-        str, nested.instructions
-    )
+    assert "send_message and send_voice are your only ways" not in cast(str, nested.instructions)
     assert isinstance(nested.tools[0], ShellTool)
 
 
@@ -1191,10 +1224,7 @@ async def test_send_voice_generates_nova_opus_with_model_instructions() -> None:
 
     delivery = TurnDelivery(on_voice=on_voice, client=cast(Any, client))
     tool = delivery.voice_tool()
-    payload = (
-        '{"text":"Good morning.","instructions":"Warm, calm, and unhurried.",'
-        '"reply_to":123}'
-    )
+    payload = '{"text":"Good morning.","instructions":"Warm, calm, and unhurried.","reply_to":123}'
 
     result = await tool.on_invoke_tool(_tool_context("send_voice", payload), payload)
 

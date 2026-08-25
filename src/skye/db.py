@@ -87,6 +87,29 @@ CREATE TABLE IF NOT EXISTS conversations (
     PRIMARY KEY (chat_id, thread_id)
 );
 
+CREATE TABLE IF NOT EXISTS agent_sessions (
+    session_id TEXT PRIMARY KEY,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS agent_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL REFERENCES agent_sessions(session_id) ON DELETE CASCADE,
+    message_data TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS agent_messages_session
+ON agent_messages(session_id, id);
+
+CREATE TABLE IF NOT EXISTS agent_session_files (
+    session_id TEXT NOT NULL REFERENCES agent_sessions(session_id) ON DELETE CASCADE,
+    file_id TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (session_id, file_id)
+);
+
 CREATE TABLE IF NOT EXISTS telegram_projects (
     id TEXT PRIMARY KEY,
     user_id INTEGER NOT NULL,
@@ -1244,6 +1267,94 @@ class Database:
             (chat_id, thread_id),
         )
         return conversation_id
+
+    async def session_items(self, session_id: str) -> list[dict[str, Any]]:
+        cursor = await self.conn.execute(
+            "SELECT message_data FROM agent_messages WHERE session_id = ? ORDER BY id",
+            (session_id,),
+        )
+        items: list[dict[str, Any]] = []
+        for row in await cursor.fetchall():
+            try:
+                value = json.loads(cast(str, row["message_data"]))
+            except json.JSONDecodeError, TypeError:
+                continue
+            if isinstance(value, dict):
+                items.append(value)
+        return items
+
+    async def add_session_items(self, session_id: str, items: list[dict[str, Any]]) -> None:
+        if not items:
+            return
+        async with self.transaction() as connection:
+            await connection.execute(
+                "INSERT OR IGNORE INTO agent_sessions (session_id) VALUES (?)",
+                (session_id,),
+            )
+            await connection.executemany(
+                "INSERT INTO agent_messages (session_id, message_data) VALUES (?, ?)",
+                [
+                    (session_id, json.dumps(item, ensure_ascii=False, separators=(",", ":")))
+                    for item in items
+                ],
+            )
+            await connection.execute(
+                "UPDATE agent_sessions SET updated_at = CURRENT_TIMESTAMP WHERE session_id = ?",
+                (session_id,),
+            )
+
+    async def pop_session_item(self, session_id: str) -> dict[str, Any] | None:
+        async with self.transaction() as connection:
+            cursor = await connection.execute(
+                """DELETE FROM agent_messages
+                   WHERE id = (SELECT id FROM agent_messages WHERE session_id = ?
+                               ORDER BY id DESC LIMIT 1)
+                   RETURNING message_data""",
+                (session_id,),
+            )
+            row = await cursor.fetchone()
+        if row is None:
+            return None
+        try:
+            value = json.loads(cast(str, row["message_data"]))
+        except json.JSONDecodeError, TypeError:
+            return None
+        return value if isinstance(value, dict) else None
+
+    async def clear_session(self, session_id: str) -> None:
+        async with self.transaction() as connection:
+            await connection.execute(
+                "DELETE FROM agent_messages WHERE session_id = ?", (session_id,)
+            )
+            await connection.execute(
+                "DELETE FROM agent_sessions WHERE session_id = ?", (session_id,)
+            )
+
+    async def session_has_items(self, session_id: str) -> bool:
+        cursor = await self.conn.execute(
+            "SELECT 1 FROM agent_messages WHERE session_id = ? LIMIT 1", (session_id,)
+        )
+        return await cursor.fetchone() is not None
+
+    async def add_session_files(self, session_id: str, file_ids: Sequence[str]) -> None:
+        if not file_ids:
+            return
+        async with self.transaction() as connection:
+            await connection.execute(
+                "INSERT OR IGNORE INTO agent_sessions (session_id) VALUES (?)", (session_id,)
+            )
+            await connection.executemany(
+                "INSERT OR IGNORE INTO agent_session_files (session_id, file_id) VALUES (?, ?)",
+                [(session_id, file_id) for file_id in file_ids],
+            )
+
+    async def session_files(self, session_id: str, limit: int = 20) -> tuple[str, ...]:
+        cursor = await self.conn.execute(
+            """SELECT file_id FROM agent_session_files WHERE session_id = ?
+               ORDER BY created_at DESC, file_id DESC LIMIT ?""",
+            (session_id, limit),
+        )
+        return tuple(str(row["file_id"]) for row in await cursor.fetchall())
 
     async def active_telegram_project_id(self, user_id: int) -> str | None:
         cursor = await self.conn.execute(

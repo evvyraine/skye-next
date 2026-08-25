@@ -1,11 +1,12 @@
 from pathlib import Path
 from typing import Annotated, Literal
 
-from pydantic import BeforeValidator, Field, ValidationInfo, field_validator
+from pydantic import BeforeValidator, Field, ValidationInfo, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
-ModelId = Literal["gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol"]
+ModelId = str
 Reasoning = Literal["none", "low", "medium", "high", "xhigh", "max"]
+Provider = Literal["openai", "openrouter"]
 
 HOSTED_MODEL: ModelId = "gpt-5.6-luna"
 MODELS: dict[ModelId, str] = {
@@ -73,7 +74,8 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     telegram_bot_token: str = Field(min_length=1)
-    openai_api_key: str = Field(min_length=1)
+    openai_api_key: str | None = None
+    openrouter_api_key: str | None = None
     composio_api_key: str | None = None
     skye_owner_ids: OwnerIds = Field(min_length=1)
     skye_database_path: Path = Path("data/skye.db")
@@ -89,6 +91,8 @@ class Settings(BaseSettings):
     skye_max_concurrent_runs: int = Field(default=8, ge=1, le=64)
     skye_max_attachment_bytes: int = Field(default=25 * 1024 * 1024, ge=1)
     skye_transcription_model: str = "gpt-transcribe"
+    skye_speech_model: str = "gpt-4o-mini-tts"
+    skye_image_model: str = "gpt-image-2"
     skye_media_group_settle_seconds: float = Field(default=0.75, ge=0.1, le=5.0)
     skye_group_context_messages: int = Field(default=20, ge=1, le=100)
     skye_group_context_message_chars: int = Field(default=1_500, ge=100, le=4_096)
@@ -131,6 +135,34 @@ class Settings(BaseSettings):
     @classmethod
     def _empty_key(cls, value: object) -> object:
         return _clean_secret(value)
+
+    @field_validator("openai_api_key", "openrouter_api_key", mode="before")
+    @classmethod
+    def _empty_provider_key(cls, value: object) -> object:
+        return _clean_secret(value)
+
+    @model_validator(mode="after")
+    def _provider_key_is_required(self) -> Settings:
+        if not self.openai_api_key and not self.openrouter_api_key:
+            raise ValueError("OPENAI_API_KEY or OPENROUTER_API_KEY is required")
+        if not self.openrouter_api_key and self.skye_default_model not in MODELS:
+            raise ValueError("OpenAI chat model must be one of the hosted Skye models")
+        return self
+
+    @property
+    def provider(self) -> Provider:
+        return "openrouter" if self.openrouter_api_key else "openai"
+
+    @property
+    def provider_api_key(self) -> str:
+        key = self.openrouter_api_key or self.openai_api_key
+        if key is None:  # guarded by validation; keeps this property precisely typed
+            raise RuntimeError("No model provider API key is configured")
+        return key
+
+    @property
+    def provider_base_url(self) -> str | None:
+        return "https://openrouter.ai/api/v1" if self.provider == "openrouter" else None
 
     @field_validator(
         "skye_web_origin",

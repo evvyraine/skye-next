@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import base64
 import io
+import json
 import re
 import sqlite3
 import uuid
@@ -204,10 +206,18 @@ def _yaml_fields(raw: str) -> dict[str, str]:
 
 
 class SkillService:
-    def __init__(self, database: Database, client: AsyncOpenAI, max_bytes: int) -> None:
+    def __init__(
+        self,
+        database: Database,
+        client: AsyncOpenAI,
+        max_bytes: int,
+        *,
+        provider: str = "openai",
+    ) -> None:
         self.database = database
         self.client = client
         self.max_bytes = max_bytes
+        self.provider = provider
 
     async def list(self, scope: Scope) -> list[Skill]:
         return await self.database.list_skills(scope)
@@ -231,7 +241,7 @@ class SkillService:
         created = await self._create(bundle)
         openai_id = str(getattr(created, "id", "") or "")
         if not openai_id:
-            raise SkillError("OpenAI did not return a skill id.")
+            raise SkillError("The model provider did not return a skill id.")
         name = str(getattr(created, "name", "") or bundle.name)
         description = str(getattr(created, "description", "") or bundle.description)
         try:
@@ -266,6 +276,21 @@ class SkillService:
 
     async def _create(self, bundle: SkillBundle) -> Any:
         try:
+            if self.provider == "openrouter":
+                payload = json.dumps(
+                    {
+                        "format": "skye-skill-v1",
+                        "name": bundle.name,
+                        "files": {
+                            path: base64.b64encode(data).decode() for path, data in bundle.files
+                        },
+                    },
+                    separators=(",", ":"),
+                ).encode()
+                return await self.client.files.create(
+                    file=(f"{bundle.name}.skill.json", payload, "application/json"),
+                    purpose="user_data",
+                )
             return await self.client.skills.create(
                 files=[(bundle.filename, bundle.archive, "application/zip")]
             )
@@ -275,13 +300,18 @@ class SkillService:
 
     async def _delete_remote(self, openai_skill_id: str) -> None:
         try:
-            await self.client.skills.delete(openai_skill_id)
+            if self.provider == "openrouter":
+                await self.client.files.delete(openai_skill_id)
+            else:
+                await self.client.skills.delete(openai_skill_id)
         except APIError as error:
             status = getattr(error, "status_code", None)
             if status == 404:
                 return
             log.warning("skill_delete_failed", error=type(error).__name__)
-            raise SkillError("Couldn't delete that skill from OpenAI. Try again.") from error
+            raise SkillError(
+                "Couldn't delete that skill from remote storage. Try again."
+            ) from error
 
 
 def _openai_message(error: APIError) -> str:
@@ -290,8 +320,8 @@ def _openai_message(error: APIError) -> str:
         nested = body.get("error")
         message = nested.get("message") if isinstance(nested, dict) else body.get("message")
         if isinstance(message, str) and message:
-            return "OpenAI rejected that skill. Check SKILL.md and the bundled files."
-    return "OpenAI could not store that skill. Try again."
+            return "The model provider rejected that skill. Check SKILL.md and its files."
+    return "The model provider could not store that skill. Try again."
 
 
 def skills_keyboard(skills: Sequence[Skill], *, editable: bool) -> InlineKeyboardMarkup:

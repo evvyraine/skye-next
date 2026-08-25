@@ -5,6 +5,18 @@
 - [Website](skye-bot.com)
 - [Docs](ai.skye-bot.com)
 
+## Model provider
+
+Skye supports the native OpenAI path and an additive OpenRouter path. OpenAI remains the default
+when only `OPENAI_API_KEY` is set. To switch, set `OPENROUTER_API_KEY`; it takes precedence when
+both keys are present. Configure chat, transcription, speech, and image models with
+`SKYE_DEFAULT_MODEL`, `SKYE_TRANSCRIPTION_MODEL`, `SKYE_SPEECH_MODEL`, and `SKYE_IMAGE_MODEL`.
+
+OpenRouter runs through its Responses API and provider-hosted web search, web fetch, image
+generation, and shell tools. Because that API is stateless, Skye stores the complete Responses
+item history in its existing SQLite database and replays a bounded recent window. `/reset` clears
+the corresponding local history. The OpenAI path continues to use OpenAI Conversations unchanged.
+
 ## Features
 
 ### Write as Usual

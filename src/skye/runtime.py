@@ -4,6 +4,7 @@ import asyncio
 import base64
 import hashlib
 import hmac
+import json
 import re
 import time
 from collections import defaultdict, deque
@@ -12,10 +13,12 @@ from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field
 from typing import Any, cast
 
+import httpx
 import structlog
 from agents import (
     Agent,
     FunctionTool,
+    HostedMCPTool,
     ImageGenerationTool,
     ModelSettings,
     RunConfig,
@@ -30,7 +33,7 @@ from agents.models.interface import Model, ModelProvider
 from agents.models.openai_responses import Converter, OpenAIResponsesModel
 from agents.result import RunResultStreaming
 from agents.stream_events import RawResponsesStreamEvent
-from openai import APIError, AsyncOpenAI, RateLimitError
+from openai import APIConnectionError, APIError, APITimeoutError, AsyncOpenAI, RateLimitError
 from openai.types.responses.response_text_delta_event import ResponseTextDeltaEvent
 from tenacity import (
     AsyncRetrying,
@@ -43,12 +46,13 @@ from tenacity import (
 from .artifacts import GeneratedFile, collect_container_files, without_sandbox_links
 from .automations import AutomationService
 from .citations import sanitize_citations, url_citations
-from .config import HOSTED_MODEL, Settings
+from .config import Settings
 from .connectors import ConnectorService, ConnectorTools
 from .conversations import ConversationService
 from .custom_agents import AGENT_CAPABILITIES, AgentComposition, CustomAgentService
 from .memory import MemoryService
 from .models import AgentCapability, ChatSettings, InstalledAgent, RequestContext, Skill
+from .sessions import DatabaseSession
 from .skills import SkillService, hosted_skill_refs
 
 log = structlog.get_logger()
@@ -60,7 +64,6 @@ EventCallback = Callable[["RunEvent"], Awaitable[None]]
 OPENAI_MAX_RETRIES = 0
 OPENAI_RUN_ATTEMPTS = 2
 SEND_MESSAGE_LIMIT = 8
-SPEECH_MODEL = "gpt-4o-mini-tts"
 SPEECH_VOICE = "nova"
 SPEECH_INPUT_LIMIT = 4_096
 FALLBACK_EMPTY = "Something went wrong."
@@ -122,6 +125,7 @@ class TurnDelivery:
     on_voice: VoiceCallback | None = None
     client: AsyncOpenAI | None = None
     max_audio_bytes: int = 25 * 1024 * 1024
+    speech_model: str = "gpt-4o-mini-tts"
     sent: int = 0
     limit: int = SEND_MESSAGE_LIMIT
 
@@ -201,7 +205,7 @@ class TurnDelivery:
         if self.client is None or self.on_voice is None:
             return "Voice delivery is unavailable."
         response = await self.client.audio.speech.create(
-            model=SPEECH_MODEL,
+            model=self.speech_model,
             voice=SPEECH_VOICE,
             input=spoken,
             instructions=delivery_instructions,
@@ -499,7 +503,12 @@ class GuardedModelProvider(ModelProvider):
         name = model_name or self.config.skye_default_model
         model = self._models.get(name)
         if model is None:
-            model = GuardedResponsesModel(
+            model_type = (
+                StatelessResponsesModel
+                if self.config.provider == "openrouter"
+                else GuardedResponsesModel
+            )
+            model = model_type(
                 name,
                 self.client,
                 self.limiter,
@@ -508,6 +517,31 @@ class GuardedModelProvider(ModelProvider):
             )
             self._models[name] = model
         return model
+
+
+class StatelessResponsesModel(GuardedResponsesModel):
+    """Responses-compatible model whose complete context is supplied by a local Session."""
+
+    async def _admit(
+        self,
+        system_instructions: str | None,
+        input: str | list[TResponseInputItem],
+        model_settings: ModelSettings,
+        tools: list[Tool],
+        handoffs: list[Any],
+        conversation_id: str | None,
+    ) -> None:
+        del handoffs, conversation_id
+        converted = Converter.convert_tools(tools, [], model=str(self.model))
+        payload = json.dumps(
+            {"instructions": system_instructions, "input": input, "tools": converted.tools},
+            ensure_ascii=False,
+            default=str,
+        )
+        estimated = max(1, (len(payload) + 1) // 2)
+        if estimated > self._max_context_tokens:
+            raise ContextLimitError("The current request is too large. Reduce the text or files.")
+        await self._limiter.acquire(estimated + self._output_reserve)
 
 
 def is_transient(error: BaseException) -> bool:
@@ -544,6 +578,8 @@ def wait_openai(retry_state: RetryCallState) -> float:
 
 
 def _is_transient_one(error: BaseException) -> bool:
+    if isinstance(error, APIConnectionError | APITimeoutError):
+        return True
     if not isinstance(error, APIError):
         return False
     text = str(error).lower()
@@ -551,6 +587,7 @@ def _is_transient_one(error: BaseException) -> bool:
     if (
         isinstance(error, RateLimitError)
         or status == 429
+        or status in {408, 409, 500, 502, 503, 504}
         or "rate limit" in text
         or "tokens per min" in text
     ):
@@ -657,6 +694,7 @@ class AgentRuntime:
             on_voice=on_voice,
             client=self.client,
             max_audio_bytes=self.config.skye_max_attachment_bytes,
+            speech_model=self.config.skye_speech_model,
         )
         _ = on_text
         async with self._locks[key]:
@@ -665,8 +703,9 @@ class AgentRuntime:
             try:
                 if active.cancel.is_set():
                     raise asyncio.CancelledError
-                openai_conversation_id = conversation_id or await self.conversations.get_or_create(
-                    context.chat_id, context.thread_id
+                provider_conversation_id = (
+                    conversation_id
+                    or await self.conversations.get_or_create(context.chat_id, context.thread_id)
                 )
                 memory_context = ""
                 if settings.memory_enabled:
@@ -688,6 +727,13 @@ class AgentRuntime:
                 for file_id in _input_file_ids(user_input):
                     if file_id not in attached_file_ids:
                         attached_file_ids.append(file_id)
+                if self.config.provider == "openrouter":
+                    await self.conversations.database.add_session_files(
+                        provider_conversation_id, attached_file_ids
+                    )
+                    attached_file_ids = list(
+                        await self.conversations.database.session_files(provider_conversation_id)
+                    )
                 agent = self._agent(
                     context,
                     settings,
@@ -700,6 +746,7 @@ class AgentRuntime:
                     manage_automations,
                     delivery,
                     awaiting_reply,
+                    provider_conversation_id,
                 )
                 async with self._provider_slot(active, context, key):
                     if active.cancel.is_set():
@@ -708,7 +755,7 @@ class AgentRuntime:
                         output = await self._run_stream(
                             agent,
                             user_input,
-                            openai_conversation_id,
+                            provider_conversation_id,
                             active,
                             context,
                             on_event,
@@ -866,12 +913,23 @@ class AgentRuntime:
             if self._model_provider is not None
             else None
         )
+        state: dict[str, Any]
+        if self.config.provider == "openrouter":
+            state = {
+                "session": DatabaseSession(
+                    self.conversations.database,
+                    conversation_id,
+                    self.config.skye_compaction_threshold_tokens * 2,
+                )
+            }
+        else:
+            state = {"conversation_id": conversation_id}
         result = Runner.run_streamed(
             agent,
             user_input,
             max_turns=self.config.skye_max_turns,
-            conversation_id=conversation_id,
             run_config=run_config,
+            **state,
         )
         active.stream = result
         text = ""
@@ -914,7 +972,7 @@ class AgentRuntime:
             self.config.skye_max_attachment_bytes,
             created_after=started,
         )
-        images = self._images(result)
+        images = (*self._images(result), *await self._remote_images(result))
         if on_event is not None:
             for image in images:
                 await on_event(RunEvent(kind="image", image=image))
@@ -949,6 +1007,7 @@ class AgentRuntime:
         manage_automations: bool = False,
         delivery: TurnDelivery | None = None,
         awaiting_reply: bool = True,
+        provider_session_id: str | None = None,
     ) -> Agent[None]:
         composition = composition or AgentComposition(None, ())
         connector_tools = connector_tools or ConnectorTools((), ())
@@ -978,7 +1037,13 @@ class AgentRuntime:
             tools.extend(self.automations.tools(context))
         tools.extend(
             self._specialist(
-                item, context, settings, memory_context, skills, input_file_ids
+                item,
+                context,
+                settings,
+                memory_context,
+                skills,
+                input_file_ids,
+                provider_session_id,
             ).as_tool(
                 tool_name=f"agent_{item.profile.id}",
                 tool_description=(
@@ -992,8 +1057,8 @@ class AgentRuntime:
         return Agent(
             name=active.version.name if active else "Skye",
             instructions=instructions,
-            model=HOSTED_MODEL,
-            model_settings=self._model_settings(context, settings),
+            model=self.config.skye_default_model,
+            model_settings=self._model_settings(context, settings, provider_session_id),
             tools=tools,
         )
 
@@ -1050,11 +1115,18 @@ class AgentRuntime:
                 "Files you write under /mnt/data are sent to the user as Telegram documents. "
                 "Put a folder there, or a zip, when they want more than one file."
             )
-        if "shell" in capabilities and skills:
+        if "shell" in capabilities and skills and self.config.provider == "openai":
             listed = ", ".join(item.name for item in skills)
             instructions += (
                 f"\n\nHosted skills are mounted in the sandbox: {listed}. "
                 "Read a skill's SKILL.md when the task matches it."
+            )
+        if "shell" in capabilities and skills and self.config.provider == "openrouter":
+            listed = ", ".join(item.name for item in skills)
+            instructions += (
+                f"\n\nHosted skill bundles are attached to the sandbox: {listed}. "
+                "Each *.skill.json contains base64-encoded files keyed by path. Extract the "
+                "matching bundle safely, then read its SKILL.md before using it."
             )
         if extra_instructions.strip():
             instructions += (
@@ -1075,6 +1147,61 @@ class AgentRuntime:
         input_file_ids: tuple[str, ...] = (),
     ) -> list[Tool]:
         tools: list[Tool] = []
+        if self.config.provider == "openrouter":
+            if "web" in capabilities:
+                tools.extend(
+                    [
+                        HostedMCPTool(
+                            cast(
+                                Any,
+                                {
+                                    "type": "openrouter:web_search",
+                                    "parameters": {"search_context_size": "medium"},
+                                },
+                            )
+                        ),
+                        HostedMCPTool(cast(Any, {"type": "openrouter:web_fetch"})),
+                    ]
+                )
+            if "image" in capabilities:
+                tools.append(
+                    HostedMCPTool(
+                        cast(
+                            Any,
+                            {
+                                "type": "openrouter:image_generation",
+                                "parameters": {"model": self.config.skye_image_model},
+                            },
+                        )
+                    )
+                )
+            if "shell" in capabilities:
+                openrouter_environment: dict[str, Any] = {
+                    "type": "container_auto",
+                    "network_policy": {
+                        "type": "allowlist",
+                        "allowed_domains": list(self.config.skye_sandbox_allowed_domains),
+                    },
+                }
+                attached_ids = [item.openai_skill_id for item in skills]
+                attached_ids.extend(input_file_ids)
+                if attached_ids:
+                    openrouter_environment["file_ids"] = attached_ids[:20]
+                tools.append(
+                    HostedMCPTool(
+                        cast(
+                            Any,
+                            {
+                                "type": "openrouter:shell",
+                                "parameters": {
+                                    "engine": "openrouter",
+                                    "environment": openrouter_environment,
+                                },
+                            },
+                        )
+                    )
+                )
+            return tools
         if "web" in capabilities:
             tools.append(WebSearchTool(search_context_size="medium"))
         if "image" in capabilities:
@@ -1082,7 +1209,7 @@ class AgentRuntime:
                 ImageGenerationTool(
                     tool_config={
                         "type": "image_generation",
-                        "model": "gpt-image-2",
+                        "model": self.config.skye_image_model,
                         "size": "auto",
                         "quality": "auto",
                         "output_format": "png",
@@ -1115,6 +1242,7 @@ class AgentRuntime:
         memory_context: str,
         skills: tuple[Skill, ...] = (),
         input_file_ids: tuple[str, ...] = (),
+        provider_session_id: str | None = None,
     ) -> Agent[None]:
         instructions = self._instructions(
             context,
@@ -1128,17 +1256,40 @@ class AgentRuntime:
         return Agent(
             name=installed.version.name,
             instructions=instructions,
-            model=HOSTED_MODEL,
-            model_settings=self._model_settings(context, settings),
+            model=self.config.skye_default_model,
+            model_settings=self._model_settings(context, settings, provider_session_id),
             tools=tools,
         )
 
-    def _model_settings(self, context: RequestContext, settings: ChatSettings) -> ModelSettings:
+    def _model_settings(
+        self,
+        context: RequestContext,
+        settings: ChatSettings,
+        provider_session_id: str | None = None,
+    ) -> ModelSettings:
         safety_id = hmac.new(
             self.config.telegram_bot_token.encode(),
             str(context.user_id).encode(),
             hashlib.sha256,
         ).hexdigest()[:32]
+        if self.config.provider == "openrouter":
+            openrouter_body: dict[str, Any] = {"safety_identifier": safety_id}
+            if provider_session_id:
+                openrouter_body.update(
+                    {
+                        "session_id": provider_session_id,
+                        "prompt_cache_key": provider_session_id,
+                    }
+                )
+            return ModelSettings(
+                reasoning={"effort": settings.reasoning},
+                verbosity="low",
+                store=False,
+                truncation="disabled",
+                max_tokens=self.config.skye_max_output_tokens,
+                response_include=["reasoning.encrypted_content"],
+                extra_body=openrouter_body,
+            )
         return ModelSettings(
             reasoning={"effort": settings.reasoning},
             verbosity="low",
@@ -1173,9 +1324,27 @@ class AgentRuntime:
                 if getattr(item, "type", None) != "image_generation_call":
                     continue
                 encoded = getattr(item, "result", None)
-                if encoded:
+                if encoded and not str(encoded).startswith(("https://", "http://")):
                     images.append(base64.b64decode(encoded, validate=True))
         return tuple(images)
+
+    @staticmethod
+    async def _remote_images(result: RunResultStreaming) -> tuple[bytes, ...]:
+        urls: list[str] = []
+        for response in result.raw_responses:
+            for item in response.output:
+                encoded = getattr(item, "result", None)
+                if getattr(item, "type", None) == "image_generation_call" and str(
+                    encoded
+                ).startswith(("https://", "http://")):
+                    urls.append(str(encoded))
+        if not urls:
+            return ()
+        async with httpx.AsyncClient(follow_redirects=True, timeout=60) as client:
+            downloads = await asyncio.gather(*(client.get(url) for url in urls))
+        for download in downloads:
+            download.raise_for_status()
+        return tuple(download.content for download in downloads)
 
 
 def estimate_usage_tokens(user_input: str | list[TResponseInputItem], output_text: str) -> int:

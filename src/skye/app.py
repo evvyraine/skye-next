@@ -7,6 +7,7 @@ import signal
 from importlib.resources import files
 from pathlib import Path
 
+import httpx
 import structlog
 from agents import set_default_openai_client, set_tracing_disabled
 from aiogram import Bot, Dispatcher
@@ -29,6 +30,7 @@ from .group_context import GroupContextService
 from .media_groups import MediaGroupService
 from .memory import MemoryService
 from .projects import ProjectService
+from .providers import OpenRouterTransport
 from .runtime import OPENAI_MAX_RETRIES, AgentRuntime
 from .skills import SkillService
 from .telegram import COMMANDS, PRIVATE_COMMANDS, TelegramApp, UpdateMiddleware
@@ -65,13 +67,29 @@ async def run() -> None:
     )
     await database.open()
 
-    client = AsyncOpenAI(api_key=config.openai_api_key, max_retries=OPENAI_MAX_RETRIES)
-    set_default_openai_client(client, use_for_tracing=config.skye_tracing)
-    set_tracing_disabled(not config.skye_tracing)
+    http_client = (
+        httpx.AsyncClient(
+            transport=OpenRouterTransport(),
+            timeout=httpx.Timeout(600, connect=10),
+            follow_redirects=True,
+        )
+        if config.provider == "openrouter"
+        else None
+    )
+    client = AsyncOpenAI(
+        api_key=config.provider_api_key,
+        base_url=config.provider_base_url,
+        max_retries=OPENAI_MAX_RETRIES,
+        http_client=http_client,
+    )
+    trace_with_openai = config.skye_tracing and config.provider == "openai"
+    set_default_openai_client(client, use_for_tracing=trace_with_openai)
+    set_tracing_disabled(not trace_with_openai)
 
     bot = Bot(config.telegram_bot_token)
     dispatcher = Dispatcher()
-    conversations = ConversationService(database, client)
+    remote_conversations = config.provider == "openai"
+    conversations = ConversationService(database, client, remote=remote_conversations)
     memory = MemoryService(database)
     custom_agents = CustomAgentService(database)
     composio = ComposioClient(config.composio_api_key) if config.composio_api_key else None
@@ -107,7 +125,9 @@ async def run() -> None:
         database, config.skye_owner_ids, list_administrators=list_chat_administrators
     )
     billing = BillingService(database, config.telegram_bot_token)
-    skills = SkillService(database, client, config.skye_max_attachment_bytes)
+    skills = SkillService(
+        database, client, config.skye_max_attachment_bytes, provider=config.provider
+    )
     automations = AutomationService(database, config.skye_web_origin)
     runtime = AgentRuntime(
         config,
@@ -120,8 +140,15 @@ async def run() -> None:
         skills,
         automations,
     )
-    projects = ProjectService(database, client, config.skye_web_files_path)
-    telegram_projects = TelegramProjectService(database, client)
+    projects = ProjectService(
+        database,
+        client,
+        config.skye_web_files_path,
+        remote_conversations=remote_conversations,
+    )
+    telegram_projects = TelegramProjectService(
+        database, client, remote_conversations=remote_conversations
+    )
     auth = TelegramAuth(config, database, projects)
     telegram = TelegramApp(
         config,

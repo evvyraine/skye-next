@@ -75,10 +75,13 @@ class ProjectService:
         database: Database,
         client: AsyncOpenAI,
         files_path: Path,
+        *,
+        remote_conversations: bool = True,
     ) -> None:
         self.database = database
         self.client = client
         self.files_path = files_path
+        self.remote_conversations = remote_conversations
         self._conversation_locks: defaultdict[tuple[int, str], asyncio.Lock] = defaultdict(
             asyncio.Lock
         )
@@ -199,11 +202,15 @@ class ProjectService:
             current = await self.require(project.user_id, project.id)
             if current.openai_conversation_id:
                 return current.openai_conversation_id
-            conversation = await self.client.conversations.create(
-                metadata={"web_project": current.id, "telegram_user": str(current.user_id)}
-            )
-            await self.database.set_web_conversation(current.user_id, current.id, conversation.id)
-            return conversation.id
+            if self.remote_conversations:
+                conversation = await self.client.conversations.create(
+                    metadata={"web_project": current.id, "telegram_user": str(current.user_id)}
+                )
+                conversation_id = conversation.id
+            else:
+                conversation_id = f"web-project:{current.id}"
+            await self.database.set_web_conversation(current.user_id, current.id, conversation_id)
+            return conversation_id
 
     async def add_message(
         self,
@@ -319,6 +326,9 @@ class ProjectService:
 
     async def _delete_conversation(self, conversation_id: str | None) -> None:
         if not conversation_id:
+            return
+        if not self.remote_conversations:
+            await self.database.clear_session(conversation_id)
             return
         try:
             await self.client.conversations.delete(conversation_id)

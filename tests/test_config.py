@@ -63,6 +63,27 @@ def test_model_catalog_rejects_unknown_model() -> None:
         settings(skye_default_model="unknown")
 
 
+def test_openrouter_key_selects_openrouter_and_accepts_namespaced_models() -> None:
+    loaded = settings(
+        openai_api_key=None,
+        openrouter_api_key="sk-or-test",
+        skye_default_model="anthropic/claude-sonnet-4.6",
+        skye_transcription_model="openai/whisper-large-v3",
+        skye_speech_model="openai/gpt-4o-mini-tts",
+        skye_image_model="openai/gpt-5-image",
+    )
+
+    assert loaded.provider == "openrouter"
+    assert loaded.provider_api_key == "sk-or-test"
+    assert loaded.provider_base_url == "https://openrouter.ai/api/v1"
+
+
+def test_openrouter_key_takes_precedence_when_both_keys_are_present() -> None:
+    loaded = settings(openrouter_api_key="sk-or-test")
+
+    assert loaded.provider == "openrouter"
+
+
 def test_sandbox_domains_default_to_the_code_owned_allowlist() -> None:
     assert settings().skye_sandbox_allowed_domains == SANDBOX_DOMAINS
 

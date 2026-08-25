@@ -997,7 +997,7 @@ class RichMessages:
             [
                 "Delete ",
                 _bold(name),
-                "? This removes it from this chat and from OpenAI.",
+                "? This removes it from this chat and from remote storage.",
             ],
         )
 
