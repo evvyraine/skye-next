@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import secrets
 import uuid
+from collections import defaultdict
 from datetime import UTC, datetime, timedelta
 from io import BytesIO
 from pathlib import Path
@@ -77,6 +79,9 @@ class ProjectService:
         self.database = database
         self.client = client
         self.files_path = files_path
+        self._conversation_locks: defaultdict[tuple[int, str], asyncio.Lock] = defaultdict(
+            asyncio.Lock
+        )
 
     async def ensure_skye(self, user_id: int) -> WebProject:
         existing = await self.database.skye_web_project(user_id)
@@ -189,13 +194,16 @@ class ProjectService:
         return await self.require(user_id, project_id)
 
     async def conversation_id(self, project: WebProject) -> str:
-        if project.openai_conversation_id:
-            return project.openai_conversation_id
-        conversation = await self.client.conversations.create(
-            metadata={"web_project": project.id, "telegram_user": str(project.user_id)}
-        )
-        await self.database.set_web_conversation(project.user_id, project.id, conversation.id)
-        return conversation.id
+        key = project.user_id, project.id
+        async with self._conversation_locks[key]:
+            current = await self.require(project.user_id, project.id)
+            if current.openai_conversation_id:
+                return current.openai_conversation_id
+            conversation = await self.client.conversations.create(
+                metadata={"web_project": current.id, "telegram_user": str(current.user_id)}
+            )
+            await self.database.set_web_conversation(current.user_id, current.id, conversation.id)
+            return conversation.id
 
     async def add_message(
         self,

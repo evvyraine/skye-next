@@ -1,5 +1,7 @@
+import asyncio
 from io import BytesIO
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock
 
@@ -49,6 +51,35 @@ async def test_projects_are_isolated_by_user(database: Database, tmp_path: Path)
     assert await database.web_project(2, alice.id) is None
     listed = await projects.list(2)
     assert [item.name for item in listed] == ["Skye"]
+
+
+async def test_concurrent_first_turns_share_one_openai_conversation(
+    database: Database, tmp_path: Path
+) -> None:
+    created = 0
+
+    async def create_conversation(**_kwargs: object) -> SimpleNamespace:
+        nonlocal created
+        created += 1
+        conversation_id = f"conv_{created}"
+        await asyncio.sleep(0)
+        return SimpleNamespace(id=conversation_id)
+
+    client = SimpleNamespace(
+        conversations=SimpleNamespace(create=AsyncMock(side_effect=create_conversation))
+    )
+    projects = ProjectService(database, cast(Any, client), tmp_path / "web")
+    project = await projects.create(1, name="Concurrent")
+
+    first, second = await asyncio.gather(
+        projects.conversation_id(project),
+        projects.conversation_id(project),
+    )
+
+    assert first == second
+    assert created == 1
+    saved = await projects.require(1, project.id)
+    assert saved.openai_conversation_id == first
 
 
 async def test_search_is_scoped_to_the_user(database: Database, tmp_path: Path) -> None:

@@ -8,6 +8,7 @@ import re
 import time
 from collections import defaultdict, deque
 from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field
 from typing import Any, cast
 
@@ -620,7 +621,8 @@ class AgentRuntime:
         self.automations = automations
         self.base_prompt = base_prompt.strip()
         self._locks: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
-        self._queue = asyncio.Lock()
+        self._run_slots = asyncio.BoundedSemaphore(config.skye_max_concurrent_runs)
+        self._running_runs = 0
         self._active: dict[str, _ActiveRun] = {}
         self._model_provider = (
             GuardedModelProvider(
@@ -699,14 +701,7 @@ class AgentRuntime:
                     delivery,
                     awaiting_reply,
                 )
-                if self._queue.locked():
-                    log.info(
-                        "openai_run_queued",
-                        chat_id=context.chat_id,
-                        thread_id=context.thread_id,
-                        run_key=key,
-                    )
-                async with self._queue:
+                async with self._provider_slot(active, context, key):
                     if active.cancel.is_set():
                         raise asyncio.CancelledError
                     async with asyncio.timeout(self.config.skye_run_timeout_seconds):
@@ -742,6 +737,77 @@ class AgentRuntime:
         if active.stream is not None:
             active.stream.cancel()
         return True
+
+    @asynccontextmanager
+    async def _provider_slot(
+        self,
+        active: _ActiveRun,
+        context: RequestContext,
+        key: str,
+    ) -> AsyncIterator[None]:
+        queued_at = time.monotonic()
+        queued = self._run_slots.locked()
+        if queued:
+            log.info(
+                "openai_run_queued",
+                chat_id=context.chat_id,
+                thread_id=context.thread_id,
+                run_key=key,
+            )
+        acquire = asyncio.create_task(self._run_slots.acquire())
+        cancelled = asyncio.create_task(active.cancel.wait())
+        acquired = False
+        running = False
+        started_at = 0.0
+        try:
+            done, _ = await asyncio.wait(
+                {acquire, cancelled},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if cancelled in done:
+                raise asyncio.CancelledError
+            acquired = acquire.result()
+            if active.cancel.is_set():
+                raise asyncio.CancelledError
+            cancelled.cancel()
+            with suppress(asyncio.CancelledError):
+                await cancelled
+            self._running_runs += 1
+            running = True
+            started_at = time.monotonic()
+            log.info(
+                "openai_run_started",
+                chat_id=context.chat_id,
+                thread_id=context.thread_id,
+                run_key=key,
+                queued=queued,
+                queue_wait_seconds=round(started_at - queued_at, 3),
+                active_runs=self._running_runs,
+                max_concurrent_runs=self.config.skye_max_concurrent_runs,
+            )
+            yield
+        finally:
+            for task in (acquire, cancelled):
+                if not task.done():
+                    task.cancel()
+            for task in (acquire, cancelled):
+                with suppress(asyncio.CancelledError):
+                    await task
+            if not acquired and acquire.done() and not acquire.cancelled():
+                acquired = acquire.result()
+            if running:
+                self._running_runs -= 1
+                log.info(
+                    "openai_run_finished",
+                    chat_id=context.chat_id,
+                    thread_id=context.thread_id,
+                    run_key=key,
+                    run_seconds=round(time.monotonic() - started_at, 3),
+                    active_runs=self._running_runs,
+                    max_concurrent_runs=self.config.skye_max_concurrent_runs,
+                )
+            if acquired:
+                self._run_slots.release()
 
     async def _run_stream(
         self,

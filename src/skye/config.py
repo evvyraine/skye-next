@@ -85,7 +85,8 @@ class Settings(BaseSettings):
     skye_compaction_threshold_tokens: int = Field(default=40_000, ge=1)
     skye_max_context_tokens: int = Field(default=50_000, ge=1)
     skye_max_output_tokens: int = Field(default=4_000, ge=1)
-    skye_tpm_budget: int = Field(default=160_000, ge=1)
+    skye_tpm_budget: int = Field(default=1_800_000, ge=1)
+    skye_max_concurrent_runs: int = Field(default=8, ge=1, le=64)
     skye_max_attachment_bytes: int = Field(default=25 * 1024 * 1024, ge=1)
     skye_transcription_model: str = "gpt-transcribe"
     skye_media_group_settle_seconds: float = Field(default=0.75, ge=0.1, le=5.0)

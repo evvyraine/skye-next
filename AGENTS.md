@@ -54,7 +54,7 @@ We do not own a model loop, a provider abstraction, a billing provider, an admin
 - All outbound Telegram text goes through the rich-message boundary. User-visible messages are `send_message` bubbles, plus generated photos and files. Default bubbles are standalone; `reply_to` quotes a prior Telegram `message_id`. Assistant prose is a private inner monologue. Thinking placeholders are not a substitute for `send_message`. Do not stream inner monologue.
 - Bot copy: calm, short, sentence case. No "oops", no cheerleading, no corporate filler.
 - Assemble volatile context per run (identity, active agent, memories, tools that are actually attached). State each rule once. Never describe a tool that is not present. Keep the stable prompt prefix first.
-- Persist every Telegram `update_id` before work; drop `pending` on startup. Serialize Telegram runs per `(chat_id, thread_id)` and web runs per `web:{project_id}`. OpenAI runs wait in one process-wide queue. Rate limits and conversation locks are retried with the official SDK and Tenacity exponential backoff. `/stop` (or the web stop endpoint) cancels the active run.
+- Persist every Telegram `update_id` before work; drop `pending` on startup. Serialize Telegram runs per `(chat_id, thread_id)` and web runs per `web:{project_id}`. Run different keys concurrently through a bounded provider semaphore and the shared TPM limiter. Rate limits and conversation locks are retried with the official SDK and Tenacity exponential backoff. `/stop` (or the web stop endpoint) cancels an active or queued run.
 - Logs are structured JSON. Redact tokens, prompts, memory contents, and file bodies. Tracing is opt-in. Send a privacy-preserving `safety_identifier` derived with HMAC from the Telegram user id — never the raw id.
 - `/reset` replaces working conversation state and keeps long-term memories. Memory deletion is a separate destructive action.
 
@@ -100,5 +100,3 @@ Test the boundaries: scope isolation, allowlist precedence, callback parsing, pr
 
 Required env: `TELEGRAM_BOT_TOKEN`, `OPENAI_API_KEY`, `SKYE_OWNER_IDS`.
 Optional: `COMPOSIO_API_KEY` for hosted app connections. Web chat also needs `SKYE_WEB_ORIGIN`, `TELEGRAM_LOGIN_CLIENT_ID`, and `TELEGRAM_LOGIN_CLIENT_SECRET`.
-
-`ARCHITECTURE.md` is the product and system design. This file is the short operating brief — follow both, and do not re-litigate settled decisions.

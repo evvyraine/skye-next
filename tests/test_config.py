@@ -81,7 +81,8 @@ def test_token_safety_defaults_leave_headroom() -> None:
     assert loaded.skye_compaction_threshold_tokens == 40_000
     assert loaded.skye_max_context_tokens == 50_000
     assert loaded.skye_max_output_tokens == 4_000
-    assert loaded.skye_tpm_budget == 160_000
+    assert loaded.skye_tpm_budget == 1_800_000
+    assert loaded.skye_max_concurrent_runs == 8
 
 
 def test_context_limit_must_exceed_compaction_threshold() -> None:
@@ -95,6 +96,11 @@ def test_context_limit_must_exceed_compaction_threshold() -> None:
 def test_tpm_budget_must_cover_one_maximum_request() -> None:
     with pytest.raises(ValidationError):
         settings(skye_tpm_budget=53_999)
+
+
+def test_concurrent_run_limit_must_be_positive() -> None:
+    with pytest.raises(ValidationError):
+        settings(skye_max_concurrent_runs=0)
 
 
 def test_sandbox_domains_are_parsed_from_env(tmp_path: Path) -> None:

@@ -39,13 +39,15 @@ from skye.runtime import (
 )
 
 
-def config() -> Settings:
-    return Settings(
-        telegram_bot_token="123:token",
-        openai_api_key="sk-test",
-        skye_owner_ids="1",
-        _env_file=None,
-    )  # type: ignore[call-arg]
+def config(**overrides: object) -> Settings:
+    values: dict[str, object] = {
+        "telegram_bot_token": "123:token",
+        "openai_api_key": "sk-test",
+        "skye_owner_ids": "1",
+        "_env_file": None,
+    }
+    values.update(overrides)
+    return Settings(**values)  # type: ignore[arg-type]
 
 
 def sandbox_network_policy() -> dict[str, object]:
@@ -423,11 +425,11 @@ class DeliveryThenFailure(FakeStream):
             raise rate_limit_error("Please try again in 0.001s.")
 
 
-def runtime_for_run() -> AgentRuntime:
+def runtime_for_run(**config_overrides: object) -> AgentRuntime:
     conversations = AsyncMock()
     conversations.get_or_create.return_value = "conv_1"
     return AgentRuntime(
-        config(),
+        config(**config_overrides),
         conversations,
         MemoryService(cast(Any, None)),
         "You are Skye.",
@@ -872,9 +874,11 @@ async def test_stop_cancels_a_retry_wait() -> None:
             await task
 
 
-async def test_openai_runs_wait_in_one_queue() -> None:
+async def test_openai_runs_overlap_across_distinct_chats() -> None:
     runtime = runtime_for_run()
     release = asyncio.Event()
+    first_started = asyncio.Event()
+    both_started = asyncio.Event()
     started = 0
     concurrent = 0
     max_concurrent = 0
@@ -883,6 +887,9 @@ async def test_openai_runs_wait_in_one_queue() -> None:
         async def stream_events(self) -> Any:
             nonlocal started, concurrent, max_concurrent
             started += 1
+            first_started.set()
+            if started == 2:
+                both_started.set()
             concurrent += 1
             max_concurrent = max(max_concurrent, concurrent)
             await release.wait()
@@ -899,11 +906,58 @@ async def test_openai_runs_wait_in_one_queue() -> None:
                 AsyncMock(),
             )
         )
-        while started == 0:
-            await asyncio.sleep(0)
+        await first_started.wait()
         second = asyncio.create_task(
             runtime.run(
                 RequestContext(2, "private", 2),
+                ChatSettings("gpt-5.6-luna", "medium", memory_enabled=False),
+                "two",
+                AsyncMock(),
+            )
+        )
+        try:
+            await asyncio.wait_for(both_started.wait(), timeout=1.0)
+        finally:
+            release.set()
+            await asyncio.gather(first, second)
+
+    assert started == 2
+    assert max_concurrent == 2
+
+
+async def test_openai_runs_serialize_the_same_chat() -> None:
+    runtime = runtime_for_run()
+    release = asyncio.Event()
+    first_started = asyncio.Event()
+    started = 0
+    concurrent = 0
+    max_concurrent = 0
+
+    class BlockingStream(FakeStream):
+        async def stream_events(self) -> Any:
+            nonlocal started, concurrent, max_concurrent
+            started += 1
+            first_started.set()
+            concurrent += 1
+            max_concurrent = max(max_concurrent, concurrent)
+            await release.wait()
+            concurrent -= 1
+            if False:
+                yield
+
+    with patch("skye.runtime.Runner.run_streamed", side_effect=lambda *_, **__: BlockingStream()):
+        first = asyncio.create_task(
+            runtime.run(
+                RequestContext(1, "private", 1),
+                ChatSettings("gpt-5.6-luna", "medium", memory_enabled=False),
+                "one",
+                AsyncMock(),
+            )
+        )
+        await first_started.wait()
+        second = asyncio.create_task(
+            runtime.run(
+                RequestContext(1, "private", 1),
                 ChatSettings("gpt-5.6-luna", "medium", memory_enabled=False),
                 "two",
                 AsyncMock(),
@@ -916,6 +970,90 @@ async def test_openai_runs_wait_in_one_queue() -> None:
 
     assert started == 2
     assert max_concurrent == 1
+
+
+async def test_openai_runs_respect_the_configured_concurrency_limit() -> None:
+    runtime = runtime_for_run(skye_max_concurrent_runs=2)
+    release = asyncio.Event()
+    two_started = asyncio.Event()
+    started = 0
+    concurrent = 0
+    max_concurrent = 0
+
+    class BlockingStream(FakeStream):
+        async def stream_events(self) -> Any:
+            nonlocal started, concurrent, max_concurrent
+            started += 1
+            if started == 2:
+                two_started.set()
+            concurrent += 1
+            max_concurrent = max(max_concurrent, concurrent)
+            await release.wait()
+            concurrent -= 1
+            if False:
+                yield
+
+    with patch("skye.runtime.Runner.run_streamed", side_effect=lambda *_, **__: BlockingStream()):
+        tasks = [
+            asyncio.create_task(
+                runtime.run(
+                    RequestContext(user_id, "private", user_id),
+                    ChatSettings("gpt-5.6-luna", "medium", memory_enabled=False),
+                    str(user_id),
+                    AsyncMock(),
+                )
+            )
+            for user_id in range(1, 13)
+        ]
+        await asyncio.wait_for(two_started.wait(), timeout=1.0)
+        await asyncio.sleep(0.05)
+        assert started == 2
+        release.set()
+        await asyncio.gather(*tasks)
+
+    assert started == 12
+    assert max_concurrent == 2
+
+
+async def test_stop_cancels_a_run_waiting_for_a_concurrency_slot() -> None:
+    runtime = runtime_for_run(skye_max_concurrent_runs=1)
+    release = asyncio.Event()
+    first_started = asyncio.Event()
+
+    class BlockingStream(FakeStream):
+        async def stream_events(self) -> Any:
+            first_started.set()
+            await release.wait()
+            if False:
+                yield
+
+    with patch("skye.runtime.Runner.run_streamed", side_effect=lambda *_, **__: BlockingStream()):
+        first = asyncio.create_task(
+            runtime.run(
+                RequestContext(1, "private", 1),
+                ChatSettings("gpt-5.6-luna", "medium", memory_enabled=False),
+                "one",
+                AsyncMock(),
+            )
+        )
+        await first_started.wait()
+        second = asyncio.create_task(
+            runtime.run(
+                RequestContext(2, "private", 2),
+                ChatSettings("gpt-5.6-luna", "medium", memory_enabled=False),
+                "two",
+                AsyncMock(),
+            )
+        )
+        while not runtime.busy(2, 0):
+            await asyncio.sleep(0)
+        assert runtime.stop(2, 0)
+        try:
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(second, timeout=1.0)
+        finally:
+            release.set()
+            await first
 
 
 def test_usage_falls_back_to_a_conservative_length_estimate() -> None:
