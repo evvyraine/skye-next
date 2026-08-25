@@ -1177,11 +1177,20 @@ class AgentRuntime:
                                 Any,
                                 {
                                     "type": "openrouter:web_search",
+                                    "server_label": "openrouter_web_search",
                                     "parameters": {"search_context_size": "medium"},
                                 },
                             )
                         ),
-                        HostedMCPTool(cast(Any, {"type": "openrouter:web_fetch"})),
+                        HostedMCPTool(
+                            cast(
+                                Any,
+                                {
+                                    "type": "openrouter:web_fetch",
+                                    "server_label": "openrouter_web_fetch",
+                                },
+                            )
+                        ),
                     ]
                 )
             if "image" in capabilities:
@@ -1191,6 +1200,7 @@ class AgentRuntime:
                             Any,
                             {
                                 "type": "openrouter:image_generation",
+                                "server_label": "openrouter_image_generation",
                                 "parameters": {"model": self.config.skye_image_model},
                             },
                         )
@@ -1214,6 +1224,7 @@ class AgentRuntime:
                             Any,
                             {
                                 "type": "openrouter:shell",
+                                "server_label": "openrouter_shell",
                                 "parameters": {
                                     "engine": "openrouter",
                                     "environment": openrouter_environment,

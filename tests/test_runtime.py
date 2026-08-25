@@ -14,7 +14,11 @@ from agents import (
     ShellTool,
     WebSearchTool,
 )
+from agents.models.interface import ModelResponse
+from agents.run_internal.turn_resolution import process_model_response
+from agents.usage import Usage
 from openai import APIError, BadRequestError, RateLimitError
+from openai.types.responses import ResponseOutputMessage, ResponseOutputText
 
 from skye.artifacts import GeneratedFile
 from skye.config import SANDBOX_DOMAINS, Settings
@@ -163,6 +167,46 @@ def test_openrouter_uses_only_openrouter_server_tools() -> None:
     ]
     assert configs[2]["parameters"] == {"model": "openai/gpt-5-image"}
     assert configs[3]["parameters"]["environment"]["file_ids"] == ["or_file_1"]
+
+
+def test_openrouter_tools_have_metadata_required_by_response_processing() -> None:
+    memory = MemoryService(cast(Any, None))
+    runtime = AgentRuntime(
+        config(
+            openai_api_key=None,
+            openrouter_api_key="sk-or-test",
+            skye_default_model="openai/gpt-5.6-luna",
+        ),
+        cast(Any, None),
+        memory,
+        "You are Skye.",
+    )
+    agent = runtime._agent(
+        RequestContext(1, "private", 1),
+        ChatSettings("openai/gpt-5.6-luna", "medium"),
+    )
+
+    processed = process_model_response(
+        agent=agent,
+        all_tools=agent.tools,
+        response=ModelResponse(
+            [
+                ResponseOutputMessage(
+                    id="msg_1",
+                    content=[ResponseOutputText(annotations=[], text="ok", type="output_text")],
+                    role="assistant",
+                    status="completed",
+                    type="message",
+                )
+            ],
+            Usage(),
+            None,
+        ),
+        output_schema=None,
+        handoffs=[],
+    )
+
+    assert len(processed.new_items) == 1
 
 
 def test_disabled_memory_is_not_injected_or_exposed() -> None:

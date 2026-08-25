@@ -14,8 +14,11 @@ class OpenRouterTransport(httpx.AsyncBaseTransport):
         self._transport = transport or httpx.AsyncHTTPTransport(retries=0)
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        is_responses_request = request.url.path.rstrip("/").endswith("/responses")
+        if is_responses_request:
+            request = _strip_openrouter_tool_labels(request)
         response = await self._transport.handle_async_request(request)
-        if not request.url.path.rstrip("/").endswith("/responses"):
+        if not is_responses_request:
             return response
         headers = [
             (name, value)
@@ -55,6 +58,36 @@ class _NormalizedResponseStream(httpx.AsyncByteStream):
 
     async def aclose(self) -> None:
         await self.response.aclose()
+
+
+def _strip_openrouter_tool_labels(request: httpx.Request) -> httpx.Request:
+    try:
+        payload = json.loads(request.content)
+    except (RuntimeError, UnicodeDecodeError, json.JSONDecodeError):
+        return request
+    if not isinstance(payload, dict) or not isinstance(payload.get("tools"), list):
+        return request
+
+    changed = False
+    tools: list[Any] = []
+    for tool in payload["tools"]:
+        if isinstance(tool, dict) and str(tool.get("type", "")).startswith("openrouter:"):
+            tool = dict(tool)
+            changed = tool.pop("server_label", None) is not None or changed
+        tools.append(tool)
+    if not changed:
+        return request
+
+    payload["tools"] = tools
+    headers = dict(request.headers)
+    headers.pop("content-length", None)
+    return httpx.Request(
+        request.method,
+        request.url,
+        headers=headers,
+        content=json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode(),
+        extensions=request.extensions,
+    )
 
 
 def _normalize_sse_line(line: bytes) -> bytes:

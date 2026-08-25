@@ -52,6 +52,10 @@ def test_openrouter_server_tool_definitions_are_normalized_in_response_echo() ->
 async def test_transport_normalizes_streamed_server_tool_items() -> None:
     async def upstream(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/api/v1/responses"
+        assert json.loads(request.content)["tools"] == [
+            {"type": "openrouter:web_search", "parameters": {"search_context_size": "medium"}},
+            {"type": "mcp", "server_label": "connector"},
+        ]
         event = {
             "type": "response.output_item.done",
             "item": {
@@ -69,7 +73,19 @@ async def test_transport_normalizes_streamed_server_tool_items() -> None:
 
     transport = OpenRouterTransport(httpx.MockTransport(upstream))
     async with httpx.AsyncClient(transport=transport) as client:
-        response = await client.post("https://openrouter.ai/api/v1/responses")
+        response = await client.post(
+            "https://openrouter.ai/api/v1/responses",
+            json={
+                "tools": [
+                    {
+                        "type": "openrouter:web_search",
+                        "server_label": "openrouter_web_search",
+                        "parameters": {"search_context_size": "medium"},
+                    },
+                    {"type": "mcp", "server_label": "connector"},
+                ]
+            },
+        )
 
     assert '"type":"web_search_call"' in response.text
     assert "data: [DONE]" in response.text
