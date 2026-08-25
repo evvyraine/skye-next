@@ -128,12 +128,18 @@ def decorate_keyboard(
 
 
 def _decorate_inline(button: InlineKeyboardButton) -> InlineKeyboardButton:
+    text = button.text.removeprefix("‹ ")
     icon = button.icon_custom_emoji_id or _button_icon(
-        button.text,
+        text,
         callback_data=button.callback_data,
         url=button.url,
     )
-    return button.model_copy(update={"icon_custom_emoji_id": icon}) if icon else button
+    updates: dict[str, str] = {}
+    if text != button.text:
+        updates["text"] = text
+    if icon:
+        updates["icon_custom_emoji_id"] = icon
+    return button.model_copy(update=updates) if updates else button
 
 
 def _decorate_reply(button: KeyboardButton) -> KeyboardButton:
@@ -196,7 +202,9 @@ def _button_icon(
     if callback.startswith(("settings:projects", "proj:")):
         if callback.startswith("proj:new"):
             return Icon.APPS_ADD
-        if callback.startswith(("proj:emoji", "proj:emo", "proj:icon", "proj:any")):
+        if callback.startswith(("proj:emo:", "proj:icon:")):
+            return None
+        if callback.startswith(("proj:emoji", "proj:any")):
             return Icon.IMAGE
         if callback.startswith("proj:use"):
             return Icon.UNLOCKED
@@ -208,7 +216,9 @@ def _button_icon(
             return Icon.DELETE
         if callback.startswith(("proj:name", "proj:inst")):
             return Icon.EDIT if callback.startswith("proj:name") else Icon.NEWS
-        if callback.startswith(("proj:open", "proj:page")):
+        if callback.startswith("proj:open:"):
+            return None
+        if callback.startswith("proj:page"):
             return Icon.FOLDER
         return Icon.BRIEFCASE
     if callback.startswith(("conn:", "settings:connectors")):

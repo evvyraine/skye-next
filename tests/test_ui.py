@@ -85,3 +85,36 @@ def test_new_action_icons_replace_fallbacks() -> None:
     icons = [button.icon_custom_emoji_id for row in decorated.inline_keyboard for button in row]
 
     assert icons == [Icon.EDIT, Icon.SEARCH, Icon.REFRESH, Icon.SHIELD, Icon.CLOSE]
+
+
+def test_project_and_emoji_rows_do_not_duplicate_their_own_icons() -> None:
+    markup = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="✓ ☁️ Skye", callback_data="proj:open:skye")],
+            [InlineKeyboardButton(text="☁️", callback_data="proj:emo:0")],
+            [InlineKeyboardButton(text="💬", callback_data="proj:icon:abc:1")],
+            [InlineKeyboardButton(text="Send any emoji", callback_data="proj:any")],
+        ]
+    )
+
+    decorated = decorate_keyboard(markup)
+    icons = [button.icon_custom_emoji_id for row in decorated.inline_keyboard for button in row]
+
+    assert icons == [None, None, None, Icon.IMAGE]
+
+
+def test_back_uses_only_the_custom_icon() -> None:
+    markup = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="‹ Back", callback_data="settings:back")],
+            [InlineKeyboardButton(text="‹ Prev", callback_data="proj:page:0")],
+        ]
+    )
+
+    decorated = decorate_keyboard(markup)
+    buttons = [button for row in decorated.inline_keyboard for button in row]
+
+    assert [(button.text, button.icon_custom_emoji_id) for button in buttons] == [
+        ("Back", Icon.BACK),
+        ("Prev", Icon.BACK),
+    ]
