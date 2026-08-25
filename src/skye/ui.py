@@ -19,6 +19,18 @@ from aiogram.types import (
 
 
 class Icon(StrEnum):
+    CLOSE = "5220160224299623455"
+    EDIT = "5219674923059947621"
+    SHIELD = "5219823516043485651"
+    HELP = "5219757223223272542"
+    SEARCH = "5219940425053282382"
+    IDEA = "5219704816032331845"
+    SUPPORT = "5219945660618418764"
+    CALENDAR = "5220072001376398106"
+    BRIEFCASE = "5220054018348329156"
+    EMAIL = "5219807139333188475"
+    REFRESH = "5217944661125013027"
+    BACK = "5220063175218604987"
     PUZZLE = "5220068513862954768"
     IMAGE = "5219798910175850946"
     NEWS = "5219840214876333436"
@@ -68,6 +80,8 @@ ACTIVITIES: tuple[Activity, ...] = (
     Activity("Assembling the pieces…", Icon.PUZZLE, "🧩"),
     Activity("Adding a little spark…", Icon.SPARKLES, "✨"),
     Activity("Sorting the files…", Icon.FOLDER, "📂"),
+    Activity("Polishing the details…", Icon.EDIT, "🎨"),
+    Activity("Looking for a bright idea…", Icon.IDEA, "💡"),
 )
 
 
@@ -133,7 +147,16 @@ def _button_icon(
     label = text.casefold()
     callback = callback_data or ""
 
-    if label.strip("‹› ") in {"back", "prev", "next", "cancel", "save", "done", "skip", "search"}:
+    action = label.strip("‹› ")
+    if action in {"back", "prev"}:
+        return Icon.BACK
+    if action == "cancel":
+        return Icon.CLOSE
+    if action in {"save", "done"}:
+        return Icon.SHIELD
+    if action == "search":
+        return Icon.SEARCH
+    if action in {"next", "skip"}:
         return None
 
     if callback.startswith("skill:add"):
@@ -147,11 +170,11 @@ def _button_icon(
     if callback.startswith("settings:ahook"):
         return Icon.LINK
     if callback.startswith(("settings:auto",)):
-        return Icon.ANNOUNCEMENT
+        return Icon.ANNOUNCEMENT if "webhook" in label else Icon.CALENDAR
     if callback.startswith(("settings:memory",)):
         return Icon.BOOKMARK
     if callback.startswith(("settings:reason",)):
-        return Icon.LIGHTNING
+        return Icon.IDEA
     if callback.startswith(("settings:agents", "settings:agent", "agents:")):
         if callback.startswith("agents:add"):
             return Icon.APPS_ADD
@@ -160,7 +183,7 @@ def _button_icon(
         if callback.startswith(("agents:select", "settings:agent")):
             return Icon.UNLOCKED
         if callback.startswith("agents:edit"):
-            return Icon.SETTINGS
+            return Icon.EDIT
         if callback.startswith("agents:share"):
             return Icon.LINK
         if callback.endswith(":web"):
@@ -180,14 +203,18 @@ def _button_icon(
         if callback.startswith("proj:catch"):
             return Icon.MESSAGE
         if callback.startswith(("proj:reset", "proj:wipe")):
-            return Icon.LIGHTNING
+            return Icon.REFRESH
         if callback.startswith(("proj:del", "proj:yes")):
             return Icon.DELETE
         if callback.startswith(("proj:name", "proj:inst")):
-            return Icon.SETTINGS if callback.startswith("proj:name") else Icon.NEWS
-        return Icon.FOLDER
+            return Icon.EDIT if callback.startswith("proj:name") else Icon.NEWS
+        if callback.startswith(("proj:open", "proj:page")):
+            return Icon.FOLDER
+        return Icon.BRIEFCASE
     if callback.startswith(("conn:", "settings:connectors")):
-        if callback.startswith(("conn:new", "conn:open", "conn:hdr")):
+        if callback.startswith(("conn:name", "conn:url", "conn:hdr")):
+            return Icon.EDIT
+        if callback.startswith(("conn:new", "conn:open")):
             return Icon.TERMINAL
         if callback.startswith("conn:tog"):
             return Icon.LOCKED if "turn off" in label else Icon.UNLOCKED
@@ -197,8 +224,10 @@ def _button_icon(
             return Icon.DELETE
         if callback.startswith("conn:off"):
             return Icon.LOCKED
-        if callback.startswith(("conn:link", "conn:chk")):
-            return Icon.UNLOCKED
+        if callback.startswith("conn:link"):
+            return Icon.REFRESH if "reconnect" in label else Icon.UNLOCKED
+        if callback.startswith("conn:chk"):
+            return Icon.SHIELD
         if callback.startswith(("conn:pick", "conn:ask", "conn:ok")):
             return Icon.LINK
         return Icon.GLOBE
@@ -219,20 +248,26 @@ def _button_icon(
 
     if any(word in label for word in ("delete", "remove", "stop sharing")):
         return Icon.DELETE
-    if any(word in label for word in ("ban", "turn off", "disconnect", "privacy")):
+    if "privacy" in label:
+        return Icon.SHIELD
+    if any(word in label for word in ("ban", "turn off", "disconnect")):
         return Icon.LOCKED
     if any(word in label for word in ("allow", "turn on", "connect", "reconnect")):
         return Icon.UNLOCKED
     if any(word in label for word in ("website", "web")):
         return Icon.GLOBE
+    if any(word in label for word in ("help", "support")):
+        return Icon.SUPPORT if "support" in label else Icon.HELP
     if any(word in label for word in ("docs", "instructions")):
         return Icon.NEWS
     if any(word in label for word in ("share", "url", "hook")) or url:
         return Icon.LINK
-    if any(word in label for word in ("settings", "edit", "rename")):
+    if any(word in label for word in ("edit", "rename")):
+        return Icon.EDIT
+    if "settings" in label:
         return Icon.SETTINGS
     if any(word in label for word in ("project", "projects")):
-        return Icon.FOLDER
+        return Icon.BRIEFCASE
     if "catch up" in label:
         return Icon.MESSAGE
     if any(word in label for word in ("agent", "skye")):
@@ -241,4 +276,8 @@ def _button_icon(
         return Icon.USER
     if any(word in label for word in ("subscribe", "pay", "plan")):
         return Icon.GIFT
+    if any(word in label for word in ("reset", "refresh", "reconnect")):
+        return Icon.REFRESH
+    if any(word in label for word in ("email", "mail")):
+        return Icon.EMAIL
     return None

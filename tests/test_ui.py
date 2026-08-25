@@ -24,7 +24,7 @@ def test_inline_keyboards_receive_semantic_custom_icons() -> None:
 
     assert decorated.inline_keyboard[0][0].icon_custom_emoji_id == Icon.PUZZLE
     assert decorated.inline_keyboard[1][0].icon_custom_emoji_id == Icon.DELETE
-    assert decorated.inline_keyboard[2][0].icon_custom_emoji_id is None
+    assert decorated.inline_keyboard[2][0].icon_custom_emoji_id == Icon.BACK
 
 
 def test_button_actions_override_their_feature_icon() -> None:
@@ -50,7 +50,7 @@ def test_reply_keyboards_receive_custom_icons_without_text_emoji() -> None:
 
     decorated = decorate_keyboard(markup)
 
-    assert decorated.keyboard[0][0].icon_custom_emoji_id == Icon.FOLDER
+    assert decorated.keyboard[0][0].icon_custom_emoji_id == Icon.BRIEFCASE
     assert decorated.keyboard[0][1].icon_custom_emoji_id == Icon.MESSAGE
 
 
@@ -68,3 +68,20 @@ def test_activity_messages_use_matching_custom_emoji(monkeypatch: object) -> Non
         assert isinstance(block.text[0], RichTextCustomEmoji)
         assert block.text[0].custom_emoji_id == Icon.IMAGE
         assert block.text[1] == " Mixing colors…"
+
+
+def test_new_action_icons_replace_fallbacks() -> None:
+    markup = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="Edit name", callback_data="conn:name:abc")],
+            [InlineKeyboardButton(text="Search", callback_data="conn:search")],
+            [InlineKeyboardButton(text="Reset chat", callback_data="proj:reset:abc")],
+            [InlineKeyboardButton(text="Save", callback_data="conn:save")],
+            [InlineKeyboardButton(text="Cancel", callback_data="conn:home")],
+        ]
+    )
+
+    decorated = decorate_keyboard(markup)
+    icons = [button.icon_custom_emoji_id for row in decorated.inline_keyboard for button in row]
+
+    assert icons == [Icon.EDIT, Icon.SEARCH, Icon.REFRESH, Icon.SHIELD, Icon.CLOSE]
