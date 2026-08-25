@@ -62,8 +62,16 @@ from .models import (
 )
 from .quota import AllowanceError, QuotaService
 from .rich import RichMessages
-from .runtime import AgentRuntime, ContextLimitError, RunOutput, StreamStartedError, leftover_reply
+from .runtime import (
+    AgentRuntime,
+    ContextLimitError,
+    RunEvent,
+    RunOutput,
+    StreamStartedError,
+    leftover_reply,
+)
 from .skills import SkillError, SkillPanel, SkillService, SkillWizard
+from .telegram_activity import TelegramActivity, TelegramChatAction
 from .telegram_projects import (
     PROJECT_KEYBOARD_CATCHUP,
     PROJECT_KEYBOARD_PROJECTS,
@@ -1177,11 +1185,14 @@ class TelegramApp:
             if message.media_group_id is not None and not await media_groups.claim(message):
                 return
         input_file_ids: list[str] = []
-        try:
-            user_input = await self._input(message, context, album=album, file_ids=input_file_ids)
-        except ValueError as error:
-            await self.rich.send(message, str(error))
-            return
+        async with TelegramActivity(self.bot, context.chat_id, context.thread_id):
+            try:
+                user_input = await self._input(
+                    message, context, album=album, file_ids=input_file_ids
+                )
+            except ValueError as error:
+                await self.rich.send(message, str(error))
+                return
         conversation_id: str | None = None
         extra_instructions = ""
         if context.chat_type == "private":
@@ -1264,6 +1275,43 @@ class TelegramApp:
                 placeholder = await self._thinking(message, context)
         last_target = message or placeholder
         sent_holder = {"count": 0}
+        active_activities: dict[str, TelegramChatAction] = {}
+        activity = TelegramActivity(
+            getattr(self, "bot", None),
+            context.chat_id,
+            context.thread_id,
+            enabled=awaiting_reply,
+        )
+
+        async def sync_activity() -> None:
+            priority: tuple[TelegramChatAction, ...] = (
+                "upload_photo",
+                "record_voice",
+                "typing",
+            )
+            selected: TelegramChatAction = "typing"
+            for candidate in priority:
+                if candidate in active_activities.values():
+                    selected = candidate
+                    break
+            await activity.show(selected)
+
+        async def on_event(event: RunEvent) -> None:
+            if event.kind == "tool" and event.tool_name in {
+                "image_generation",
+                "image_generation_call",
+            }:
+                action: TelegramChatAction = "upload_photo"
+            elif event.kind == "activity" and event.tool_name == "send_voice":
+                action = "record_voice"
+            else:
+                return
+            key = event.tool_id or event.tool_name
+            if event.tool_status == "running":
+                active_activities[key] = action
+            else:
+                active_activities.pop(key, None)
+            await sync_activity()
 
         async def on_text(_text: str) -> None:
             return
@@ -1283,6 +1331,7 @@ class TelegramApp:
 
         async def on_voice(audio: bytes, reply_to: int | None = None) -> None:
             nonlocal placeholder, last_target
+            await activity.send("upload_voice")
             if placeholder is not None:
                 await self.rich.delete(placeholder)
                 placeholder = None
@@ -1312,30 +1361,35 @@ class TelegramApp:
             sent_holder["count"] += 1
 
         try:
-            output = await self.runtime.run(
-                context,
-                current,
-                user_input,
-                on_text,
-                input_file_ids=input_file_ids,
-                conversation_id=conversation_id,
-                extra_instructions=extra_instructions,
-                manage_automations=manage_automations,
-                on_reply=on_reply,
-                on_voice=on_voice,
-                awaiting_reply=awaiting_reply,
-            )
-            await self.quota.record(context, output.usage_tokens, billed_user_id=billed_user_id)
-            if message is not None and context.chat_type != "private":
-                await self.groups.mark_seen(message)
-            await self._finish_visible(
-                message,
-                context,
-                last_target,
-                placeholder,
-                output,
-                awaiting_reply=awaiting_reply,
-            )
+            async with activity:
+                output = await self.runtime.run(
+                    context,
+                    current,
+                    user_input,
+                    on_text,
+                    input_file_ids=input_file_ids,
+                    conversation_id=conversation_id,
+                    extra_instructions=extra_instructions,
+                    manage_automations=manage_automations,
+                    on_event=on_event,
+                    on_reply=on_reply,
+                    on_voice=on_voice,
+                    awaiting_reply=awaiting_reply,
+                )
+                await self.quota.record(
+                    context, output.usage_tokens, billed_user_id=billed_user_id
+                )
+                if message is not None and context.chat_type != "private":
+                    await self.groups.mark_seen(message)
+                await self._finish_visible(
+                    message,
+                    context,
+                    last_target,
+                    placeholder,
+                    output,
+                    awaiting_reply=awaiting_reply,
+                    activity=activity,
+                )
         except AllowanceError as error:
             if sent_holder["count"] == 0:
                 await self._finish_turn(message, context, placeholder, error.message)
@@ -1515,6 +1569,7 @@ class TelegramApp:
         output: RunOutput,
         *,
         awaiting_reply: bool,
+        activity: TelegramActivity | None = None,
     ) -> None:
         leftover = leftover_reply(output, awaiting_reply=awaiting_reply)
         if leftover:
@@ -1529,7 +1584,7 @@ class TelegramApp:
         elif placeholder is not None:
             await self.rich.delete(placeholder)
             placeholder = None
-        await self._flush_media(message, context, last_target, output)
+        await self._flush_media(message, context, last_target, output, activity=activity)
 
     async def _flush_media(
         self,
@@ -1537,20 +1592,30 @@ class TelegramApp:
         context: RequestContext,
         target: Message | None,
         output: RunOutput,
+        *,
+        activity: TelegramActivity | None = None,
     ) -> None:
         if not output.images and not output.files:
             return
         if target is not None:
             if output.images:
+                if activity is not None:
+                    await activity.send("upload_photo")
                 await self.rich.send_images(target, output.images)
             if output.files:
+                if activity is not None:
+                    await activity.send("upload_document")
                 await self.rich.send_documents(target, output.files)
             return
         if output.images:
+            if activity is not None:
+                await activity.send("upload_photo")
             await self.rich.send_images_chat(
                 context.chat_id, context.thread_id, output.images, reply=message
             )
         if output.files:
+            if activity is not None:
+                await activity.send("upload_document")
             await self.rich.send_documents_chat(
                 context.chat_id, context.thread_id, output.files, reply=message
             )

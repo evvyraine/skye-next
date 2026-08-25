@@ -28,15 +28,41 @@ from skye.runtime import (
     AgentRuntime,
     ContextLimitError,
     GuardedResponsesModel,
+    RunEvent,
     RunOutput,
     StreamStartedError,
     TokenRateLimiter,
     TurnDelivery,
     _dump_conversation_item,
+    describe_activity_event,
     is_transient,
     leftover_reply,
     retry_after,
 )
+
+
+def test_send_voice_tool_events_are_private_delivery_activity() -> None:
+    called = SimpleNamespace(
+        name="tool_called",
+        item=SimpleNamespace(raw_item={"name": "send_voice", "call_id": "voice_1"}),
+    )
+    finished = SimpleNamespace(
+        name="tool_output",
+        item=SimpleNamespace(raw_item={"name": "send_voice", "call_id": "voice_1"}),
+    )
+
+    assert describe_activity_event(called) == RunEvent(
+        kind="activity",
+        tool_id="voice_1",
+        tool_name="send_voice",
+        tool_status="running",
+    )
+    assert describe_activity_event(finished) == RunEvent(
+        kind="activity",
+        tool_id="voice_1",
+        tool_name="send_voice",
+        tool_status="done",
+    )
 
 
 def config(**overrides: object) -> Settings:

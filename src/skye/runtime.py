@@ -891,6 +891,10 @@ class AgentRuntime:
                     started_streaming = True
                 if on_event is None:
                     continue
+                activity = describe_activity_event(event)
+                if activity is not None:
+                    await on_event(activity)
+                    continue
                 tool = describe_tool_event(event)
                 if tool is not None:
                     await on_event(tool)
@@ -1272,6 +1276,24 @@ def describe_tool_event(event: object) -> RunEvent | None:
         tool_name=name,
         tool_label=label,
         tool_status=status,
+    )
+
+
+def describe_activity_event(event: object) -> RunEvent | None:
+    """Expose delivery work to transports without presenting it as a visible tool."""
+    event_name = getattr(event, "name", None)
+    item = getattr(event, "item", None)
+    if event_name not in {"tool_called", "tool_output"} or item is None:
+        return None
+    raw: Any = getattr(item, "raw_item", item)
+    name = _tool_name(item, raw)
+    if name != "send_voice":
+        return None
+    return RunEvent(
+        kind="activity",
+        tool_id=_tool_id(raw, name),
+        tool_name=name,
+        tool_status="running" if event_name == "tool_called" else "done",
     )
 
 
