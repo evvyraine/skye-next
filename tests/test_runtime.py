@@ -398,6 +398,31 @@ class PartialStream(FakeStream):
         raise self.error
 
 
+class DeliveryThenFailure(FakeStream):
+    def __init__(self, agent: Any, fail: bool) -> None:
+        super().__init__()
+        self.agent = agent
+        self.fail = fail
+
+    async def stream_events(self) -> Any:
+        tool = next(
+            cast(FunctionTool, item)
+            for item in self.agent.tools
+            if isinstance(item, FunctionTool) and item.name == "send_message"
+        )
+        yield SimpleNamespace(
+            name="tool_called",
+            item=SimpleNamespace(
+                title=None,
+                raw_item=SimpleNamespace(name="send_message", call_id="call_1"),
+            ),
+        )
+        payload = '{"text":"Delivered once."}'
+        await tool.on_invoke_tool(_tool_context("send_message", payload), payload)
+        if self.fail:
+            raise rate_limit_error("Please try again in 0.001s.")
+
+
 def runtime_for_run() -> AgentRuntime:
     conversations = AsyncMock()
     conversations.get_or_create.return_value = "conv_1"
@@ -729,10 +754,12 @@ async def test_run_strips_sandbox_links_and_attaches_files() -> None:
     runtime = runtime_for_run()
     files = (GeneratedFile("notes.md", b"hi"),)
     stream = FakeStream(output="Done: [download notes.md](sandbox:/mnt/data/notes.md)")
+    collect = AsyncMock(return_value=files)
 
     with (
         patch("skye.runtime.Runner.run_streamed", return_value=stream),
-        patch("skye.runtime.collect_container_files", AsyncMock(return_value=files)),
+        patch("skye.runtime.collect_container_files", collect),
+        patch("skye.runtime.time.time", return_value=1234.9),
     ):
         output = await runtime.run(
             RequestContext(1, "private", 1),
@@ -743,6 +770,7 @@ async def test_run_strips_sandbox_links_and_attaches_files() -> None:
 
     assert output.text == "Done: download notes.md"
     assert output.files == files
+    assert collect.await_args.kwargs["created_after"] == 1234
 
 
 async def test_run_retries_conversation_locks() -> None:
@@ -765,6 +793,35 @@ async def test_run_retries_conversation_locks() -> None:
 
     assert output.text == "Later"
     assert delays[0] >= 1.0
+
+
+async def test_run_does_not_retry_after_a_delivery_tool_started() -> None:
+    runtime = runtime_for_run()
+    delivered: list[str] = []
+    attempts = 0
+
+    async def on_reply(text: str, _reply_to: int | None = None) -> None:
+        delivered.append(text)
+
+    def run_streamed(agent: Any, *_args: Any, **_kwargs: Any) -> DeliveryThenFailure:
+        nonlocal attempts
+        attempts += 1
+        return DeliveryThenFailure(agent, fail=attempts == 1)
+
+    with (
+        patch("skye.runtime.Runner.run_streamed", side_effect=run_streamed),
+        pytest.raises(StreamStartedError),
+    ):
+        await runtime.run(
+            RequestContext(1, "private", 1),
+            ChatSettings("gpt-5.6-luna", "medium", memory_enabled=False),
+            "hello",
+            AsyncMock(),
+            on_reply=on_reply,
+        )
+
+    assert delivered == ["Delivered once."]
+    assert attempts == 1
 
 
 async def test_run_does_not_retry_permanent_errors() -> None:

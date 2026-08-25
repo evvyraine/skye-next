@@ -794,7 +794,7 @@ class AgentRuntime:
         active: _ActiveRun,
         on_event: EventCallback | None = None,
     ) -> RunOutput:
-        started = int(time.time()) - 5
+        started = int(time.time())
         run_config = (
             RunConfig(model_provider=self._model_provider)
             if self._model_provider is not None
@@ -821,11 +821,12 @@ class AgentRuntime:
                     started_streaming = True
                     text += event.data.delta
                     continue
+                if getattr(event, "name", None) in {"tool_called", "tool_output"}:
+                    started_streaming = True
                 if on_event is None:
                     continue
                 tool = describe_tool_event(event)
                 if tool is not None:
-                    started_streaming = True
                     await on_event(tool)
         except Exception as error:
             if started_streaming:

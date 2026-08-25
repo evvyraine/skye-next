@@ -90,6 +90,27 @@ async def test_image_files_get_cached_bounded_thumbnails(
     assert file_payload(saved)["thumbnail_url"] == f"/api/files/{saved.id}/thumbnail"
 
 
+async def test_deleting_project_removes_file_bytes(
+    database: Database, tmp_path: Path
+) -> None:
+    projects = service(database, tmp_path)
+    project = await projects.create(1, name="Disposable")
+    saved = await projects.save_file(
+        1,
+        project.id,
+        filename="private.txt",
+        mime="text/plain",
+        data=b"private bytes",
+        kind="upload",
+    )
+    path = tmp_path / "web" / "1" / saved.id
+    assert path.is_file()
+
+    await projects.delete(1, project.id)
+
+    assert not path.exists()
+
+
 async def test_extra_instructions_append_after_the_base_prompt() -> None:
     runtime = AgentRuntime(
         Settings(

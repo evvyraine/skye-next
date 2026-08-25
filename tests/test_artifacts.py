@@ -171,6 +171,64 @@ async def test_collects_cited_and_listed_assistant_files() -> None:
     assert client.containers.files.content.calls == [("cntr_1", "cfile_1"), ("cntr_1", "cfile_new")]
 
 
+async def test_does_not_resend_uncited_files_without_a_creation_time() -> None:
+    listed = [
+        SimpleNamespace(
+            id="cfile_old",
+            container_id="cntr_1",
+            path="/mnt/data/contact.png",
+            source="assistant",
+            bytes=3,
+            created_at=None,
+        )
+    ]
+    client = FakeClient(listed, {"cfile_old": b"old"})
+
+    files = await collect_container_files(
+        cast(Any, client),
+        result_with(
+            SimpleNamespace(
+                type="shell_call",
+                environment={"type": "container_reference", "container_id": "cntr_1"},
+            )
+        ),
+        max_bytes=1024,
+        created_after=100,
+    )
+
+    assert files == ()
+    assert client.containers.files.content.calls == []
+
+
+async def test_does_not_resend_a_file_from_before_the_current_run() -> None:
+    listed = [
+        SimpleNamespace(
+            id="cfile_previous",
+            container_id="cntr_1",
+            path="/mnt/data/contact.png",
+            source="assistant",
+            bytes=3,
+            created_at=99,
+        )
+    ]
+    client = FakeClient(listed, {"cfile_previous": b"old"})
+
+    files = await collect_container_files(
+        cast(Any, client),
+        result_with(
+            SimpleNamespace(
+                type="shell_call",
+                environment={"type": "container_reference", "container_id": "cntr_1"},
+            )
+        ),
+        max_bytes=1024,
+        created_after=100,
+    )
+
+    assert files == ()
+    assert client.containers.files.content.calls == []
+
+
 async def test_skips_files_over_the_size_limit() -> None:
     listed = [
         SimpleNamespace(

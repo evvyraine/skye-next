@@ -169,11 +169,12 @@ class ProjectService:
         return updated
 
     async def delete(self, user_id: int, project_id: str) -> WebProject:
+        files = await self.database.list_web_files(user_id, project_id)
         project = await self.database.delete_web_project(user_id, project_id)
         if project is None:
             raise LookupError("Project not found.")
         await self._delete_conversation(project.openai_conversation_id)
-        for item in await self.database.list_web_files(user_id, project_id):
+        for item in files:
             path = self._file_path(user_id, item.id)
             path.unlink(missing_ok=True)
             self._thumbnail_path(user_id, item.id).unlink(missing_ok=True)

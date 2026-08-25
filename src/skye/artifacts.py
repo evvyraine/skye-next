@@ -149,10 +149,8 @@ def _select_files(
                 item.created_at,
             )
             continue
-        if (
-            created_after is not None
-            and item.created_at is not None
-            and item.created_at < created_after
+        if created_after is not None and (
+            item.created_at is None or item.created_at < created_after
         ):
             continue
         selected.setdefault(item.file_id, item)
