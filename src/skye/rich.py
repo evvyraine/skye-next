@@ -48,6 +48,11 @@ from .telegram_threads import api_thread_id, quote_reply, reply_parameters
 from .ui import activity_message, decorate_keyboard
 
 
+def _voice_filename(audio: bytes) -> str:
+    mp3_headers = (b"ID3", b"\xff\xfb", b"\xff\xf3", b"\xff\xf2")
+    return "voice.mp3" if audio.startswith(mp3_headers) else "voice.ogg"
+
+
 class RichMessages:
     """The single boundary for every visible message Skye sends."""
 
@@ -179,11 +184,10 @@ class RichMessages:
         return await self.bot.send_voice(
             chat_id=chat_id,
             message_thread_id=thread_id or None,
-            voice=BufferedInputFile(audio, filename="voice.ogg"),
+            voice=BufferedInputFile(audio, filename=_voice_filename(audio)),
             reply_parameters=quote_reply(reply_to),
             reply_markup=reply_markup,
         )
-
     async def delete(self, message: Message) -> None:
         with suppress(TelegramBadRequest):
             await self.bot.delete_message(chat_id=message.chat.id, message_id=message.message_id)

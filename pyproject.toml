@@ -8,6 +8,7 @@ dependencies = [
     "aiogram>=3.30.0",
     "aiohttp>=3.11.0",
     "aiosqlite>=0.21.0",
+    "av>=18.1.0",
     "httpx>=0.28.0",
     "openai>=2.52.0",
     "openai-agents>=0.19.2",

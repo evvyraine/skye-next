@@ -395,11 +395,12 @@ class WebApp:
 
         async def on_voice(audio: bytes, _reply_to: int | None = None) -> None:
             nonlocal sent
+            is_mp3 = audio.startswith((b"ID3", b"\xff\xfb", b"\xff\xf3", b"\xff\xf2"))
             saved = await self.projects.save_file(
                 session.user_id,
                 project_id,
-                filename="voice.ogg",
-                mime="audio/ogg",
+                filename="voice.mp3" if is_mp3 else "voice.ogg",
+                mime="audio/mpeg" if is_mp3 else "audio/ogg",
                 data=audio,
                 kind="document",
             )

@@ -398,6 +398,9 @@ async def test_send_voice_uses_native_voice_and_optional_quote() -> None:
     assert isinstance(voice, BufferedInputFile)
     assert voice.filename == "voice.ogg"
 
+    await RichMessages(bot).send_voice(incoming, b"ID3mp3")
+    assert bot.send_voice.await_args.kwargs["voice"].filename == "voice.mp3"
+
 
 async def test_send_keeps_forum_topic_without_quoting() -> None:
     bot = AsyncMock()

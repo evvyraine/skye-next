@@ -4,6 +4,7 @@ import asyncio
 import base64
 import hashlib
 import hmac
+import io
 import json
 import re
 import time
@@ -11,8 +12,9 @@ from collections import defaultdict, deque
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field
-from typing import Any, cast
+from typing import Any, Literal, cast
 
+import av
 import httpx
 import structlog
 from agents import (
@@ -126,6 +128,7 @@ class TurnDelivery:
     client: AsyncOpenAI | None = None
     max_audio_bytes: int = 25 * 1024 * 1024
     speech_model: str = "gpt-4o-mini-tts"
+    speech_response_format: Literal["opus", "pcm"] = "opus"
     sent: int = 0
     limit: int = SEND_MESSAGE_LIMIT
 
@@ -209,9 +212,11 @@ class TurnDelivery:
             voice=SPEECH_VOICE,
             input=spoken,
             instructions=delivery_instructions,
-            response_format="opus",
+            response_format=self.speech_response_format,
         )
         audio = response.content
+        if audio and self.speech_response_format == "pcm":
+            audio = _pcm_to_mp3(audio)
         if not audio:
             return "No voice audio was generated."
         if len(audio) > self.max_audio_bytes:
@@ -220,6 +225,21 @@ class TurnDelivery:
         await self.on_voice(audio, quoted)
         self.sent += 1
         return "sent"
+
+
+def _pcm_to_mp3(audio: bytes) -> bytes:
+    output = io.BytesIO()
+    with av.open(output, mode="w", format="mp3") as container:
+        stream = container.add_stream("libmp3lame", rate=24_000)
+        stream.layout = "mono"
+        frame = av.AudioFrame(format="s16", layout="mono", samples=len(audio) // 2)
+        frame.sample_rate = 24_000
+        frame.planes[0].update(audio)
+        for packet in stream.encode(frame):
+            container.mux(packet)
+        for packet in stream.encode():
+            container.mux(packet)
+    return output.getvalue()
 
 
 def leftover_reply(output: RunOutput, *, awaiting_reply: bool) -> str | None:
@@ -695,6 +715,7 @@ class AgentRuntime:
             client=self.client,
             max_audio_bytes=self.config.skye_max_attachment_bytes,
             speech_model=self.config.skye_speech_model,
+            speech_response_format="pcm" if self.config.provider == "openrouter" else "opus",
         )
         _ = on_text
         async with self._locks[key]:

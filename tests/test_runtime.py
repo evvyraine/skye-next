@@ -1243,6 +1243,26 @@ async def test_send_voice_generates_nova_opus_with_model_instructions() -> None:
     assert "reply_to" in schema["properties"]
 
 
+async def test_send_voice_converts_openrouter_pcm_to_mp3() -> None:
+    delivered: list[bytes] = []
+    pcm = b"\x00\x00" * 2_400
+    create = AsyncMock(return_value=SimpleNamespace(content=pcm))
+    client = SimpleNamespace(audio=SimpleNamespace(speech=SimpleNamespace(create=create)))
+
+    async def on_voice(audio: bytes, _reply_to: int | None = None) -> None:
+        delivered.append(audio)
+
+    delivery = TurnDelivery(
+        on_voice=on_voice,
+        client=cast(Any, client),
+        speech_response_format="pcm",
+    )
+
+    assert await delivery.send_voice("Hello", "Calm") == "sent"
+    assert delivered and delivered[0].startswith(b"ID3")
+    assert delivered[0] != pcm
+
+
 async def test_send_voice_validates_before_generating_audio() -> None:
     create = AsyncMock()
     client = SimpleNamespace(audio=SimpleNamespace(speech=SimpleNamespace(create=create)))
