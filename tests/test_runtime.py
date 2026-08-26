@@ -464,6 +464,33 @@ def test_shell_file_note_follows_capabilities() -> None:
     assert "/mnt/data" not in cast(str, without_shell.instructions)
 
 
+def test_image_delivery_note_follows_capabilities() -> None:
+    memory = MemoryService(cast(Any, None))
+    runtime = AgentRuntime(config(), cast(Any, None), memory, "You are Skye.")
+    with_image = runtime._agent(
+        RequestContext(1, "private", 1),
+        ChatSettings("gpt-5.6-luna", "medium", memory_enabled=False),
+    )
+    without_image = runtime._agent(
+        RequestContext(1, "private", 1),
+        ChatSettings("gpt-5.6-luna", "medium", memory_enabled=False, active_agent_id="a1"),
+        composition=AgentComposition(installed_agent("a1", "Researcher", ("web",)), ()),
+    )
+    image_only = runtime._agent(
+        RequestContext(1, "private", 1),
+        ChatSettings("gpt-5.6-luna", "medium", memory_enabled=False, active_agent_id="a2"),
+        composition=AgentComposition(installed_agent("a2", "Illustrator", ("image",)), ()),
+    )
+
+    note = "Generated images are delivered to the user automatically."
+    assert note in cast(str, with_image.instructions)
+    assert "Call image generation once unless they asked for several." in cast(
+        str, with_image.instructions
+    )
+    assert note not in cast(str, without_image.instructions)
+    assert note in cast(str, image_only.instructions)
+
+
 def installed_agent(
     agent_id: str, name: str, capabilities: tuple[str, ...], *, model: str | None = None
 ) -> InstalledAgent:
