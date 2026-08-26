@@ -51,7 +51,7 @@ def test_audio_uploads_are_transcript_only_model_inputs() -> None:
     ]
 
 
-def test_openrouter_audio_uploads_use_responses_compatible_transcript() -> None:
+def test_openrouter_audio_uploads_include_native_audio() -> None:
     parts = openai_file_parts(
         "voice.ogg",
         "audio/ogg",
@@ -65,7 +65,10 @@ def test_openrouter_audio_uploads_use_responses_compatible_transcript() -> None:
         "type": "input_text",
         "text": "Attached audio transcript (voice.ogg):\nTranscript",
     }
-    assert len(parts) == 1
+    assert parts[1] == {
+        "type": "input_audio",
+        "input_audio": {"data": "YXVkaW8=", "format": "ogg"},
+    }
 
 
 def test_audio_uploads_are_detected() -> None:

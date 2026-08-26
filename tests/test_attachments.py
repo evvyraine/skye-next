@@ -432,6 +432,7 @@ async def test_openrouter_voice_includes_native_audio(reply: bool) -> None:
             "type": "input_text",
             "text": f"{label} audio transcript (voice.ogg):\nHello from the voice note.",
         },
+        {"type": "input_audio", "input_audio": {"data": "YXVkaW8=", "format": "ogg"}},
     ]
 
 

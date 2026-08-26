@@ -15,6 +15,35 @@ from .config import Settings
 from .models import MediaGroupItem
 
 AUDIO_EXTENSIONS = {".aac", ".flac", ".m4a", ".mp3", ".mp4", ".mpeg", ".ogg", ".wav", ".webm"}
+OPENROUTER_AUDIO_FORMATS = {
+    ".aac": "aac",
+    ".aif": "aiff",
+    ".aiff": "aiff",
+    ".flac": "flac",
+    ".m4a": "m4a",
+    ".mp3": "mp3",
+    ".mpeg": "mp3",
+    ".oga": "ogg",
+    ".ogg": "ogg",
+    ".opus": "ogg",
+    ".wav": "wav",
+    ".wave": "wav",
+}
+OPENROUTER_AUDIO_MIMES = {
+    "audio/aac": "aac",
+    "audio/aiff": "aiff",
+    "audio/flac": "flac",
+    "audio/m4a": "m4a",
+    "audio/mp3": "mp3",
+    "audio/mp4": "m4a",
+    "audio/mpeg": "mp3",
+    "audio/ogg": "ogg",
+    "audio/opus": "ogg",
+    "audio/wav": "wav",
+    "audio/wave": "wav",
+    "audio/x-aiff": "aiff",
+    "audio/x-wav": "wav",
+}
 
 
 class AttachmentService:
@@ -351,13 +380,34 @@ def audio_model_parts(
     *,
     inline: bool,
 ) -> list[dict[str, Any]]:
-    _ = mime, data, inline
-    return [
+    parts: list[dict[str, Any]] = [
         {
             "type": "input_text",
             "text": f"{label} {kind} transcript ({filename}):\n{transcript}",
         }
     ]
+    if inline and kind == "audio":
+        audio = audio_input_part(filename, mime, data)
+        if audio is not None:
+            parts.append(audio)
+    return parts
+
+
+def audio_input_part(filename: str, mime: str, data: bytes) -> dict[str, Any] | None:
+    fmt = openrouter_audio_format(filename, mime)
+    if fmt is None:
+        return None
+    return {
+        "type": "input_audio",
+        "input_audio": {"data": base64.b64encode(data).decode(), "format": fmt},
+    }
+
+
+def openrouter_audio_format(filename: str, mime: str) -> str | None:
+    extension = Path(filename).suffix.lower()
+    if extension in OPENROUTER_AUDIO_FORMATS:
+        return OPENROUTER_AUDIO_FORMATS[extension]
+    return OPENROUTER_AUDIO_MIMES.get(mime.lower())
 
 
 def is_audio_upload(filename: str, mime: str) -> bool:
