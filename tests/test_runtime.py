@@ -1,5 +1,7 @@
 import asyncio
 import base64
+import io
+import zipfile
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock, patch
@@ -18,7 +20,11 @@ from agents.models.interface import ModelResponse
 from agents.run_internal.turn_resolution import process_model_response
 from agents.usage import Usage
 from openai import APIError, BadRequestError, RateLimitError
-from openai.types.responses import ResponseOutputMessage, ResponseOutputText
+from openai.types.responses import (
+    ResponseFunctionShellToolCall,
+    ResponseOutputMessage,
+    ResponseOutputText,
+)
 
 from skye.artifacts import GeneratedFile
 from skye.config import SANDBOX_DOMAINS, Settings
@@ -41,6 +47,7 @@ from skye.runtime import (
     GuardedResponsesModel,
     RunEvent,
     RunOutput,
+    StatelessResponsesModel,
     StreamStartedError,
     TokenRateLimiter,
     TurnDelivery,
@@ -50,6 +57,7 @@ from skye.runtime import (
     leftover_reply,
     retry_after,
 )
+from skye.youtube import YoutubeTranscriptService
 
 
 def test_send_voice_tool_events_are_private_delivery_activity() -> None:
@@ -80,6 +88,7 @@ def config(**overrides: object) -> Settings:
     values: dict[str, object] = {
         "telegram_bot_token": "123:token",
         "openai_api_key": "sk-test",
+        "openrouter_api_key": None,
         "skye_owner_ids": "1",
         "_env_file": None,
     }
@@ -124,6 +133,25 @@ def test_agent_uses_only_hosted_capabilities() -> None:
     }
 
 
+def test_agent_includes_youtube_transcript_tool_when_configured() -> None:
+    memory = MemoryService(cast(Any, None))
+    runtime = AgentRuntime(
+        config(),
+        cast(Any, None),
+        memory,
+        "You are Skye.",
+        youtube=YoutubeTranscriptService(),
+    )
+    agent = runtime._agent(
+        RequestContext(1, "private", 1),
+        ChatSettings("gpt-5.6-luna", "medium"),
+    )
+
+    assert "youtube_get_transcript" in [
+        cast(FunctionTool, tool).name for tool in agent.tools if isinstance(tool, FunctionTool)
+    ]
+
+
 def test_attached_files_are_mounted_in_the_hosted_sandbox() -> None:
     memory = MemoryService(cast(Any, None))
     runtime = AgentRuntime(config(), cast(Any, None), memory, "You are Skye.")
@@ -157,16 +185,20 @@ def test_openrouter_uses_only_openrouter_server_tools() -> None:
 
     tools = runtime._hosted_tools(("web", "image", "shell"), input_file_ids=("or_file_1",))
 
-    assert all(isinstance(tool, HostedMCPTool) for tool in tools)
-    configs = [cast(HostedMCPTool, tool).tool_config for tool in tools]
+    assert all(isinstance(tool, HostedMCPTool) for tool in tools[:3])
+    assert isinstance(tools[3], ShellTool)
+    configs = [cast(HostedMCPTool, tool).tool_config for tool in tools[:3]]
     assert [item["type"] for item in configs] == [
         "openrouter:web_search",
         "openrouter:web_fetch",
         "openrouter:image_generation",
-        "openrouter:shell",
     ]
     assert configs[2]["parameters"] == {"model": "openai/gpt-5-image"}
-    assert configs[3]["parameters"]["environment"]["file_ids"] == ["or_file_1"]
+    assert cast(ShellTool, tools[3]).environment == {
+        "type": "container_auto",
+        "network_policy": sandbox_network_policy(),
+        "file_ids": ["or_file_1"],
+    }
 
 
 def test_openrouter_tools_have_metadata_required_by_response_processing() -> None:
@@ -197,6 +229,46 @@ def test_openrouter_tools_have_metadata_required_by_response_processing() -> Non
                     role="assistant",
                     status="completed",
                     type="message",
+                )
+            ],
+            Usage(),
+            None,
+        ),
+        output_schema=None,
+        handoffs=[],
+    )
+
+    assert len(processed.new_items) == 1
+
+
+def test_openrouter_native_shell_call_has_matching_agent_tool() -> None:
+    memory = MemoryService(cast(Any, None))
+    runtime = AgentRuntime(
+        config(
+            openai_api_key=None,
+            openrouter_api_key="sk-or-test",
+            skye_default_model="openai/gpt-5.6-luna",
+        ),
+        cast(Any, None),
+        memory,
+        "You are Skye.",
+    )
+    agent = runtime._agent(
+        RequestContext(1, "private", 1),
+        ChatSettings("openai/gpt-5.6-luna", "medium"),
+    )
+
+    processed = process_model_response(
+        agent=agent,
+        all_tools=agent.tools,
+        response=ModelResponse(
+            [
+                ResponseFunctionShellToolCall(
+                    id="item_1",
+                    action={"commands": ["date"]},
+                    call_id="call_1",
+                    status="completed",
+                    type="shell_call",
                 )
             ],
             Usage(),
@@ -315,6 +387,27 @@ def test_generated_images_are_extracted() -> None:
     assert AgentRuntime._images(result) == (b"png",)
 
 
+def test_openrouter_data_url_images_are_extracted() -> None:
+    encoded = base64.b64encode(b"png").decode()
+    result = cast(
+        Any,
+        SimpleNamespace(
+            raw_responses=[
+                SimpleNamespace(
+                    output=[
+                        SimpleNamespace(
+                            type="openrouter:image_generation",
+                            result=f"data:image/png;base64,{encoded}",
+                        )
+                    ]
+                )
+            ]
+        ),
+    )
+
+    assert AgentRuntime._images(result) == (b"png",)
+
+
 def test_counting_tools_remove_streaming_only_image_options() -> None:
     tools = [
         {
@@ -328,6 +421,23 @@ def test_counting_tools_remove_streaming_only_image_options() -> None:
 
     assert counted == [{"type": "image_generation", "model": "gpt-image-2"}]
     assert tools[0]["partial_images"] == 1
+
+
+def test_counting_generated_image_omits_raw_base64_result() -> None:
+    counted = GuardedResponsesModel._counting_image_generation_call(
+        {
+            "id": "image_1",
+            "type": "image_generation_call",
+            "status": "completed",
+            "result": "a" * 1_000_000,
+        }
+    )
+
+    assert counted == {
+        "id": "image_1",
+        "type": "image_generation_call",
+        "status": "completed",
+    }
 
 
 def test_counting_uploaded_file_uses_only_file_id() -> None:
@@ -445,6 +555,44 @@ def test_shell_mounts_uploaded_skills() -> None:
     assert nested_shell.environment["skills"] == [
         {"type": "skill_reference", "skill_id": "skill_abc"}
     ]
+
+
+@pytest.mark.asyncio
+async def test_openrouter_reads_skill_bundle_through_function_tool() -> None:
+    memory = MemoryService(cast(Any, None))
+    runtime = AgentRuntime(
+        config(openai_api_key=None, openrouter_api_key="sk-or-test"),
+        cast(Any, None),
+        memory,
+        "You are Skye.",
+    )
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("audit-skill/SKILL.md", "Follow the audit instructions.")
+    skill = Skill(
+        "local1",
+        Scope("user", 1),
+        "or_file_1",
+        "audit-skill",
+        "Audit instructions.",
+        "audit-skill.zip",
+        1,
+        1,
+        "now",
+        buffer.getvalue(),
+    )
+
+    agent = runtime._agent(
+        RequestContext(1, "private", 1),
+        ChatSettings("openai/gpt-5.6-luna", "medium"),
+        skills=(skill,),
+    )
+    tool = next(cast(FunctionTool, item) for item in agent.tools if item.name == "read_skill")
+    payload = '{"skill_name":"audit-skill","path":"SKILL.md"}'
+
+    assert await tool.on_invoke_tool(_tool_context("read_skill", payload), payload) == (
+        "Follow the audit instructions."
+    )
 
 
 def _request() -> httpx.Request:
@@ -660,6 +808,39 @@ async def test_run_does_not_retry_after_streaming_started() -> None:
     assert run_streamed.call_count == 1
 
 
+async def test_openrouter_failed_run_rolls_back_session_items() -> None:
+    runtime = runtime_for_run(
+        openai_api_key=None,
+        openrouter_api_key="sk-or-test",
+        skye_default_model="openai/gpt-5.6-luna",
+    )
+    runtime.conversations.database.session_item_count.return_value = 8
+    runtime.conversations.database.session_files.return_value = ()
+    tool_called = SimpleNamespace(
+        name="tool_called",
+        item=SimpleNamespace(
+            title=None,
+            raw_item=SimpleNamespace(name="send_message", call_id="call_1"),
+        ),
+    )
+
+    with (
+        patch(
+            "skye.runtime.Runner.run_streamed",
+            return_value=PartialStream(tool_called, rate_limit_error("provider failed")),
+        ),
+        pytest.raises(StreamStartedError),
+    ):
+        await runtime.run(
+            RequestContext(1, "private", 1),
+            ChatSettings("openai/gpt-5.6-luna", "medium", memory_enabled=False),
+            "hello",
+            AsyncMock(),
+        )
+
+    runtime.conversations.database.truncate_session.assert_awaited_once_with("conv_1", 8)
+
+
 def test_model_settings_enable_compaction_and_disable_implicit_truncation() -> None:
     runtime = runtime_for_run()
     settings = runtime._model_settings(
@@ -724,6 +905,36 @@ async def test_guard_reserves_50k_when_conversation_requires_compaction() -> Non
     await model._admit("instructions", "hello", ModelSettings(), [], [], "conv_1")
 
     limiter.acquire.assert_awaited_once_with(54_000)
+
+
+async def test_openrouter_admits_a_large_inline_image() -> None:
+    limiter = AsyncMock()
+    model = StatelessResponsesModel("openrouter/test", AsyncMock(), limiter, 50_000, 4_000)
+    image = "data:image/jpeg;base64," + ("A" * 400_000)
+    user_input: list[Any] = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "input_text", "text": "Explain this meme."},
+                {"type": "input_image", "detail": "auto", "image_url": image},
+            ],
+        }
+    ]
+
+    await model._admit("instructions", user_input, ModelSettings(), [], [], None)
+
+    acquired = limiter.acquire.await_args.args[0]
+    assert acquired < 20_000
+
+
+async def test_openrouter_still_rejects_huge_text() -> None:
+    limiter = AsyncMock()
+    model = StatelessResponsesModel("openrouter/test", AsyncMock(), limiter, 50_000, 4_000)
+
+    with pytest.raises(ContextLimitError, match="too large"):
+        await model._admit("instructions", "x" * 200_000, ModelSettings(), [], [], None)
+
+    limiter.acquire.assert_not_awaited()
 
 
 async def test_guard_counts_a_snapshot_without_locking_the_conversation() -> None:
@@ -901,7 +1112,7 @@ async def test_run_retries_conversation_locks() -> None:
 
 
 async def test_run_does_not_retry_after_a_delivery_tool_started() -> None:
-    runtime = runtime_for_run()
+    runtime = runtime_for_run(openai_api_key="sk-test", openrouter_api_key=None)
     delivered: list[str] = []
     attempts = 0
 
@@ -927,6 +1138,53 @@ async def test_run_does_not_retry_after_a_delivery_tool_started() -> None:
 
     assert delivered == ["Delivered once."]
     assert attempts == 1
+
+
+async def test_openrouter_keeps_delivered_turn_when_followup_fails_transiently() -> None:
+    runtime = runtime_for_run(
+        openai_api_key=None,
+        openrouter_api_key="sk-or-test",
+        skye_default_model="openai/gpt-5.6-luna",
+    )
+    runtime.conversations.database.session_item_count.return_value = 8
+    runtime.conversations.database.session_files.return_value = ()
+    delivered: list[str] = []
+
+    async def on_reply(text: str, _reply_to: int | None = None) -> None:
+        delivered.append(text)
+
+    def run_streamed(agent: Any, *_args: Any, **_kwargs: Any) -> DeliveryThenFailure:
+        return DeliveryThenFailure(agent, fail=True)
+
+    recovered_file = GeneratedFile("audit.txt", b"saved")
+    with (
+        patch("skye.runtime.Runner.run_streamed", side_effect=run_streamed),
+        patch(
+            "skye.runtime.collect_container_files",
+            new=AsyncMock(return_value=(recovered_file,)),
+        ) as collect_files,
+    ):
+        output = await runtime.run(
+            RequestContext(1, "private", 1),
+            ChatSettings("openai/gpt-5.6-luna", "medium", memory_enabled=False),
+            "hello",
+            AsyncMock(),
+            on_reply=on_reply,
+        )
+
+    assert delivered == ["Delivered once."]
+    assert output.sent == 1
+    assert output.files == (recovered_file,)
+    collect_files.assert_awaited_once()
+    runtime.conversations.database.truncate_session.assert_not_awaited()
+    runtime.conversations.database.replace_session_tail.assert_awaited_once_with(
+        "conv_1",
+        8,
+        [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "Delivered once."},
+        ],
+    )
 
 
 async def test_run_does_not_retry_permanent_errors() -> None:
@@ -1256,6 +1514,17 @@ async def test_send_message_caps_and_rejects_empty() -> None:
     assert empty == "Nothing sent."
     assert delivered == ["one", "two"]
     assert delivery.sent == 2
+
+
+async def test_deliver_file_decodes_sandbox_output_safely() -> None:
+    delivery = TurnDelivery(max_audio_bytes=10)
+    tool = delivery.file_tool()
+    payload = '{"filename":"/mnt/data/audit.txt","base64_data":"c2F2ZWQ="}'
+
+    result = await tool.on_invoke_tool(_tool_context("deliver_file", payload), payload)
+
+    assert result == "queued"
+    assert delivery.files == [GeneratedFile("audit.txt", b"saved")]
 
 
 async def test_send_voice_generates_nova_opus_with_model_instructions() -> None:

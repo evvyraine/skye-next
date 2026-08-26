@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from aiogram import Bot
-from aiogram.types import Audio, Document, Message, PhotoSize, Video, VideoNote, Voice
+from aiogram.types import Animation, Audio, Document, Message, PhotoSize, Video, VideoNote, Voice
 from openai import AsyncOpenAI
 
 from .config import Settings
@@ -80,9 +80,16 @@ class AttachmentService:
             if source.video:
                 caption = source.caption if source is not message else None
                 self._video(source.video, label, content, seen, caption=caption)
+            if source.animation:
+                caption = source.caption if source is not message else None
+                self._video(source.animation, label, content, seen, caption=caption)
             if source.document:
                 await self._collect(file_ids, self._document(source.document, label, content, seen))
         return tuple(file_ids)
+
+    @property
+    def _inline_media(self) -> bool:
+        return self.config.provider == "openrouter"
 
     async def _photo(
         self,
@@ -96,16 +103,10 @@ class AttachmentService:
             return None
         data = await self._download(photo, photo.file_size, "image")
         file_id = await upload_openai_file(self.client, upload_filename, "image/jpeg", data)
-        image: dict[str, Any] = {"type": "input_image"}
-        if file_id:
-            image["file_id"] = file_id
-        else:
-            image["image_url"] = data_url("image/jpeg", data)
-        image["detail"] = "auto"
         content.extend(
             [
                 {"type": "input_text", "text": f"{label} image:"},
-                image,
+                image_input_part("image/jpeg", data, file_id, inline=self._inline_media),
             ]
         )
         return file_id
@@ -142,11 +143,16 @@ class AttachmentService:
         transcript = await transcribe_audio(
             self.client, self.config.skye_transcription_model, filename, data
         )
-        content.append(
-            {
-                "type": "input_text",
-                "text": f"{label} {kind} transcript ({filename}):\n{transcript}",
-            }
+        content.extend(
+            audio_model_parts(
+                label,
+                kind,
+                filename,
+                mime,
+                data,
+                transcript,
+                inline=self._inline_media,
+            )
         )
         return file_id
 
@@ -162,6 +168,9 @@ class AttachmentService:
         suffix = mimetypes.guess_extension(document.mime_type or "") or ""
         filename = getattr(document, "file_name", None) or f"document{suffix}"
         mime = getattr(document, "mime_type", None) or "application/octet-stream"
+        if mime.startswith("video/"):
+            self._video(document, label, content, seen, already_seen=True)
+            return None
         data = await self._download(document, getattr(document, "file_size", None), "document")
         upload_filename = (
             f"album-{document.message_id}-{filename}"
@@ -174,39 +183,45 @@ class AttachmentService:
             transcript = await transcribe_audio(
                 self.client, self.config.skye_transcription_model, filename, data
             )
-            content.append(
-                {
-                    "type": "input_text",
-                    "text": f"{label} audio transcript ({filename}):\n{transcript}",
-                }
+            content.extend(
+                audio_model_parts(
+                    label,
+                    "audio",
+                    filename,
+                    mime,
+                    data,
+                    transcript,
+                    inline=self._inline_media,
+                )
             )
             return file_id
-        file_part: dict[str, Any] = {
-            "type": "input_file",
-            "filename": filename,
-        }
-        if file_id:
-            file_part["file_id"] = file_id
-        else:
-            file_part["file_data"] = data_url(mime, data)
+        if mime.startswith("image/") or mime in IMAGE_MIMES:
+            content.extend(
+                [
+                    {"type": "input_text", "text": f"{label} image ({filename}):"},
+                    image_input_part(mime, data, file_id, inline=self._inline_media),
+                ]
+            )
+            return file_id
         content.extend(
             [
                 {"type": "input_text", "text": f"{label} document ({filename}):"},
-                {**file_part, **({"detail": "auto"} if extension == ".pdf" else {})},
+                file_input_part(filename, mime, data, file_id, inline=self._inline_media),
             ]
         )
         return file_id
 
     def _video(
         self,
-        media: Video | MediaGroupItem,
+        media: Animation | Document | Video | MediaGroupItem,
         label: str,
         content: list[dict[str, Any]],
         seen: set[str],
         *,
         caption: str | None = None,
+        already_seen: bool = False,
     ) -> None:
-        if not self._new(media.file_unique_id, seen):
+        if not already_seen and not self._new(media.file_unique_id, seen):
             return
         filename = getattr(media, "file_name", None) or "video.mp4"
         text = f"{label} video ({filename}): the model cannot view this video."
@@ -277,37 +292,71 @@ def openai_file_parts(
     data: bytes,
     transcript: str | None = None,
     file_id: str | None = None,
+    *,
+    inline: bool = False,
 ) -> list[dict[str, Any]]:
-    extension = Path(filename).suffix.lower()
     if mime.startswith("image/") or mime in IMAGE_MIMES:
-        image: dict[str, Any] = {"type": "input_image", "detail": "auto"}
-        if file_id:
-            image["file_id"] = file_id
-        else:
-            image["image_url"] = data_url(mime or "image/jpeg", data)
         return [
             {"type": "input_text", "text": f"Attached image ({filename}):"},
-            image,
+            image_input_part(mime, data, file_id, inline=inline),
         ]
     if transcript is not None:
-        parts: list[dict[str, Any]] = [
-            {
-                "type": "input_text",
-                "text": f"Attached audio transcript ({filename}):\n{transcript}",
-            }
-        ]
-        return parts
-    if file_id:
-        file_part = {"type": "input_file", "file_id": file_id}
+        return audio_model_parts(
+            "Attached",
+            "audio",
+            filename,
+            mime,
+            data,
+            transcript,
+            inline=inline,
+        )
+    return [
+        {"type": "input_text", "text": f"Attached document ({filename}):"},
+        file_input_part(filename, mime, data, file_id, inline=inline),
+    ]
+
+
+def image_input_part(
+    mime: str, data: bytes, file_id: str | None, *, inline: bool
+) -> dict[str, Any]:
+    image: dict[str, Any] = {"type": "input_image", "detail": "auto"}
+    if inline or not file_id:
+        image["image_url"] = data_url(mime or "image/jpeg", data)
     else:
-        file_part = {
+        image["file_id"] = file_id
+    return image
+
+
+def file_input_part(
+    filename: str, mime: str, data: bytes, file_id: str | None, *, inline: bool
+) -> dict[str, Any]:
+    extra = {"detail": "auto"} if Path(filename).suffix.lower() == ".pdf" else {}
+    if inline or not file_id:
+        return {
             "type": "input_file",
             "filename": filename,
             "file_data": data_url(mime or "application/octet-stream", data),
+            **extra,
         }
+    return {"type": "input_file", "file_id": file_id, **extra}
+
+
+def audio_model_parts(
+    label: str,
+    kind: str,
+    filename: str,
+    mime: str,
+    data: bytes,
+    transcript: str,
+    *,
+    inline: bool,
+) -> list[dict[str, Any]]:
+    _ = mime, data, inline
     return [
-        {"type": "input_text", "text": f"Attached document ({filename}):"},
-        {**file_part, **({"detail": "auto"} if extension == ".pdf" else {})},
+        {
+            "type": "input_text",
+            "text": f"{label} {kind} transcript ({filename}):\n{transcript}",
+        }
     ]
 
 

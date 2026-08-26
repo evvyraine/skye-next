@@ -164,6 +164,10 @@ async def test_upload_sends_and_stores_every_file(database: Database) -> None:
     assert await skills.list(Scope("chat", -100)) == []
     mounted = await skills.mounted(private)
     assert [item.openai_skill_id for item in mounted] == ["skill_1"]
+    assert set(skill_paths(mounted[0].archive)) == {
+        "basic-math/SKILL.md",
+        "basic-math/calculate.py",
+    }
 
 
 async def test_delete_removes_local_and_openai_skill(database: Database) -> None:

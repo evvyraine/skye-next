@@ -1303,6 +1303,57 @@ class Database:
                 (session_id,),
             )
 
+    async def session_item_count(self, session_id: str) -> int:
+        cursor = await self.conn.execute(
+            "SELECT COUNT(*) FROM agent_messages WHERE session_id = ?",
+            (session_id,),
+        )
+        row = await cursor.fetchone()
+        return int(row[0]) if row is not None else 0
+
+    async def truncate_session(self, session_id: str, count: int) -> None:
+        keep = max(count, 0)
+        async with self.transaction() as connection:
+            cursor = await connection.execute(
+                """SELECT id FROM agent_messages
+                   WHERE session_id = ? ORDER BY id LIMIT 1 OFFSET ?""",
+                (session_id, keep),
+            )
+            first_extra = await cursor.fetchone()
+            if first_extra is not None:
+                await connection.execute(
+                    "DELETE FROM agent_messages WHERE session_id = ? AND id >= ?",
+                    (session_id, int(first_extra[0])),
+                )
+
+    async def replace_session_tail(
+        self, session_id: str, count: int, items: list[dict[str, Any]]
+    ) -> None:
+        keep = max(count, 0)
+        async with self.transaction() as connection:
+            cursor = await connection.execute(
+                """SELECT id FROM agent_messages
+                   WHERE session_id = ? ORDER BY id LIMIT 1 OFFSET ?""",
+                (session_id, keep),
+            )
+            first_extra = await cursor.fetchone()
+            if first_extra is not None:
+                await connection.execute(
+                    "DELETE FROM agent_messages WHERE session_id = ? AND id >= ?",
+                    (session_id, int(first_extra[0])),
+                )
+            await connection.executemany(
+                "INSERT INTO agent_messages (session_id, message_data) VALUES (?, ?)",
+                [
+                    (session_id, json.dumps(item, ensure_ascii=False, separators=(",", ":")))
+                    for item in items
+                ],
+            )
+            await connection.execute(
+                "UPDATE agent_sessions SET updated_at = CURRENT_TIMESTAMP WHERE session_id = ?",
+                (session_id,),
+            )
+
     async def pop_session_item(self, session_id: str) -> dict[str, Any] | None:
         async with self.transaction() as connection:
             cursor = await connection.execute(
@@ -1788,7 +1839,7 @@ class Database:
     async def list_skills(self, scope: Scope) -> list[Skill]:
         cursor = await self.conn.execute(
             """SELECT id, scope_kind, scope_id, openai_skill_id, name, description, filename,
-                      file_count, created_by, created_at
+                      archive, file_count, created_by, created_at
                FROM skills WHERE scope_kind = ? AND scope_id = ?
                ORDER BY lower(name), created_at""",
             (scope.kind, scope.id),

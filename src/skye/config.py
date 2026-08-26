@@ -93,6 +93,8 @@ class Settings(BaseSettings):
     skye_transcription_model: str = "gpt-transcribe"
     skye_speech_model: str = "gpt-4o-mini-tts"
     skye_image_model: str = "gpt-image-2"
+    skye_youtube_transcript_max_chars: int = Field(default=48_000, ge=1_000, le=200_000)
+    skye_youtube_proxy_url: str | None = None
     skye_media_group_settle_seconds: float = Field(default=0.75, ge=0.1, le=5.0)
     skye_group_context_messages: int = Field(default=20, ge=1, le=100)
     skye_group_context_message_chars: int = Field(default=1_500, ge=100, le=4_096)
@@ -136,7 +138,12 @@ class Settings(BaseSettings):
     def _empty_key(cls, value: object) -> object:
         return _clean_secret(value)
 
-    @field_validator("openai_api_key", "openrouter_api_key", mode="before")
+    @field_validator(
+        "openai_api_key",
+        "openrouter_api_key",
+        "skye_youtube_proxy_url",
+        mode="before",
+    )
     @classmethod
     def _empty_provider_key(cls, value: object) -> object:
         return _clean_secret(value)

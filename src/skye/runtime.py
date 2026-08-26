@@ -8,6 +8,7 @@ import io
 import json
 import re
 import time
+import zipfile
 from collections import defaultdict, deque
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager, suppress
@@ -54,8 +55,9 @@ from .conversations import ConversationService
 from .custom_agents import AGENT_CAPABILITIES, AgentComposition, CustomAgentService
 from .memory import MemoryService
 from .models import AgentCapability, ChatSettings, InstalledAgent, RequestContext, Skill
-from .sessions import DatabaseSession
+from .sessions import DatabaseSession, without_inline_payloads
 from .skills import SkillService, hosted_skill_refs
+from .youtube import YoutubeTranscriptService
 
 log = structlog.get_logger()
 TextCallback = Callable[[str], Awaitable[None]]
@@ -90,7 +92,7 @@ HIDDEN_TURN_VOICE = (
 )
 _RETRY_IN = re.compile(r"try again in\s+([0-9]+(?:\.[0-9]+)?)\s*s", re.IGNORECASE)
 _WAIT = wait_random_exponential(min=1, max=60)
-_IMAGE_GENERATION_CALL_FIELDS = frozenset({"id", "type", "status", "result"})
+_IMAGE_GENERATION_CALL_FIELDS = frozenset({"id", "type", "status"})
 _TOOL_LABELS: dict[str, str] = {
     "web_search": "Searched the web",
     "web_search_call": "Searched the web",
@@ -109,6 +111,7 @@ _TOOL_LABELS: dict[str, str] = {
     "update_automation": "Updated an automation",
     "show_webhook_automation": "Showed webhook details",
     "delete_automation": "Deleted an automation",
+    "youtube_get_transcript": "Read YouTube transcript",
 }
 
 
@@ -130,6 +133,8 @@ class TurnDelivery:
     speech_model: str = "gpt-4o-mini-tts"
     speech_response_format: Literal["opus", "pcm"] = "opus"
     sent: int = 0
+    messages: list[str] = field(default_factory=list)
+    files: list[GeneratedFile] = field(default_factory=list)
     limit: int = SEND_MESSAGE_LIMIT
 
     async def send(self, text: str, reply_to: int | None = None) -> str:
@@ -141,6 +146,7 @@ class TurnDelivery:
         quoted = reply_to if isinstance(reply_to, int) and reply_to > 0 else None
         if self.on_reply is not None:
             await self.on_reply(cleaned, quoted)
+        self.messages.append(cleaned)
         self.sent += 1
         return "sent"
 
@@ -189,6 +195,33 @@ class TurnDelivery:
 
         return send_voice
 
+    def file_tool(self) -> FunctionTool:
+        delivery = self
+
+        @function_tool
+        async def deliver_file(filename: str, base64_data: str) -> str:
+            """Queue a sandbox-created file for delivery to the user.
+
+            Args:
+                filename: Plain filename, without a directory path.
+                base64_data: Complete standard base64 encoding of the file bytes.
+            """
+            safe_name = filename.replace("\\", "/").rsplit("/", 1)[-1].strip()[:200]
+            if not safe_name:
+                return "Add a filename."
+            try:
+                data = base64.b64decode(base64_data, validate=True)
+            except ValueError:
+                return "Invalid base64 data."
+            if not data:
+                return "The file is empty."
+            if len(data) > self.max_audio_bytes:
+                return "The file is too large."
+            delivery.files.append(GeneratedFile(safe_name, data))
+            return "queued"
+
+        return deliver_file
+
     async def send_voice(
         self,
         text: str,
@@ -223,6 +256,7 @@ class TurnDelivery:
             return "Voice message is too large. Try a shorter message."
         quoted = reply_to if isinstance(reply_to, int) and reply_to > 0 else None
         await self.on_voice(audio, quoted)
+        self.messages.append(text.strip())
         self.sent += 1
         return "sent"
 
@@ -275,7 +309,10 @@ class ContextLimitError(RuntimeError):
 
 
 class StreamStartedError(RuntimeError):
-    pass
+    def __init__(self, message: str, result: RunResultStreaming, started: int) -> None:
+        super().__init__(message)
+        self.result = result
+        self.started = started
 
 
 class TokenRateLimiter:
@@ -553,15 +590,55 @@ class StatelessResponsesModel(GuardedResponsesModel):
     ) -> None:
         del handoffs, conversation_id
         converted = Converter.convert_tools(tools, [], model=str(self.model))
-        payload = json.dumps(
-            {"instructions": system_instructions, "input": input, "tools": converted.tools},
-            ensure_ascii=False,
-            default=str,
-        )
-        estimated = max(1, (len(payload) + 1) // 2)
+        estimated = _estimate_openrouter_tokens(system_instructions, input, converted.tools)
         if estimated > self._max_context_tokens:
+            log.info(
+                "openrouter_request_too_large",
+                estimated_tokens=estimated,
+                max_tokens=self._max_context_tokens,
+            )
             raise ContextLimitError("The current request is too large. Reduce the text or files.")
         await self._limiter.acquire(estimated + self._output_reserve)
+
+
+_INLINE_IMAGE_TOKENS = 6_000
+_INLINE_AUDIO_TOKENS = 6_000
+_INLINE_FILE_TOKEN_CAP = 8_000
+_INLINE_FILE_BYTES_PER_TOKEN = 50
+
+
+def _estimate_openrouter_tokens(
+    instructions: str | None, user_input: str | list[TResponseInputItem], tools: list[Any]
+) -> int:
+    payload = json.dumps(
+        {
+            "instructions": instructions,
+            "input": without_inline_payloads(user_input),
+            "tools": without_inline_payloads(tools),
+        },
+        ensure_ascii=False,
+        default=str,
+    )
+    return max(1, (len(payload) + 1) // 2) + _inline_media_tokens(user_input)
+
+
+def _inline_media_tokens(value: Any) -> int:
+    if isinstance(value, list):
+        return sum(_inline_media_tokens(item) for item in value)
+    if not isinstance(value, dict):
+        return 0
+    kind = value.get("type")
+    if kind == "input_image":
+        return _INLINE_IMAGE_TOKENS
+    if kind == "input_audio":
+        return _INLINE_AUDIO_TOKENS
+    if kind == "input_file":
+        data = value.get("file_data")
+        if isinstance(data, str) and data:
+            raw_bytes = max(0, (len(data) * 3) // 4)
+            return min(_INLINE_FILE_TOKEN_CAP, max(500, raw_bytes // _INLINE_FILE_BYTES_PER_TOKEN))
+        return 500 if _nonempty_str(value.get("file_id")) else 0
+    return sum(_inline_media_tokens(item) for item in value.values())
 
 
 def is_transient(error: BaseException) -> bool:
@@ -667,6 +744,7 @@ class AgentRuntime:
         client: AsyncOpenAI | None = None,
         skills: SkillService | None = None,
         automations: AutomationService | None = None,
+        youtube: YoutubeTranscriptService | None = None,
     ) -> None:
         self.config = config
         self.conversations = conversations
@@ -676,6 +754,7 @@ class AgentRuntime:
         self.client = client
         self.skills = skills
         self.automations = automations
+        self.youtube = youtube
         self.base_prompt = base_prompt.strip()
         self._locks: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
         self._run_slots = asyncio.BoundedSemaphore(config.skye_max_concurrent_runs)
@@ -779,12 +858,13 @@ class AgentRuntime:
                             provider_conversation_id,
                             active,
                             context,
+                            delivery,
                             on_event,
                         )
                         return RunOutput(
                             output.text,
                             output.images,
-                            output.files,
+                            (*output.files, *delivery.files),
                             output.usage_tokens,
                             delivery.sent,
                         )
@@ -884,6 +964,7 @@ class AgentRuntime:
         conversation_id: str,
         active: _ActiveRun,
         context: RequestContext,
+        delivery: TurnDelivery,
         on_event: EventCallback | None = None,
     ) -> RunOutput:
         async def sleep(seconds: float) -> None:
@@ -915,9 +996,78 @@ class AgentRuntime:
             with attempt:
                 if active.cancel.is_set():
                     raise asyncio.CancelledError
-                return await self._consume_stream(
-                    agent, user_input, conversation_id, active, on_event
-                )
+                checkpoint: int | None = None
+                if self.config.provider == "openrouter":
+                    checkpoint = await self.conversations.database.session_item_count(
+                        conversation_id
+                    )
+                try:
+                    return await self._consume_stream(
+                        agent, user_input, conversation_id, active, on_event
+                    )
+                except BaseException as error:
+                    cause = error.__cause__
+                    if (
+                        checkpoint is not None
+                        and delivery.sent > 0
+                        and isinstance(error, StreamStartedError)
+                        and cause is not None
+                        and is_transient(cause)
+                    ):
+                        recovered_items: list[dict[str, Any]]
+                        if isinstance(user_input, str):
+                            recovered_items = [{"role": "user", "content": user_input}]
+                        else:
+                            recovered_items = [cast(dict[str, Any], item) for item in user_input]
+                        recovered_items.append(
+                            {
+                                "role": "assistant",
+                                "content": "\n".join(
+                                    [
+                                        *delivery.messages,
+                                        *(
+                                            f"[Delivered file: {item.filename}]"
+                                            for item in delivery.files
+                                        ),
+                                    ]
+                                ),
+                            }
+                        )
+                        await self.conversations.database.replace_session_tail(
+                            conversation_id,
+                            checkpoint,
+                            recovered_items,
+                        )
+                        log.info(
+                            "openrouter_run_completed_after_delivery_error",
+                            error=type(cause).__name__,
+                            sent=delivery.sent,
+                        )
+                        files = await collect_container_files(
+                            self.client,
+                            error.result,
+                            self.config.skye_max_attachment_bytes,
+                            created_after=error.started,
+                        )
+                        images = (
+                            *self._images(error.result),
+                            *await self._remote_images(error.result),
+                        )
+                        if on_event is not None:
+                            for image in images:
+                                await on_event(RunEvent(kind="image", image=image))
+                        return RunOutput("", images, files, 0)
+                    if checkpoint is not None:
+                        try:
+                            await self.conversations.database.truncate_session(
+                                conversation_id, checkpoint
+                            )
+                        except Exception as rollback_error:
+                            log.error(
+                                "openrouter_session_rollback_failed",
+                                error=type(rollback_error).__name__,
+                            )
+                    raise
         raise RuntimeError("OpenAI run retry loop exited without a result.")
 
     async def _consume_stream(
@@ -979,8 +1129,14 @@ class AgentRuntime:
                     await on_event(tool)
         except Exception as error:
             if started_streaming:
+                log.warning(
+                    "openai_stream_interrupted",
+                    error=type(error).__name__,
+                )
                 raise StreamStartedError(
-                    "The stream failed after producing visible output."
+                    "The stream failed after producing visible output.",
+                    result,
+                    started,
                 ) from error
             raise
         finally:
@@ -1051,7 +1207,13 @@ class AgentRuntime:
         tools = self._hosted_tools(capabilities, skills, input_file_ids)
         tools.append(delivery.tool())
         tools.append(delivery.voice_tool())
+        if self.config.provider == "openrouter" and "shell" in capabilities:
+            tools.append(delivery.file_tool())
+        if self.config.provider == "openrouter" and skills:
+            tools.append(self._openrouter_skill_tool(skills))
         tools.extend(connector_tools.tools)
+        if self.youtube is not None:
+            tools.append(self.youtube.tool())
         if settings.memory_enabled:
             tools.extend(self.memory.tools(context.scope))
         if manage_automations and self.automations is not None:
@@ -1132,10 +1294,19 @@ class AgentRuntime:
         if "shell" in capabilities:
             instructions += (
                 "\n\nThe hosted sandbox can reach the public internet. "
-                "Files attached to the current turn are available there by their original names. "
-                "Files you write under /mnt/data are sent to the user as Telegram documents. "
-                "Put a folder there, or a zip, when they want more than one file."
+                "Files attached to the current turn are available there by their original names."
             )
+            if self.config.provider == "openrouter":
+                instructions += (
+                    " To deliver a sandbox-created file, base64 encode its complete bytes and "
+                    "call deliver_file with a plain filename. Never paste base64 into a message. "
+                    "Zip multiple files before delivery."
+                )
+            else:
+                instructions += (
+                    " Files you write under /mnt/data are sent to the user as Telegram documents. "
+                    "Put a folder there, or a zip, when they want more than one file."
+                )
         if "shell" in capabilities and skills and self.config.provider == "openai":
             listed = ", ".join(item.name for item in skills)
             instructions += (
@@ -1145,9 +1316,9 @@ class AgentRuntime:
         if "shell" in capabilities and skills and self.config.provider == "openrouter":
             listed = ", ".join(item.name for item in skills)
             instructions += (
-                f"\n\nHosted skill bundles are attached to the sandbox: {listed}. "
-                "Each *.skill.json contains base64-encoded files keyed by path. Extract the "
-                "matching bundle safely, then read its SKILL.md before using it."
+                f"\n\nAvailable hosted skills: {listed}. Before using one, call read_skill "
+                "for its SKILL.md and follow those instructions. Read referenced files with "
+                "the same tool when needed."
             )
         if extra_instructions.strip():
             instructions += (
@@ -1218,21 +1389,7 @@ class AgentRuntime:
                 attached_ids.extend(input_file_ids)
                 if attached_ids:
                     openrouter_environment["file_ids"] = attached_ids[:20]
-                tools.append(
-                    HostedMCPTool(
-                        cast(
-                            Any,
-                            {
-                                "type": "openrouter:shell",
-                                "server_label": "openrouter_shell",
-                                "parameters": {
-                                    "engine": "openrouter",
-                                    "environment": openrouter_environment,
-                                },
-                            },
-                        )
-                    )
-                )
+                tools.append(ShellTool(environment=cast(Any, openrouter_environment)))
             return tools
         if "web" in capabilities:
             tools.append(WebSearchTool(search_context_size="medium"))
@@ -1265,6 +1422,37 @@ class AgentRuntime:
                 environment["file_ids"] = list(input_file_ids)
             tools.append(ShellTool(environment=cast(Any, environment)))
         return tools
+
+    @staticmethod
+    def _openrouter_skill_tool(skills: tuple[Skill, ...]) -> FunctionTool:
+        @function_tool(strict_mode=False)
+        async def read_skill(skill_name: str, path: str = "SKILL.md") -> str:
+            """Read a file from an uploaded skill bundle before applying that skill."""
+            skill = next((item for item in skills if item.name == skill_name), None)
+            if skill is None:
+                return "That skill is not available."
+            requested = path.strip().lstrip("/")
+            if not requested or ".." in requested.split("/"):
+                return "Use a relative path inside the skill bundle."
+            with zipfile.ZipFile(io.BytesIO(skill.archive)) as archive:
+                names = [name for name in archive.namelist() if not name.endswith("/")]
+                matches = [
+                    name
+                    for name in names
+                    if name == requested or name == f"{skill.name}/{requested}"
+                ]
+                if len(matches) != 1:
+                    available = ", ".join(names[:100])
+                    return f"File not found. Available files: {available}"
+                payload = archive.read(matches[0])
+            if len(payload) > 200_000:
+                return "That skill file is too large to read directly."
+            try:
+                return payload.decode("utf-8")
+            except UnicodeDecodeError:
+                return "That skill file is not UTF-8 text."
+
+        return read_skill
 
     def _specialist(
         self,
@@ -1353,11 +1541,17 @@ class AgentRuntime:
         images: list[bytes] = []
         for response in result.raw_responses:
             for item in response.output:
-                if getattr(item, "type", None) != "image_generation_call":
+                if getattr(item, "type", None) not in {
+                    "image_generation_call",
+                    "openrouter:image_generation",
+                }:
                     continue
-                encoded = getattr(item, "result", None)
-                if encoded and not str(encoded).startswith(("https://", "http://")):
-                    images.append(base64.b64decode(encoded, validate=True))
+                encoded = getattr(item, "result", None) or getattr(item, "imageUrl", None)
+                value = str(encoded or "")
+                if value.startswith("data:image/") and ";base64," in value:
+                    value = value.split(",", 1)[1]
+                if value and not value.startswith(("https://", "http://")):
+                    images.append(base64.b64decode(value, validate=True))
         return tuple(images)
 
     @staticmethod
@@ -1365,10 +1559,11 @@ class AgentRuntime:
         urls: list[str] = []
         for response in result.raw_responses:
             for item in response.output:
-                encoded = getattr(item, "result", None)
-                if getattr(item, "type", None) == "image_generation_call" and str(
-                    encoded
-                ).startswith(("https://", "http://")):
+                encoded = getattr(item, "result", None) or getattr(item, "imageUrl", None)
+                if getattr(item, "type", None) in {
+                    "image_generation_call",
+                    "openrouter:image_generation",
+                } and str(encoded).startswith(("https://", "http://")):
                     urls.append(str(encoded))
         if not urls:
             return ()
