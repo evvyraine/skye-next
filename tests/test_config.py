@@ -10,6 +10,7 @@ def settings(**overrides: object) -> Settings:
     values: dict[str, object] = {
         "telegram_bot_token": "123:token",
         "openai_api_key": "sk-test",
+        "openrouter_api_key": None,
         "skye_owner_ids": "1, 2",
         "_env_file": None,
     }

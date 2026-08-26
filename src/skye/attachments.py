@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from aiogram import Bot
-from aiogram.types import Audio, Document, Message, PhotoSize, Video, VideoNote, Voice
+from aiogram.types import Animation, Audio, Document, Message, PhotoSize, Video, VideoNote, Voice
 from openai import AsyncOpenAI
 
 from .config import Settings
@@ -80,6 +80,9 @@ class AttachmentService:
             if source.video:
                 caption = source.caption if source is not message else None
                 self._video(source.video, label, content, seen, caption=caption)
+            if source.animation:
+                caption = source.caption if source is not message else None
+                self._video(source.animation, label, content, seen, caption=caption)
             if source.document:
                 await self._collect(file_ids, self._document(source.document, label, content, seen))
         return tuple(file_ids)
@@ -162,6 +165,9 @@ class AttachmentService:
         suffix = mimetypes.guess_extension(document.mime_type or "") or ""
         filename = getattr(document, "file_name", None) or f"document{suffix}"
         mime = getattr(document, "mime_type", None) or "application/octet-stream"
+        if mime.startswith("video/"):
+            self._video(document, label, content, seen, already_seen=True)
+            return None
         data = await self._download(document, getattr(document, "file_size", None), "document")
         upload_filename = (
             f"album-{document.message_id}-{filename}"
@@ -199,14 +205,15 @@ class AttachmentService:
 
     def _video(
         self,
-        media: Video | MediaGroupItem,
+        media: Animation | Document | Video | MediaGroupItem,
         label: str,
         content: list[dict[str, Any]],
         seen: set[str],
         *,
         caption: str | None = None,
+        already_seen: bool = False,
     ) -> None:
-        if not self._new(media.file_unique_id, seen):
+        if not already_seen and not self._new(media.file_unique_id, seen):
             return
         filename = getattr(media, "file_name", None) or "video.mp4"
         text = f"{label} video ({filename}): the model cannot view this video."

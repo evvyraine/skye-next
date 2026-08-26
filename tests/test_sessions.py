@@ -52,3 +52,52 @@ async def test_session_attachment_ids_are_deduplicated_and_cascade(database: Dat
     await database.clear_session("web-project:p1")
 
     assert await database.session_files("web-project:p1") == ()
+
+
+async def test_session_can_rollback_items_added_after_a_checkpoint(database: Database) -> None:
+    session = DatabaseSession(database, "telegram:1:0", max_chars=10_000)
+    original = cast(list[TResponseInputItem], [{"role": "user", "content": "keep"}])
+    partial = cast(
+        list[TResponseInputItem],
+        [
+            {"role": "user", "content": "failed turn"},
+            {"role": "assistant", "content": "partial"},
+        ],
+    )
+    await session.add_items(original)
+    checkpoint = await database.session_item_count(session.session_id)
+    await session.add_items(partial)
+
+    await database.truncate_session(session.session_id, checkpoint)
+
+    assert await database.session_items(session.session_id) == original
+
+
+async def test_session_can_replace_a_partial_tail_atomically(database: Database) -> None:
+    session = DatabaseSession(database, "telegram:1:0", max_chars=10_000)
+    original = cast(list[TResponseInputItem], [{"role": "user", "content": "keep"}])
+    partial = cast(
+        list[TResponseInputItem],
+        [
+            {"role": "user", "content": "new request"},
+            {"type": "function_call", "name": "send_message", "call_id": "call_1"},
+        ],
+    )
+    await session.add_items(original)
+    checkpoint = await database.session_item_count(session.session_id)
+    await session.add_items(partial)
+
+    await database.replace_session_tail(
+        session.session_id,
+        checkpoint,
+        [
+            {"role": "user", "content": "new request"},
+            {"role": "assistant", "content": "Delivered once."},
+        ],
+    )
+
+    assert await database.session_items(session.session_id) == [
+        *original,
+        {"role": "user", "content": "new request"},
+        {"role": "assistant", "content": "Delivered once."},
+    ]
