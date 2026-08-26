@@ -55,6 +55,7 @@ from skye.runtime import (
     leftover_reply,
     retry_after,
 )
+from skye.youtube import YoutubeTranscriptService
 
 
 def test_send_voice_tool_events_are_private_delivery_activity() -> None:
@@ -128,6 +129,25 @@ def test_agent_uses_only_hosted_capabilities() -> None:
         "type": "container_auto",
         "network_policy": sandbox_network_policy(),
     }
+
+
+def test_agent_includes_youtube_transcript_tool_when_configured() -> None:
+    memory = MemoryService(cast(Any, None))
+    runtime = AgentRuntime(
+        config(),
+        cast(Any, None),
+        memory,
+        "You are Skye.",
+        youtube=YoutubeTranscriptService(),
+    )
+    agent = runtime._agent(
+        RequestContext(1, "private", 1),
+        ChatSettings("gpt-5.6-luna", "medium"),
+    )
+
+    assert "youtube_get_transcript" in [
+        cast(FunctionTool, tool).name for tool in agent.tools if isinstance(tool, FunctionTool)
+    ]
 
 
 def test_attached_files_are_mounted_in_the_hosted_sandbox() -> None:

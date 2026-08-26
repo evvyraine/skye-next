@@ -36,6 +36,7 @@ from .skills import SkillService
 from .telegram import COMMANDS, PRIVATE_COMMANDS, TelegramApp, UpdateMiddleware
 from .telegram_projects import TelegramProjectService
 from .web import WebApp, serve_web
+from .youtube import YoutubeTranscriptService
 
 log = structlog.get_logger()
 
@@ -129,6 +130,10 @@ async def run() -> None:
         database, client, config.skye_max_attachment_bytes, provider=config.provider
     )
     automations = AutomationService(database, config.skye_web_origin)
+    youtube = YoutubeTranscriptService(
+        max_chars=config.skye_youtube_transcript_max_chars,
+        proxy_url=config.skye_youtube_proxy_url,
+    )
     runtime = AgentRuntime(
         config,
         conversations,
@@ -139,6 +144,7 @@ async def run() -> None:
         client,
         skills,
         automations,
+        youtube,
     )
     projects = ProjectService(
         database,

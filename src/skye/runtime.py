@@ -56,6 +56,7 @@ from .memory import MemoryService
 from .models import AgentCapability, ChatSettings, InstalledAgent, RequestContext, Skill
 from .sessions import DatabaseSession, without_inline_payloads
 from .skills import SkillService, hosted_skill_refs
+from .youtube import YoutubeTranscriptService
 
 log = structlog.get_logger()
 TextCallback = Callable[[str], Awaitable[None]]
@@ -109,6 +110,7 @@ _TOOL_LABELS: dict[str, str] = {
     "update_automation": "Updated an automation",
     "show_webhook_automation": "Showed webhook details",
     "delete_automation": "Deleted an automation",
+    "youtube_get_transcript": "Read YouTube transcript",
 }
 
 
@@ -741,6 +743,7 @@ class AgentRuntime:
         client: AsyncOpenAI | None = None,
         skills: SkillService | None = None,
         automations: AutomationService | None = None,
+        youtube: YoutubeTranscriptService | None = None,
     ) -> None:
         self.config = config
         self.conversations = conversations
@@ -750,6 +753,7 @@ class AgentRuntime:
         self.client = client
         self.skills = skills
         self.automations = automations
+        self.youtube = youtube
         self.base_prompt = base_prompt.strip()
         self._locks: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
         self._run_slots = asyncio.BoundedSemaphore(config.skye_max_concurrent_runs)
@@ -1205,6 +1209,8 @@ class AgentRuntime:
         if self.config.provider == "openrouter" and "shell" in capabilities:
             tools.append(delivery.file_tool())
         tools.extend(connector_tools.tools)
+        if self.youtube is not None:
+            tools.append(self.youtube.tool())
         if settings.memory_enabled:
             tools.extend(self.memory.tools(context.scope))
         if manage_automations and self.automations is not None:
