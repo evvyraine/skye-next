@@ -45,6 +45,7 @@ from skye.runtime import (
     GuardedResponsesModel,
     RunEvent,
     RunOutput,
+    StatelessResponsesModel,
     StreamStartedError,
     TokenRateLimiter,
     TurnDelivery,
@@ -823,6 +824,36 @@ async def test_guard_reserves_50k_when_conversation_requires_compaction() -> Non
     await model._admit("instructions", "hello", ModelSettings(), [], [], "conv_1")
 
     limiter.acquire.assert_awaited_once_with(54_000)
+
+
+async def test_openrouter_admits_a_large_inline_image() -> None:
+    limiter = AsyncMock()
+    model = StatelessResponsesModel("openrouter/test", AsyncMock(), limiter, 50_000, 4_000)
+    image = "data:image/jpeg;base64," + ("A" * 400_000)
+    user_input: list[Any] = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "input_text", "text": "Explain this meme."},
+                {"type": "input_image", "detail": "auto", "image_url": image},
+            ],
+        }
+    ]
+
+    await model._admit("instructions", user_input, ModelSettings(), [], [], None)
+
+    acquired = limiter.acquire.await_args.args[0]
+    assert acquired < 20_000
+
+
+async def test_openrouter_still_rejects_huge_text() -> None:
+    limiter = AsyncMock()
+    model = StatelessResponsesModel("openrouter/test", AsyncMock(), limiter, 50_000, 4_000)
+
+    with pytest.raises(ContextLimitError, match="too large"):
+        await model._admit("instructions", "x" * 200_000, ModelSettings(), [], [], None)
+
+    limiter.acquire.assert_not_awaited()
 
 
 async def test_guard_counts_a_snapshot_without_locking_the_conversation() -> None:

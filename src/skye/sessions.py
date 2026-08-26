@@ -25,7 +25,7 @@ class DatabaseSession:
         selected: list[dict[str, Any]] = []
         size = 0
         for item in reversed(items):
-            item_size = len(json.dumps(item, ensure_ascii=False, separators=(",", ":")))
+            item_size = _session_item_chars(item)
             if selected and size + item_size > self.max_chars:
                 break
             selected.append(item)
@@ -43,3 +43,33 @@ class DatabaseSession:
 
     async def clear_session(self) -> None:
         await self.database.clear_session(self.session_id)
+
+
+def without_inline_payloads(value: Any) -> Any:
+    """Drop base64 bodies so replay/size math is not dominated by one photo."""
+    if isinstance(value, list):
+        return [without_inline_payloads(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+    kind = value.get("type")
+    if kind == "input_image":
+        stripped = dict(value)
+        if isinstance(stripped.get("image_url"), str):
+            stripped["image_url"] = "data:image"
+        return stripped
+    if kind == "input_file":
+        stripped = dict(value)
+        if isinstance(stripped.get("file_data"), str):
+            stripped["file_data"] = "data:file"
+        return stripped
+    if kind == "input_audio":
+        stripped = dict(value)
+        inner = stripped.get("input_audio")
+        if isinstance(inner, dict):
+            stripped["input_audio"] = {**inner, "data": ""}
+        return stripped
+    return {key: without_inline_payloads(item) for key, item in value.items()}
+
+
+def _session_item_chars(item: dict[str, Any]) -> int:
+    return len(json.dumps(without_inline_payloads(item), ensure_ascii=False, separators=(",", ":")))

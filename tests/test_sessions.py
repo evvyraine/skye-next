@@ -40,6 +40,32 @@ async def test_database_session_keeps_full_ledger_but_bounds_replay(database: Da
     assert not await database.session_has_items(session.session_id)
 
 
+async def test_session_replay_keeps_turns_when_images_are_inline(database: Database) -> None:
+    session = DatabaseSession(database, "telegram:1:0", max_chars=400)
+    items = cast(
+        list[TResponseInputItem],
+        [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": "old photo"},
+                    {
+                        "type": "input_image",
+                        "detail": "auto",
+                        "image_url": "data:image/jpeg;base64," + ("A" * 20_000),
+                    },
+                ],
+            },
+            {"role": "assistant", "content": "recent"},
+            {"role": "user", "content": "latest"},
+        ],
+    )
+
+    await session.add_items(items)
+
+    assert await session.get_items() == items
+
+
 async def test_session_attachment_ids_are_deduplicated_and_cascade(database: Database) -> None:
     await database.add_session_files("web-project:p1", ["or_file_1", "or_file_2"])
     await database.add_session_files("web-project:p1", ["or_file_1"])

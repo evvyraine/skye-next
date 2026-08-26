@@ -54,7 +54,7 @@ from .conversations import ConversationService
 from .custom_agents import AGENT_CAPABILITIES, AgentComposition, CustomAgentService
 from .memory import MemoryService
 from .models import AgentCapability, ChatSettings, InstalledAgent, RequestContext, Skill
-from .sessions import DatabaseSession
+from .sessions import DatabaseSession, without_inline_payloads
 from .skills import SkillService, hosted_skill_refs
 
 log = structlog.get_logger()
@@ -587,15 +587,55 @@ class StatelessResponsesModel(GuardedResponsesModel):
     ) -> None:
         del handoffs, conversation_id
         converted = Converter.convert_tools(tools, [], model=str(self.model))
-        payload = json.dumps(
-            {"instructions": system_instructions, "input": input, "tools": converted.tools},
-            ensure_ascii=False,
-            default=str,
-        )
-        estimated = max(1, (len(payload) + 1) // 2)
+        estimated = _estimate_openrouter_tokens(system_instructions, input, converted.tools)
         if estimated > self._max_context_tokens:
+            log.info(
+                "openrouter_request_too_large",
+                estimated_tokens=estimated,
+                max_tokens=self._max_context_tokens,
+            )
             raise ContextLimitError("The current request is too large. Reduce the text or files.")
         await self._limiter.acquire(estimated + self._output_reserve)
+
+
+_INLINE_IMAGE_TOKENS = 6_000
+_INLINE_AUDIO_TOKENS = 6_000
+_INLINE_FILE_TOKEN_CAP = 8_000
+_INLINE_FILE_BYTES_PER_TOKEN = 50
+
+
+def _estimate_openrouter_tokens(
+    instructions: str | None, user_input: str | list[TResponseInputItem], tools: list[Any]
+) -> int:
+    payload = json.dumps(
+        {
+            "instructions": instructions,
+            "input": without_inline_payloads(user_input),
+            "tools": without_inline_payloads(tools),
+        },
+        ensure_ascii=False,
+        default=str,
+    )
+    return max(1, (len(payload) + 1) // 2) + _inline_media_tokens(user_input)
+
+
+def _inline_media_tokens(value: Any) -> int:
+    if isinstance(value, list):
+        return sum(_inline_media_tokens(item) for item in value)
+    if not isinstance(value, dict):
+        return 0
+    kind = value.get("type")
+    if kind == "input_image":
+        return _INLINE_IMAGE_TOKENS
+    if kind == "input_audio":
+        return _INLINE_AUDIO_TOKENS
+    if kind == "input_file":
+        data = value.get("file_data")
+        if isinstance(data, str) and data:
+            raw_bytes = max(0, (len(data) * 3) // 4)
+            return min(_INLINE_FILE_TOKEN_CAP, max(500, raw_bytes // _INLINE_FILE_BYTES_PER_TOKEN))
+        return 500 if _nonempty_str(value.get("file_id")) else 0
+    return sum(_inline_media_tokens(item) for item in value.values())
 
 
 def is_transient(error: BaseException) -> bool:
@@ -1340,9 +1380,7 @@ class AgentRuntime:
                 attached_ids.extend(input_file_ids)
                 if attached_ids:
                     openrouter_environment["file_ids"] = attached_ids[:20]
-                tools.append(
-                    ShellTool(environment=cast(Any, openrouter_environment))
-                )
+                tools.append(ShellTool(environment=cast(Any, openrouter_environment)))
             return tools
         if "web" in capabilities:
             tools.append(WebSearchTool(search_context_size="medium"))
