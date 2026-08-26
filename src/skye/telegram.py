@@ -1500,6 +1500,7 @@ class TelegramApp:
                     or source.audio
                     or source.video_note
                     or source.video
+                    or source.animation
                     or source.document
                 )
             )

@@ -205,6 +205,31 @@ async def test_video_placeholder_skips_download_even_when_over_size_limit() -> N
 
 
 @pytest.mark.asyncio
+async def test_video_sent_as_document_becomes_placeholder_without_upload() -> None:
+    document = Document(
+        file_id="animation",
+        file_unique_id="unique-animation",
+        file_name="clip.mp4",
+        mime_type="video/mp4",
+        file_size=20,
+    )
+    bot = FakeBot({})
+    service = AttachmentService(settings(), cast(Any, bot), cast(AsyncOpenAI, SimpleNamespace()))
+    content: list[dict[str, Any]] = []
+
+    file_ids = await service.add(message(document=document), content)
+
+    assert file_ids == ()
+    assert bot.downloads == []
+    assert content == [
+        {
+            "type": "input_text",
+            "text": "Attached video (clip.mp4): the model cannot view this video.",
+        }
+    ]
+
+
+@pytest.mark.asyncio
 async def test_adds_replied_pdf_as_visual_file_input() -> None:
     document = Document(
         file_id="pdf",

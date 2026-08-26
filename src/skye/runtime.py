@@ -90,7 +90,7 @@ HIDDEN_TURN_VOICE = (
 )
 _RETRY_IN = re.compile(r"try again in\s+([0-9]+(?:\.[0-9]+)?)\s*s", re.IGNORECASE)
 _WAIT = wait_random_exponential(min=1, max=60)
-_IMAGE_GENERATION_CALL_FIELDS = frozenset({"id", "type", "status", "result"})
+_IMAGE_GENERATION_CALL_FIELDS = frozenset({"id", "type", "status"})
 _TOOL_LABELS: dict[str, str] = {
     "web_search": "Searched the web",
     "web_search_call": "Searched the web",
@@ -130,6 +130,8 @@ class TurnDelivery:
     speech_model: str = "gpt-4o-mini-tts"
     speech_response_format: Literal["opus", "pcm"] = "opus"
     sent: int = 0
+    messages: list[str] = field(default_factory=list)
+    files: list[GeneratedFile] = field(default_factory=list)
     limit: int = SEND_MESSAGE_LIMIT
 
     async def send(self, text: str, reply_to: int | None = None) -> str:
@@ -141,6 +143,7 @@ class TurnDelivery:
         quoted = reply_to if isinstance(reply_to, int) and reply_to > 0 else None
         if self.on_reply is not None:
             await self.on_reply(cleaned, quoted)
+        self.messages.append(cleaned)
         self.sent += 1
         return "sent"
 
@@ -189,6 +192,33 @@ class TurnDelivery:
 
         return send_voice
 
+    def file_tool(self) -> FunctionTool:
+        delivery = self
+
+        @function_tool
+        async def deliver_file(filename: str, base64_data: str) -> str:
+            """Queue a sandbox-created file for delivery to the user.
+
+            Args:
+                filename: Plain filename, without a directory path.
+                base64_data: Complete standard base64 encoding of the file bytes.
+            """
+            safe_name = filename.replace("\\", "/").rsplit("/", 1)[-1].strip()[:200]
+            if not safe_name:
+                return "Add a filename."
+            try:
+                data = base64.b64decode(base64_data, validate=True)
+            except ValueError:
+                return "Invalid base64 data."
+            if not data:
+                return "The file is empty."
+            if len(data) > self.max_audio_bytes:
+                return "The file is too large."
+            delivery.files.append(GeneratedFile(safe_name, data))
+            return "queued"
+
+        return deliver_file
+
     async def send_voice(
         self,
         text: str,
@@ -223,6 +253,7 @@ class TurnDelivery:
             return "Voice message is too large. Try a shorter message."
         quoted = reply_to if isinstance(reply_to, int) and reply_to > 0 else None
         await self.on_voice(audio, quoted)
+        self.messages.append(text.strip())
         self.sent += 1
         return "sent"
 
@@ -275,7 +306,10 @@ class ContextLimitError(RuntimeError):
 
 
 class StreamStartedError(RuntimeError):
-    pass
+    def __init__(self, message: str, result: RunResultStreaming, started: int) -> None:
+        super().__init__(message)
+        self.result = result
+        self.started = started
 
 
 class TokenRateLimiter:
@@ -779,12 +813,13 @@ class AgentRuntime:
                             provider_conversation_id,
                             active,
                             context,
+                            delivery,
                             on_event,
                         )
                         return RunOutput(
                             output.text,
                             output.images,
-                            output.files,
+                            (*output.files, *delivery.files),
                             output.usage_tokens,
                             delivery.sent,
                         )
@@ -884,6 +919,7 @@ class AgentRuntime:
         conversation_id: str,
         active: _ActiveRun,
         context: RequestContext,
+        delivery: TurnDelivery,
         on_event: EventCallback | None = None,
     ) -> RunOutput:
         async def sleep(seconds: float) -> None:
@@ -915,9 +951,78 @@ class AgentRuntime:
             with attempt:
                 if active.cancel.is_set():
                     raise asyncio.CancelledError
-                return await self._consume_stream(
-                    agent, user_input, conversation_id, active, on_event
-                )
+                checkpoint: int | None = None
+                if self.config.provider == "openrouter":
+                    checkpoint = await self.conversations.database.session_item_count(
+                        conversation_id
+                    )
+                try:
+                    return await self._consume_stream(
+                        agent, user_input, conversation_id, active, on_event
+                    )
+                except BaseException as error:
+                    cause = error.__cause__
+                    if (
+                        checkpoint is not None
+                        and delivery.sent > 0
+                        and isinstance(error, StreamStartedError)
+                        and cause is not None
+                        and is_transient(cause)
+                    ):
+                        recovered_items: list[dict[str, Any]]
+                        if isinstance(user_input, str):
+                            recovered_items = [{"role": "user", "content": user_input}]
+                        else:
+                            recovered_items = [cast(dict[str, Any], item) for item in user_input]
+                        recovered_items.append(
+                            {
+                                "role": "assistant",
+                                "content": "\n".join(
+                                    [
+                                        *delivery.messages,
+                                        *(
+                                            f"[Delivered file: {item.filename}]"
+                                            for item in delivery.files
+                                        ),
+                                    ]
+                                ),
+                            }
+                        )
+                        await self.conversations.database.replace_session_tail(
+                            conversation_id,
+                            checkpoint,
+                            recovered_items,
+                        )
+                        log.info(
+                            "openrouter_run_completed_after_delivery_error",
+                            error=type(cause).__name__,
+                            sent=delivery.sent,
+                        )
+                        files = await collect_container_files(
+                            self.client,
+                            error.result,
+                            self.config.skye_max_attachment_bytes,
+                            created_after=error.started,
+                        )
+                        images = (
+                            *self._images(error.result),
+                            *await self._remote_images(error.result),
+                        )
+                        if on_event is not None:
+                            for image in images:
+                                await on_event(RunEvent(kind="image", image=image))
+                        return RunOutput("", images, files, 0)
+                    if checkpoint is not None:
+                        try:
+                            await self.conversations.database.truncate_session(
+                                conversation_id, checkpoint
+                            )
+                        except Exception as rollback_error:
+                            log.error(
+                                "openrouter_session_rollback_failed",
+                                error=type(rollback_error).__name__,
+                            )
+                    raise
         raise RuntimeError("OpenAI run retry loop exited without a result.")
 
     async def _consume_stream(
@@ -979,8 +1084,14 @@ class AgentRuntime:
                     await on_event(tool)
         except Exception as error:
             if started_streaming:
+                log.warning(
+                    "openai_stream_interrupted",
+                    error=type(error).__name__,
+                )
                 raise StreamStartedError(
-                    "The stream failed after producing visible output."
+                    "The stream failed after producing visible output.",
+                    result,
+                    started,
                 ) from error
             raise
         finally:
@@ -1051,6 +1162,8 @@ class AgentRuntime:
         tools = self._hosted_tools(capabilities, skills, input_file_ids)
         tools.append(delivery.tool())
         tools.append(delivery.voice_tool())
+        if self.config.provider == "openrouter" and "shell" in capabilities:
+            tools.append(delivery.file_tool())
         tools.extend(connector_tools.tools)
         if settings.memory_enabled:
             tools.extend(self.memory.tools(context.scope))
@@ -1132,10 +1245,19 @@ class AgentRuntime:
         if "shell" in capabilities:
             instructions += (
                 "\n\nThe hosted sandbox can reach the public internet. "
-                "Files attached to the current turn are available there by their original names. "
-                "Files you write under /mnt/data are sent to the user as Telegram documents. "
-                "Put a folder there, or a zip, when they want more than one file."
+                "Files attached to the current turn are available there by their original names."
             )
+            if self.config.provider == "openrouter":
+                instructions += (
+                    " To deliver a sandbox-created file, base64 encode its complete bytes and "
+                    "call deliver_file with a plain filename. Never paste base64 into a message. "
+                    "Zip multiple files before delivery."
+                )
+            else:
+                instructions += (
+                    " Files you write under /mnt/data are sent to the user as Telegram documents. "
+                    "Put a folder there, or a zip, when they want more than one file."
+                )
         if "shell" in capabilities and skills and self.config.provider == "openai":
             listed = ", ".join(item.name for item in skills)
             instructions += (
@@ -1219,19 +1341,7 @@ class AgentRuntime:
                 if attached_ids:
                     openrouter_environment["file_ids"] = attached_ids[:20]
                 tools.append(
-                    HostedMCPTool(
-                        cast(
-                            Any,
-                            {
-                                "type": "openrouter:shell",
-                                "server_label": "openrouter_shell",
-                                "parameters": {
-                                    "engine": "openrouter",
-                                    "environment": openrouter_environment,
-                                },
-                            },
-                        )
-                    )
+                    ShellTool(environment=cast(Any, openrouter_environment))
                 )
             return tools
         if "web" in capabilities:
