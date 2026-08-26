@@ -105,6 +105,8 @@ def test_token_safety_defaults_leave_headroom() -> None:
     assert loaded.skye_max_output_tokens == 4_000
     assert loaded.skye_tpm_budget == 1_800_000
     assert loaded.skye_max_concurrent_runs == 8
+    assert loaded.skye_youtube_transcript_max_chars == 48_000
+    assert loaded.skye_youtube_proxy_url is None
 
 
 def test_context_limit_must_exceed_compaction_threshold() -> None:
