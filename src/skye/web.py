@@ -346,7 +346,16 @@ class WebApp:
             openai_id = await upload_openai_file(self.client, filename, mime, data)
             if openai_id:
                 openai_file_ids.append(openai_id)
-            content.extend(openai_file_parts(filename, mime, data, transcript, openai_id))
+            content.extend(
+                openai_file_parts(
+                    filename,
+                    mime,
+                    data,
+                    transcript,
+                    openai_id,
+                    inline=self.config.provider == "openrouter",
+                )
+            )
             preview_bits.append(filename)
         user_message = await self.projects.add_message(
             session.user_id,

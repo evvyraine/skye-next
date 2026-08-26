@@ -133,6 +133,31 @@ async def test_album_photos_become_multiple_vision_inputs() -> None:
     ]
 
 
+async def test_openrouter_album_photos_use_image_data_urls() -> None:
+    service = AttachmentService(
+        Settings.model_construct(
+            skye_max_attachment_bytes=1024,
+            skye_media_group_settle_seconds=0.1,
+            skye_transcription_model="gpt-transcribe",
+            openai_api_key=None,
+            openrouter_api_key="sk-or-test",
+        ),
+        cast(Any, DownloadBot({"file-1": b"one", "file-2": b"two"})),
+        cast(AsyncOpenAI, SimpleNamespace(files=FileUploads())),
+    )
+    content: list[dict[str, Any]] = []
+
+    file_ids = await service.add(text_message(), content, album=[item(1), item(2)])
+
+    images = [part for part in content if part["type"] == "input_image"]
+    assert [part.get("file_id") for part in images] == [None, None]
+    assert [part["image_url"] for part in images] == [
+        "data:image/jpeg;base64,b25l",
+        "data:image/jpeg;base64,dHdv",
+    ]
+    assert file_ids == ("openai-1", "openai-2")
+
+
 async def test_album_documents_become_multiple_file_inputs() -> None:
     service = AttachmentService(
         settings(),
