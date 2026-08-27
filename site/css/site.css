@@ -635,6 +635,7 @@ button {
   font-weight: 500;
   letter-spacing: -0.03em;
   line-height: 1.1;
+  white-space: nowrap;
 }
 
 .plan-icon {
