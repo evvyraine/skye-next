@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import math
 import re
 import threading
 import time
 from dataclasses import dataclass
+from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from agents import FunctionTool, function_tool
@@ -57,7 +59,7 @@ class YoutubeTranscriptService:
         @function_tool
         async def youtube_get_transcript(
             video: str,
-            languages: list[str] | None = None,
+            languages: list[str] | str | None = None,
             translate_to: str | None = None,
             start_seconds: float = 0,
             end_seconds: float | None = None,
@@ -71,7 +73,8 @@ class YoutubeTranscriptService:
 
             Args:
                 video: YouTube watch, Shorts, live, embed, youtu.be URL, or 11-character id.
-                languages: Preferred subtitle language codes in priority order.
+                languages: Preferred subtitle language codes in priority order, as an
+                    array of strings.
                 translate_to: Optional YouTube subtitle translation target language code.
                 start_seconds: Start time for this transcript excerpt.
                 end_seconds: Optional end time for this transcript excerpt.
@@ -79,7 +82,7 @@ class YoutubeTranscriptService:
             try:
                 return await service.get_transcript(
                     video,
-                    languages=languages,
+                    languages=coerce_languages(languages),
                     translate_to=translate_to,
                     start_seconds=start_seconds,
                     end_seconds=end_seconds,
@@ -200,6 +203,28 @@ def validate_languages(languages: list[str]) -> list[str]:
     if any(not LANGUAGE_CODE.fullmatch(item) for item in normalized):
         raise ValueError("A subtitle language code is invalid.")
     return normalized
+
+
+def coerce_languages(value: list[str] | str | None) -> list[str] | None:
+    """Accept the JSON-encoded string form of a language list that some models emit.
+
+    Some models serialize a list argument as a JSON string (for example '["ru", "en"]'),
+    which strict list validation rejects. Decode that shape instead of failing the call.
+    """
+    if not isinstance(value, str):
+        return value
+    text = value.strip()
+    if not text:
+        return None
+    try:
+        decoded: Any = json.loads(text)
+    except ValueError:
+        decoded = [item.strip() for item in text.split(",")]
+    if isinstance(decoded, str):
+        decoded = [decoded]
+    if not isinstance(decoded, list) or not all(isinstance(item, str) for item in decoded):
+        raise ValueError("languages must be a list of language codes.")
+    return decoded
 
 
 def format_transcript_excerpt(

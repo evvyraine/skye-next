@@ -1,10 +1,13 @@
+import json
 from typing import cast
 
 import pytest
+from agents.tool_context import ToolContext
 from youtube_transcript_api import FetchedTranscript, FetchedTranscriptSnippet
 
 from skye.youtube import (
     YoutubeTranscriptService,
+    coerce_languages,
     format_transcript_excerpt,
     parse_youtube_video_id,
     validate_languages,
@@ -44,6 +47,17 @@ def test_validate_languages_deduplicates_and_checks_codes() -> None:
     assert validate_languages(["ru", "en", "ru"]) == ["ru", "en"]
     with pytest.raises(ValueError):
         validate_languages(["not a language"])
+
+
+def test_coerce_languages_accepts_json_encoded_string() -> None:
+    assert coerce_languages(["ru", "en"]) == ["ru", "en"]
+    assert coerce_languages(None) is None
+    assert coerce_languages("") is None
+    assert coerce_languages('["ru", "en"]') == ["ru", "en"]
+    assert coerce_languages('"ru"') == ["ru"]
+    assert coerce_languages("ru, en") == ["ru", "en"]
+    with pytest.raises(ValueError):
+        coerce_languages('{"codes": ["ru"]}')
 
 
 def test_long_transcript_is_paginated_at_snippet_boundaries() -> None:
@@ -88,3 +102,30 @@ def test_tool_is_read_only_source_material() -> None:
     tool = YoutubeTranscriptService().tool()
     assert tool.name == "youtube_get_transcript"
     assert "untrusted source material" in cast(str, tool.description)
+
+
+@pytest.mark.asyncio
+async def test_tool_accepts_stringified_language_list() -> None:
+    tool = YoutubeTranscriptService().tool()
+    payload = json.dumps(
+        {
+            "video": "not a video",
+            "languages": '["ru", "en"]',
+            "translate_to": "",
+            "start_seconds": 0,
+            "end_seconds": "3600",
+        }
+    )
+
+    result = await tool.on_invoke_tool(
+        ToolContext(
+            None,
+            tool_name="youtube_get_transcript",
+            tool_call_id="call_test",
+            tool_arguments=payload,
+        ),
+        payload,
+    )
+
+    assert result.startswith("Could not retrieve the YouTube transcript")
+    assert "Provide a valid YouTube URL or 11-character video id" in result

@@ -1,0 +1,41 @@
+{
+  "version": "1",
+  "metadata": {
+    "marimo_version": "0.24.0",
+    "script_metadata_hash": null
+  },
+  "cells": [
+    {
+      "id": "Hbol",
+      "code_hash": null,
+      "outputs": [],
+      "console": []
+    },
+    {
+      "id": "YNJs",
+      "code_hash": "1d0db38904205bec4d6f6f6a1f6cec3e",
+      "outputs": [
+        {
+          "type": "data",
+          "data": {
+            "text/plain": ""
+          }
+        }
+      ],
+      "console": []
+    },
+    {
+      "id": "zRoq",
+      "code_hash": "cb28e00a5bb241ea8997aa0a599340b8",
+      "outputs": [
+        {
+          "type": "data",
+          "data": {
+            "text/markdown": "<span class=\"markdown prose dark:prose-invert contents\"><h1 id=\"test-markdown\">Test markdown</h1>\n<ul>\n<li>My favorite text!</li>\n<li></li>\n</ul></span>"
+          }
+        }
+      ],
+      "console": []
+    }
+  ]
+}
