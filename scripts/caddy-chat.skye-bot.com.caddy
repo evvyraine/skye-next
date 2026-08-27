@@ -25,7 +25,7 @@ chat.skye-bot.com {
 		}
 	}
 
-	root * /var/www/chat.skye-bot.com/current
+	root * /Users/x/www/chat.skye-bot.com/current
 
 	@assets path /assets/*
 	handle @assets {
