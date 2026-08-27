@@ -627,15 +627,33 @@ button {
 
 .plan-name {
   display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
   align-self: start;
-  margin: 0 0 0.55rem;
-  padding: 0.2rem 0.7rem;
-  border: 1px solid rgb(255 255 255 / 0.6);
-  border-radius: 999px;
-  font-size: 0.92rem;
+  margin: 0 0 0.7rem;
+  font-size: clamp(1.7rem, 1.2rem + 1.6vw, 2.25rem);
   font-weight: 500;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+  letter-spacing: -0.03em;
+  line-height: 1.1;
+}
+
+.plan-icon {
+  width: 1.15em;
+  height: 1.15em;
+  flex: none;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 1.5;
+}
+
+.plan-name-free .plan-icon,
+.plan-name-free .plan-tier {
+  color: #9be7ff;
+}
+
+.plan-name-plus .plan-icon,
+.plan-name-plus .plan-tier {
+  color: #ffe08a;
 }
 
 .plan-price {
