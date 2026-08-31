@@ -964,6 +964,67 @@ async def test_openrouter_still_rejects_huge_text() -> None:
     limiter.acquire.assert_not_awaited()
 
 
+async def test_openrouter_trims_complete_old_turns_to_fit_request() -> None:
+    limiter = AsyncMock()
+    model = StatelessResponsesModel("openrouter/test", AsyncMock(), limiter, 220, 40)
+    user_input: list[Any] = [
+        {"role": "user", "content": "old question " + ("x" * 180)},
+        {"role": "assistant", "content": "old answer " + ("y" * 180)},
+        {"type": "function_call", "name": "tool", "call_id": "call_1"},
+        {"type": "function_call_output", "call_id": "call_1", "output": "done"},
+        {"role": "user", "content": "current question"},
+    ]
+
+    await model._admit("short", user_input, ModelSettings(), [], [], None)
+
+    assert user_input == [{"role": "user", "content": "current question"}]
+    limiter.acquire.assert_awaited_once()
+
+
+async def test_openrouter_trimming_accounts_for_tool_schema_size() -> None:
+    limiter = AsyncMock()
+    model = StatelessResponsesModel("openrouter/test", AsyncMock(), limiter, 260, 40)
+    user_input: list[Any] = [
+        {"role": "user", "content": "old " + ("x" * 180)},
+        {"role": "assistant", "content": "answer " + ("y" * 120)},
+        {"role": "user", "content": "current"},
+    ]
+    tools = [
+        HostedMCPTool(
+            cast(
+                Any,
+                {
+                    "type": "mcp",
+                    "server_label": "large_tool",
+                    "server_url": "https://example.com/mcp",
+                    "server_description": "z" * 120,
+                },
+            )
+        )
+    ]
+
+    await model._admit("short", user_input, ModelSettings(), tools, [], None)
+
+    assert user_input == [{"role": "user", "content": "current"}]
+    limiter.acquire.assert_awaited_once()
+
+
+async def test_openrouter_rejects_current_turn_that_cannot_fit_after_trimming() -> None:
+    limiter = AsyncMock()
+    model = StatelessResponsesModel("openrouter/test", AsyncMock(), limiter, 200, 40)
+    user_input: list[Any] = [
+        {"role": "user", "content": "old"},
+        {"role": "assistant", "content": "answer"},
+        {"role": "user", "content": "x" * 1_000},
+    ]
+
+    with pytest.raises(ContextLimitError, match="too large"):
+        await model._admit("short", user_input, ModelSettings(), [], [], None)
+
+    assert len(user_input) == 3
+    limiter.acquire.assert_not_awaited()
+
+
 async def test_guard_counts_a_snapshot_without_locking_the_conversation() -> None:
     client = AsyncMock()
     history = type(

@@ -40,6 +40,22 @@ async def test_database_session_keeps_full_ledger_but_bounds_replay(database: Da
     assert not await database.session_has_items(session.session_id)
 
 
+async def test_session_drops_an_oversized_latest_item_instead_of_exceeding_limit(
+    database: Database,
+) -> None:
+    session = DatabaseSession(database, "telegram:1:0", max_chars=100)
+    items = cast(
+        list[TResponseInputItem],
+        [
+            {"role": "user", "content": "old request"},
+            {"role": "assistant", "content": "x" * 1_000},
+        ],
+    )
+    await session.add_items(items)
+
+    assert await session.get_items() == []
+
+
 async def test_session_replay_keeps_turns_when_images_are_inline(database: Database) -> None:
     session = DatabaseSession(database, "telegram:1:0", max_chars=400)
     items = cast(

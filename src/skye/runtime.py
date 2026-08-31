@@ -591,14 +591,65 @@ class StatelessResponsesModel(GuardedResponsesModel):
         del handoffs, conversation_id
         converted = Converter.convert_tools(tools, [], model=str(self.model))
         estimated = _estimate_openrouter_tokens(system_instructions, input, converted.tools)
+        if estimated > self._max_context_tokens and isinstance(input, list):
+            estimated = self._trim_history_to_fit(
+                system_instructions,
+                input,
+                converted.tools,
+                estimated,
+            )
         if estimated > self._max_context_tokens:
             log.info(
                 "openrouter_request_too_large",
                 estimated_tokens=estimated,
                 max_tokens=self._max_context_tokens,
             )
-            raise ContextLimitError("The current request is too large. Reduce the text or files.")
+            raise ContextLimitError(
+                "The current request is too large. Reduce the text, files, or connected tools."
+            )
         await self._limiter.acquire(estimated + self._output_reserve)
+
+    def _trim_history_to_fit(
+        self,
+        instructions: str | None,
+        input_items: list[TResponseInputItem],
+        tools: list[Any],
+        original_tokens: int,
+    ) -> int:
+        """Drop complete old turns until the whole OpenRouter request fits."""
+        latest_user = _latest_user_item(input_items)
+        if latest_user <= 0:
+            return original_tokens
+
+        current_turn = input_items[latest_user:]
+        current_tokens = _estimate_openrouter_tokens(instructions, current_turn, tools)
+        if current_tokens > self._max_context_tokens:
+            return original_tokens
+
+        selected = current_turn
+        selected_tokens = current_tokens
+        user_boundaries = [
+            index
+            for index, item in enumerate(input_items[:latest_user])
+            if isinstance(item, dict) and item.get("role") == "user"
+        ]
+        for index in reversed(user_boundaries):
+            candidate = input_items[index:]
+            candidate_tokens = _estimate_openrouter_tokens(instructions, candidate, tools)
+            if candidate_tokens > self._max_context_tokens:
+                break
+            selected = candidate
+            selected_tokens = candidate_tokens
+
+        dropped = len(input_items) - len(selected)
+        input_items[:] = selected
+        log.info(
+            "openrouter_context_trimmed",
+            original_tokens=original_tokens,
+            admitted_tokens=selected_tokens,
+            dropped_items=dropped,
+        )
+        return selected_tokens
 
 
 _INLINE_IMAGE_TOKENS = 6_000
@@ -620,6 +671,14 @@ def _estimate_openrouter_tokens(
         default=str,
     )
     return max(1, (len(payload) + 1) // 2) + _inline_media_tokens(user_input)
+
+
+def _latest_user_item(items: list[TResponseInputItem]) -> int:
+    for index in range(len(items) - 1, -1, -1):
+        item = items[index]
+        if isinstance(item, dict) and item.get("role") == "user":
+            return index
+    return -1
 
 
 def _inline_media_tokens(value: Any) -> int:

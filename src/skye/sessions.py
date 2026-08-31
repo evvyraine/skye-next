@@ -26,7 +26,7 @@ class DatabaseSession:
         size = 0
         for item in reversed(items):
             item_size = _session_item_chars(item)
-            if selected and size + item_size > self.max_chars:
+            if size + item_size > self.max_chars:
                 break
             selected.append(item)
             size += item_size
