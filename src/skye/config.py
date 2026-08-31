@@ -100,6 +100,7 @@ class Settings(BaseSettings):
     skye_group_context_message_chars: int = Field(default=1_500, ge=100, le=4_096)
     skye_group_context_total_chars: int = Field(default=16_000, ge=500, le=50_000)
     skye_sandbox_allowed_domains: SandboxDomains = Field(default=SANDBOX_DOMAINS, min_length=1)
+    skye_proxy_url: str | None = None
     skye_tracing: bool = False
     skye_web_origin: str | None = None
     skye_web_host: str = "127.0.0.1"
@@ -142,6 +143,7 @@ class Settings(BaseSettings):
         "openai_api_key",
         "openrouter_api_key",
         "skye_youtube_proxy_url",
+        "skye_proxy_url",
         mode="before",
     )
     @classmethod

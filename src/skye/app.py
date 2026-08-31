@@ -11,6 +11,7 @@ import httpx
 import structlog
 from agents import set_default_openai_client, set_tracing_disabled
 from aiogram import Bot, Dispatcher
+from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.exceptions import TelegramAPIError
 from aiogram.types import BotCommandScopeAllPrivateChats
 from openai import AsyncOpenAI
@@ -68,15 +69,24 @@ async def run() -> None:
     )
     await database.open()
 
-    http_client = (
-        httpx.AsyncClient(
-            transport=OpenRouterTransport(),
+    proxy_url = config.skye_proxy_url
+    if config.provider == "openrouter":
+        transport = OpenRouterTransport(
+            httpx.AsyncHTTPTransport(proxy=proxy_url) if proxy_url else None
+        )
+        http_client: httpx.AsyncClient | None = httpx.AsyncClient(
+            transport=transport,
             timeout=httpx.Timeout(600, connect=10),
             follow_redirects=True,
         )
-        if config.provider == "openrouter"
-        else None
-    )
+    elif proxy_url:
+        http_client = httpx.AsyncClient(
+            proxy=proxy_url,
+            timeout=httpx.Timeout(600, connect=10),
+            follow_redirects=True,
+        )
+    else:
+        http_client = None
     client = AsyncOpenAI(
         api_key=config.provider_api_key,
         base_url=config.provider_base_url,
@@ -87,7 +97,10 @@ async def run() -> None:
     set_default_openai_client(client, use_for_tracing=trace_with_openai)
     set_tracing_disabled(not trace_with_openai)
 
-    bot = Bot(config.telegram_bot_token)
+    bot = Bot(
+        config.telegram_bot_token,
+        session=AiohttpSession(proxy=proxy_url) if proxy_url else AiohttpSession(),
+    )
     dispatcher = Dispatcher()
     remote_conversations = config.provider == "openai"
     conversations = ConversationService(database, client, remote=remote_conversations)
