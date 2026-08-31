@@ -93,6 +93,29 @@ HIDDEN_TURN_VOICE = (
 _RETRY_IN = re.compile(r"try again in\s+([0-9]+(?:\.[0-9]+)?)\s*s", re.IGNORECASE)
 _WAIT = wait_random_exponential(min=1, max=60)
 _IMAGE_GENERATION_CALL_FIELDS = frozenset({"id", "type", "status"})
+_IMAGE_REQUEST_NOUN = (
+    r"(?:images?|pictures?|photos?|variants?|variations?|"
+    r"картин\w*|изображен\w*|фото\w*|вариант\w*|вариац\w*)"
+)
+_NUMBERED_IMAGE_REQUEST = re.compile(
+    rf"\b(\d{{1,2}})\s+(?:\w+\s+){{0,2}}{_IMAGE_REQUEST_NOUN}", re.I
+)
+_MULTIPLE_IMAGE_REQUEST = re.compile(
+    rf"\b(?:several|multiple|few|несколько|много)\s+(?:\w+\s+){{0,2}}{_IMAGE_REQUEST_NOUN}",
+    re.I,
+)
+_IMAGE_WORD_COUNTS = {
+    "two": 2,
+    "three": 3,
+    "four": 4,
+    "five": 5,
+    "два": 2,
+    "две": 2,
+    "три": 3,
+    "четыре": 4,
+    "пять": 5,
+}
+_MAX_IMAGES_PER_TURN = 5
 _TOOL_LABELS: dict[str, str] = {
     "web_search": "Searched the web",
     "web_search_call": "Searched the web",
@@ -1108,9 +1131,13 @@ class AgentRuntime:
                             self.config.skye_max_attachment_bytes,
                             created_after=error.started,
                         )
+                        image_limit = requested_image_limit(user_input)
+                        inline_images = self._images(error.result, limit=image_limit)
                         images = (
-                            *self._images(error.result),
-                            *await self._remote_images(error.result),
+                            *inline_images,
+                            *await self._remote_images(
+                                error.result, limit=image_limit - len(inline_images)
+                            ),
                         )
                         if on_event is not None:
                             for image in images:
@@ -1208,7 +1235,12 @@ class AgentRuntime:
             self.config.skye_max_attachment_bytes,
             created_after=started,
         )
-        images = (*self._images(result), *await self._remote_images(result))
+        image_limit = requested_image_limit(user_input)
+        inline_images = self._images(result, limit=image_limit)
+        images = (
+            *inline_images,
+            *await self._remote_images(result, limit=image_limit - len(inline_images)),
+        )
         if on_event is not None:
             for image in images:
                 await on_event(RunEvent(kind="image", image=image))
@@ -1353,9 +1385,9 @@ class AgentRuntime:
         if "image" in capabilities:
             instructions += (
                 "\n\nGenerated images are delivered to the user automatically. "
-                "Call image generation once unless they asked for several. "
-                "A completed image is delivery. "
-                "Do not generate another variant of the same request."
+                "For a singular request, make exactly one image-generation call. "
+                "Only make more calls when the user explicitly asks for a number of images. "
+                "A completed image is delivery; never generate another variant afterward."
             )
         if "shell" in capabilities:
             instructions += (
@@ -1603,7 +1635,7 @@ class AgentRuntime:
         return " ".join(texts)
 
     @staticmethod
-    def _images(result: RunResultStreaming) -> tuple[bytes, ...]:
+    def _images(result: RunResultStreaming, *, limit: int | None = None) -> tuple[bytes, ...]:
         images: list[bytes] = []
         for response in result.raw_responses:
             for item in response.output:
@@ -1618,10 +1650,16 @@ class AgentRuntime:
                     value = value.split(",", 1)[1]
                 if value and not value.startswith(("https://", "http://")):
                     images.append(base64.b64decode(value, validate=True))
+                    if limit is not None and len(images) >= limit:
+                        return tuple(images)
         return tuple(images)
 
     @staticmethod
-    async def _remote_images(result: RunResultStreaming) -> tuple[bytes, ...]:
+    async def _remote_images(
+        result: RunResultStreaming, *, limit: int | None = None
+    ) -> tuple[bytes, ...]:
+        if limit is not None and limit <= 0:
+            return ()
         urls: list[str] = []
         for response in result.raw_responses:
             for item in response.output:
@@ -1631,6 +1669,10 @@ class AgentRuntime:
                     "openrouter:image_generation",
                 } and str(encoded).startswith(("https://", "http://")):
                     urls.append(str(encoded))
+                    if limit is not None and len(urls) >= limit:
+                        break
+            if limit is not None and len(urls) >= limit:
+                break
         if not urls:
             return ()
         async with httpx.AsyncClient(follow_redirects=True, timeout=60) as client:
@@ -1643,6 +1685,40 @@ class AgentRuntime:
 def estimate_usage_tokens(user_input: str | list[TResponseInputItem], output_text: str) -> int:
     text = AgentRuntime._query(user_input) + output_text
     return max(1, (len(text) + 1) // 2)
+
+
+def requested_image_limit(user_input: str | list[TResponseInputItem]) -> int:
+    text = _user_input_text(user_input).lower()
+    numbered = _NUMBERED_IMAGE_REQUEST.search(text)
+    if numbered is not None:
+        return max(1, min(int(numbered.group(1)), _MAX_IMAGES_PER_TURN))
+    for word, count in _IMAGE_WORD_COUNTS.items():
+        if re.search(rf"\b{word}\s+(?:\w+\s+){{0,2}}{_IMAGE_REQUEST_NOUN}", text, re.I):
+            return count
+    if _MULTIPLE_IMAGE_REQUEST.search(text):
+        return 4
+    return 1
+
+
+def _user_input_text(user_input: str | list[TResponseInputItem]) -> str:
+    if isinstance(user_input, str):
+        return user_input
+    texts: list[str] = []
+    for item in user_input:
+        if not isinstance(item, dict) or item.get("role") != "user":
+            continue
+        content = item.get("content")
+        if isinstance(content, str):
+            texts.append(content)
+            continue
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            if isinstance(part, dict) and part.get("type") == "input_text":
+                text = part.get("text")
+                if isinstance(text, str):
+                    texts.append(text)
+    return " ".join(texts)
 
 
 def _usage_tokens(result: RunResultStreaming) -> int | None:

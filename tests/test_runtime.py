@@ -55,6 +55,7 @@ from skye.runtime import (
     describe_activity_event,
     is_transient,
     leftover_reply,
+    requested_image_limit,
     retry_after,
 )
 from skye.youtube import YoutubeTranscriptService
@@ -387,6 +388,40 @@ def test_generated_images_are_extracted() -> None:
     assert AgentRuntime._images(result) == (b"png",)
 
 
+def test_extra_generated_images_are_limited_for_singular_request() -> None:
+    first = base64.b64encode(b"first").decode()
+    second = base64.b64encode(b"second").decode()
+    result = cast(
+        Any,
+        SimpleNamespace(
+            raw_responses=[
+                SimpleNamespace(
+                    output=[
+                        SimpleNamespace(type="image_generation_call", result=first),
+                        SimpleNamespace(type="image_generation_call", result=second),
+                    ]
+                )
+            ]
+        ),
+    )
+
+    assert AgentRuntime._images(result, limit=1) == (b"first",)
+
+
+@pytest.mark.parametrize(
+    ("prompt", "expected"),
+    [
+        ("Generate an office worker at work", 1),
+        ("Сгенерируй офисного работника за работой", 1),
+        ("Generate 3 different images", 3),
+        ("Сделай две разные картинки", 2),
+        ("Create several variants", 4),
+    ],
+)
+def test_requested_image_limit(prompt: str, expected: int) -> None:
+    assert requested_image_limit(prompt) == expected
+
+
 def test_openrouter_data_url_images_are_extracted() -> None:
     encoded = base64.b64encode(b"png").decode()
     result = cast(
@@ -484,7 +519,7 @@ def test_image_delivery_note_follows_capabilities() -> None:
 
     note = "Generated images are delivered to the user automatically."
     assert note in cast(str, with_image.instructions)
-    assert "Call image generation once unless they asked for several." in cast(
+    assert "For a singular request, make exactly one image-generation call." in cast(
         str, with_image.instructions
     )
     assert note not in cast(str, without_image.instructions)
