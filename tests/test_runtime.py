@@ -53,6 +53,7 @@ from skye.runtime import (
     TurnDelivery,
     _dump_conversation_item,
     describe_activity_event,
+    image_tool_call_limit,
     is_transient,
     leftover_reply,
     requested_image_limit,
@@ -420,6 +421,54 @@ def test_extra_generated_images_are_limited_for_singular_request() -> None:
 )
 def test_requested_image_limit(prompt: str, expected: int) -> None:
     assert requested_image_limit(prompt) == expected
+
+
+@pytest.mark.parametrize(
+    ("prompt", "expected"),
+    [
+        ("Generate an image of a corgi in a business suit", 1),
+        ("Сгенерируй корги в деловом костюмчике", 1),
+        ("Draw two different corgis", 1),
+        ("Summarize this image", None),
+        ("Generate a project report", None),
+    ],
+)
+def test_image_tool_call_limit_only_caps_generation_requests(
+    prompt: str, expected: int | None
+) -> None:
+    assert image_tool_call_limit(prompt) == expected
+
+
+def test_image_request_caps_native_tool_calls_in_model_settings() -> None:
+    memory = MemoryService(cast(Any, None))
+    runtime = AgentRuntime(config(), cast(Any, None), memory, "You are Skye.")
+
+    agent = runtime._agent(
+        RequestContext(1, "private", 1),
+        ChatSettings("gpt-5.6-luna", "medium", memory_enabled=False),
+        image_tool_calls=1,
+    )
+
+    assert agent.model_settings is not None
+    assert agent.model_settings.extra_args == {"max_tool_calls": 1}
+    assert agent.model_settings.parallel_tool_calls is False
+
+    model = GuardedResponsesModel(
+        "gpt-5.6-luna", AsyncMock(), AsyncMock(), 50_000, 4_000
+    )
+    request = model._build_response_create_kwargs(
+        cast(str, agent.instructions),
+        "Generate an image of a corgi",
+        agent.model_settings,
+        agent.tools,
+        None,
+        [],
+        conversation_id="conv_1",
+        stream=True,
+    )
+
+    assert request["max_tool_calls"] == 1
+    assert request["parallel_tool_calls"] is False
 
 
 def test_openrouter_data_url_images_are_extracted() -> None:

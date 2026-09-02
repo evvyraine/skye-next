@@ -104,6 +104,13 @@ _MULTIPLE_IMAGE_REQUEST = re.compile(
     rf"\b(?:several|multiple|few|несколько|много)\s+(?:\w+\s+){{0,2}}{_IMAGE_REQUEST_NOUN}",
     re.I,
 )
+_IMAGE_GENERATION_REQUEST = re.compile(
+    rf"(?:\b(?:draw|illustrate|paint|render)\b|\b(?:generate|create|make)\b"
+    rf"(?:\s+\w+){{0,5}}\s+{_IMAGE_REQUEST_NOUN}|"
+    rf"\b(?:нарис\w*|изобраз\w*|сгенерир\w*)\b|"
+    rf"\b(?:создай|сделай)\b(?:\s+\w+){{0,5}}\s+{_IMAGE_REQUEST_NOUN})",
+    re.I,
+)
 _IMAGE_WORD_COUNTS = {
     "two": 2,
     "three": 3,
@@ -929,6 +936,7 @@ class AgentRuntime:
                     delivery,
                     awaiting_reply,
                     provider_conversation_id,
+                    image_tool_calls=image_tool_call_limit(user_input),
                 )
                 async with self._provider_slot(active, context, key):
                     if active.cancel.is_set():
@@ -1276,6 +1284,7 @@ class AgentRuntime:
         delivery: TurnDelivery | None = None,
         awaiting_reply: bool = True,
         provider_session_id: str | None = None,
+        image_tool_calls: int | None = None,
     ) -> Agent[None]:
         composition = composition or AgentComposition(None, ())
         connector_tools = connector_tools or ConnectorTools((), ())
@@ -1318,6 +1327,7 @@ class AgentRuntime:
                 skills,
                 input_file_ids,
                 provider_session_id,
+                image_tool_calls=image_tool_calls,
             ).as_tool(
                 tool_name=f"agent_{item.profile.id}",
                 tool_description=(
@@ -1332,7 +1342,12 @@ class AgentRuntime:
             name=active.version.name if active else "Skye",
             instructions=instructions,
             model=self.config.skye_default_model,
-            model_settings=self._model_settings(context, settings, provider_session_id),
+            model_settings=self._model_settings(
+                context,
+                settings,
+                provider_session_id,
+                image_tool_calls=image_tool_calls if "image" in capabilities else None,
+            ),
             tools=tools,
         )
 
@@ -1561,6 +1576,8 @@ class AgentRuntime:
         skills: tuple[Skill, ...] = (),
         input_file_ids: tuple[str, ...] = (),
         provider_session_id: str | None = None,
+        *,
+        image_tool_calls: int | None = None,
     ) -> Agent[None]:
         instructions = self._instructions(
             context,
@@ -1575,7 +1592,14 @@ class AgentRuntime:
             name=installed.version.name,
             instructions=instructions,
             model=self.config.skye_default_model,
-            model_settings=self._model_settings(context, settings, provider_session_id),
+            model_settings=self._model_settings(
+                context,
+                settings,
+                provider_session_id,
+                image_tool_calls=(
+                    image_tool_calls if "image" in installed.version.capabilities else None
+                ),
+            ),
             tools=tools,
         )
 
@@ -1584,6 +1608,8 @@ class AgentRuntime:
         context: RequestContext,
         settings: ChatSettings,
         provider_session_id: str | None = None,
+        *,
+        image_tool_calls: int | None = None,
     ) -> ModelSettings:
         safety_id = hmac.new(
             self.config.telegram_bot_token.encode(),
@@ -1614,6 +1640,7 @@ class AgentRuntime:
             store=True,
             truncation="disabled",
             max_tokens=self.config.skye_max_output_tokens,
+            parallel_tool_calls=False if image_tool_calls is not None else None,
             context_management=[
                 {
                     "type": "compaction",
@@ -1621,6 +1648,9 @@ class AgentRuntime:
                 }
             ],
             extra_body={"safety_identifier": safety_id, "service_tier": "fast"},
+            extra_args=(
+                {"max_tool_calls": image_tool_calls} if image_tool_calls is not None else None
+            ),
         )
 
     @staticmethod
@@ -1698,6 +1728,13 @@ def requested_image_limit(user_input: str | list[TResponseInputItem]) -> int:
     if _MULTIPLE_IMAGE_REQUEST.search(text):
         return 4
     return 1
+
+
+def image_tool_call_limit(user_input: str | list[TResponseInputItem]) -> int | None:
+    text = _user_input_text(user_input)
+    if _IMAGE_GENERATION_REQUEST.search(text) is None:
+        return None
+    return requested_image_limit(user_input)
 
 
 def _user_input_text(user_input: str | list[TResponseInputItem]) -> str:
