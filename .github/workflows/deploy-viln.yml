@@ -1,0 +1,35 @@
+name: Deploy to viln
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-viln
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v1.2.2
+        with:
+          host: 76.13.249.8
+          username: root
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          fingerprint: SHA256:Rn+eoOWluYxRnWmAD21XO0uHA7MKnuCwVAVaLCjPr6s
+          command_timeout: 20m
+          script_stop: true
+          script: |
+            set -euo pipefail
+            if [[ ! -d /root/skye-next/.git ]]; then
+              git clone https://github.com/evvyraine/skye-next.git /root/skye-next
+            fi
+            cd /root/skye-next
+            git fetch origin master
+            git checkout --force master
+            git reset --hard origin/master
+            chmod +x scripts/deploy.sh
+            GITHUB_SHA="${{ github.sha }}" ./scripts/deploy.sh
