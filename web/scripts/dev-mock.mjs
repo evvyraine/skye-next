@@ -60,7 +60,7 @@ const messages = new Map([
       message(
         "general",
         "assistant",
-        "## Welcome back\n\nThis local instance renders **Markdown**, including:\n\n- Lists\n- `inline code`\n- [Links](https://ai.skye-bot.com/)"
+        "## Welcome back\n\nThis local instance renders **Markdown**, including:\n\n- Lists\n- `inline code`\n- [Links](https://docs.skye-bot.com/)"
       ),
       message("general", "user", "Keep my messages on the **right**."),
       message(

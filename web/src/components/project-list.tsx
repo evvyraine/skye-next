@@ -274,7 +274,7 @@ function ProfileMenu({
               className="rounded-xl px-2.5 py-2"
               onClick={() =>
                 window.open(
-                  "https://ai.skye-bot.com/",
+                  "https://docs.skye-bot.com/",
                   "_blank",
                   "noopener,noreferrer"
                 )
@@ -350,7 +350,7 @@ function MobileProfileDrawer({
             className="h-12 justify-start rounded-2xl px-3 text-base"
             onClick={() =>
               window.open(
-                "https://ai.skye-bot.com/",
+                "https://docs.skye-bot.com/",
                 "_blank",
                 "noopener,noreferrer"
               )

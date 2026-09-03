@@ -3,7 +3,7 @@
 # Meet `Skye`
 
 - [Website](skye-bot.com)
-- [Docs](ai.skye-bot.com)
+- [Docs](https://docs.skye-bot.com)
 
 ## Model provider
 

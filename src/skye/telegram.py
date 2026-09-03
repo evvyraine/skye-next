@@ -313,7 +313,16 @@ class TelegramApp:
         await self.account.paysupport(message)
 
     async def terms(self, message: Message) -> None:
-        await self.account.terms(message)
+        await self.rich.send(
+            message,
+            self.rich.plan_terms(),
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [InlineKeyboardButton(text="Terms of service", url=TERMS_URL)],
+                    [InlineKeyboardButton(text="Privacy policy", url=PRIVACY_URL)],
+                ]
+            ),
+        )
 
     async def account_callback(self, callback: CallbackQuery) -> None:
         if not callback.message or not isinstance(callback.message, Message) or not callback.data:
@@ -1848,7 +1857,10 @@ class TelegramApp:
                     InlineKeyboardButton(text="Website", url=WEBSITE_URL),
                     InlineKeyboardButton(text="Docs", url=DOCS_URL),
                 ],
-                [InlineKeyboardButton(text="Privacy policy", url=PRIVACY_URL)],
+                [
+                    InlineKeyboardButton(text="Privacy policy", url=PRIVACY_URL),
+                    InlineKeyboardButton(text="Terms", url=TERMS_URL),
+                ],
             ]
         )
 
@@ -2073,8 +2085,9 @@ def _update_fallback(value: object) -> None:
 
 
 WEBSITE_URL = "https://skye-bot.com"
-DOCS_URL = "https://ai.skye-bot.com/"
-PRIVACY_URL = "https://ai.skye-bot.com/privacy"
+DOCS_URL = "https://docs.skye-bot.com/"
+PRIVACY_URL = "https://docs.skye-bot.com/privacy"
+TERMS_URL = "https://docs.skye-bot.com/terms"
 
 COMMANDS = [
     BotCommand(command="start", description="Start Skye"),
