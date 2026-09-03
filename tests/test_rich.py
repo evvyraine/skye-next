@@ -528,7 +528,7 @@ def test_plan_checkout_has_a_collapsed_plans_details_block() -> None:
     assert details.summary == "Plans"
     assert details.is_open is not True
     blob = str(details.blocks[0].text)
-    assert "expanded daily message allowance" in blob.lower()
+    assert "more room for longer work" in blob.lower()
     assert "your own agents" in blob.lower()
     assert "Luna" not in blob
     assert "token" not in blob.lower()

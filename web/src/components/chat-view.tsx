@@ -175,6 +175,7 @@ export function ChatView({
           setTools([])
         },
         onError: (message) => toast.error(message),
+        onNotice: (message) => toast.success(message),
       })
     } catch (error) {
       if (!accepted) {

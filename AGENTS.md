@@ -2,15 +2,9 @@
 
 Operating brief for anyone writing code or copy in this repository.
 
-## Language
-
-English only. No exceptions.
-
-PRs, issues, commit messages, reviews, user communication, README, docs, comments that ship, and every string the bot shows or speaks are English. Do not mix languages in product text.
-
 ## What this is
 
-Skye Next is a private, allowlisted OpenAI agent host. Users talk to Skye in Telegram or at `chat.skye-bot.com`; Skye talks to OpenAI.
+Skye Next is a private, allowlisted agent host. Users talk to Skye in Telegram or at `chat.skye-bot.com`; Skye talks to OpenAI directly or through OpenRouter.
 
 The product should expose OpenAI's native capabilities with as little application code as possible.
 
@@ -24,11 +18,11 @@ Skye's voice is calm, short, warm, and grounded. She is female. Identity and ton
 - Safe composition of the active agent and its tools
 - Reliability, observability, and lifecycle
 
-We do not own a model loop, a provider abstraction, a billing provider, an admin web panel, or a plugin framework. Telegram owns Stars payments; Skye stores the resulting entitlement.
+We do not own a model loop, a general-purpose provider abstraction, a billing provider, an admin web panel, or a plugin framework. Telegram owns Stars payments; Skye stores the resulting entitlement.
 
 ## Core decisions
 
-- **One provider.** OpenAI Responses API through `openai-agents`. Every normal chat turn is `Agent` + `Runner.run_streamed()`. Use the official `openai` client only for resource lifecycle (conversations, files, skills). No Chat Completions fallback. No second-provider interface until a second real provider exists.
+- **Two viable provider paths.** OpenAI directly is the native path; OpenRouter is a supported alternative through its OpenAI-compatible Responses API. Both use `openai-agents`, and every normal chat turn is `Agent` + `Runner.run_streamed()`. Use the official `openai` client for resource lifecycle (conversations, files, skills), with the existing OpenRouter-specific adaptations where its behavior differs. No Chat Completions fallback and no general-purpose provider framework.
 - **One hosted model.** Chat turns use `gpt-5.6-luna`. There is no user-facing model picker. Public copy never names Luna, Terra, Sol, GPT, or other model IDs. If asked, Skye says she works on Sun Engine.
 - **No Mini App.** Telegram settings stay inline-keyboard messages edited in place. Callback data is a short action plus an opaque id — never JSON, never trusted client state. The web app at `chat.skye-bot.com` is a second transport for private project chats, not a Mini App and not an admin panel.
 - **Automations are in-process.** Scheduled cron and webhook triggers run a normal Skye turn in the bound Telegram chat or forum topic, with that chat's tools and conversation. The scheduler is an asyncio loop in the bot process. Webhooks are `POST /automations/{id}/hook` on the web app, authenticated by a stored Authorization header. Skye creates them with function tools; `/settings` lists and deletes one at a time. Anyone who can edit settings can manage them.
@@ -60,7 +54,7 @@ We do not own a model loop, a provider abstraction, a billing provider, an admin
 
 ## Do not add
 
-- A second model provider
+- Model providers beyond the supported OpenAI and OpenRouter paths
 - A Mini App or an admin web panel
 - A second payment provider, or product tiers outside Telegram Stars
 - Token numbers in user-facing copy
@@ -98,5 +92,5 @@ Line length 100. Ruff selects `E`, `F`, `I`, `UP`, `B`, `SIM`.
 
 Test the boundaries: scope isolation, allowlist precedence, callback parsing, prompt/tool composition, Telegram rendering, SQLite repositories, and fake-runtime events. Prefer focused tests over mocks of the universe.
 
-Required env: `TELEGRAM_BOT_TOKEN`, `OPENAI_API_KEY`, `SKYE_OWNER_IDS`.
+Required env: `TELEGRAM_BOT_TOKEN`, either `OPENAI_API_KEY` or `OPENROUTER_API_KEY`, and `SKYE_OWNER_IDS`.
 Optional: `COMPOSIO_API_KEY` for hosted app connections. Web chat also needs `SKYE_WEB_ORIGIN`, `TELEGRAM_LOGIN_CLIENT_ID`, and `TELEGRAM_LOGIN_CLIENT_SECRET`.

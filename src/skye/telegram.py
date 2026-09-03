@@ -45,6 +45,7 @@ from .conversations import ConversationService
 from .custom_agents import AGENT_CAPABILITIES, CustomAgentService
 from .db import Database
 from .group_context import GroupContextService
+from .growth import GrowthService
 from .media_groups import MediaGroupService
 from .memory import MemoryService
 from .models import (
@@ -173,6 +174,7 @@ class TelegramApp:
         self.skill_service = skills
         self.telegram_projects = telegram_projects
         self.billing = billing
+        self.growth = GrowthService(database)
         self.automations = automations
         self.quota = QuotaService(database, billing, access)
         self.rich = RichMessages(bot)
@@ -258,6 +260,8 @@ class TelegramApp:
             return
         if await self.access.allowed(context):
             parts = (message.text or "").split(maxsplit=1)
+            payload = parts[1] if len(parts) == 2 else None
+            await self.growth.started(context.user_id, payload)
             if len(parts) == 2 and parts[1].startswith("agent_"):
                 if not await self._can_edit(context):
                     await self.rich.send(
@@ -280,8 +284,11 @@ class TelegramApp:
                 return
             await self.rich.send(
                 message,
-                "Hi. I'm Skye. Send a message, image, or task — "
-                "I'll use the right tools when needed.",
+                "Hi. I'm Skye. Start with something useful:\n\n"
+                "• Send a voice note and ask me to turn it into a plan.\n"
+                "• Attach a document and ask for the decisions or risks.\n"
+                "• Tell me what you need to finish today and we will work through it.\n\n"
+                "Use your own words. I will choose the right tools.",
                 reply_markup=await self._private_reply_keyboard(context),
             )
         else:
@@ -1285,6 +1292,7 @@ class TelegramApp:
         last_target = message or placeholder
         sent_holder = {"count": 0}
         active_activities: dict[str, TelegramChatAction] = {}
+        used_tool = False
         activity = TelegramActivity(
             getattr(self, "bot", None),
             context.chat_id,
@@ -1306,6 +1314,9 @@ class TelegramApp:
             await activity.show(selected)
 
         async def on_event(event: RunEvent) -> None:
+            nonlocal used_tool
+            if event.kind == "tool":
+                used_tool = True
             if event.kind == "tool" and event.tool_name in {
                 "image_generation",
                 "image_generation_call",
@@ -1399,6 +1410,14 @@ class TelegramApp:
                     awaiting_reply=awaiting_reply,
                     activity=activity,
                 )
+                if message is not None and context.chat_type == "private":
+                    capability = self._growth_capability(message, output, used_tool)
+                    if await self.growth.completed_task(context.user_id, capability):
+                        await self.rich.send(
+                            message,
+                            "You have found a few ways I can help. Your seven-day "
+                            "Skye Plus preview is now active. It ends automatically.",
+                        )
         except AllowanceError as error:
             if sent_holder["count"] == 0:
                 await self._finish_turn(message, context, placeholder, error.message)
@@ -1689,6 +1708,22 @@ class TelegramApp:
             return True
         member = await self.bot.get_chat_member(context.chat_id, context.user_id)
         return member.status in {"administrator", "creator"}
+
+    @staticmethod
+    def _growth_capability(message: Message, output: RunOutput, used_tool: bool) -> str:
+        if message.voice or message.audio or message.video_note:
+            return "voice"
+        if message.photo:
+            return "image"
+        if message.document:
+            return "document"
+        if output.images:
+            return "image"
+        if output.files:
+            return "document"
+        if used_tool:
+            return "tool"
+        return "chat"
 
     async def _directed_at_bot(self, message: Message) -> bool:
         if (

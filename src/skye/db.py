@@ -454,6 +454,18 @@ CREATE TABLE IF NOT EXISTS usage_counters (
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS product_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    source TEXT,
+    capability TEXT,
+    occurred_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS product_events_user
+ON product_events(user_id, name, occurred_at);
+
 CREATE TABLE IF NOT EXISTS group_plus_payers (
     chat_id INTEGER PRIMARY KEY,
     user_id INTEGER NOT NULL,
@@ -829,6 +841,90 @@ class Database:
                 (user_id, day, month, daily, monthly),
             )
         return daily, monthly
+
+    async def record_product_event(
+        self,
+        user_id: int,
+        name: str,
+        *,
+        source: str | None = None,
+        capability: str | None = None,
+        occurred_at: int | None = None,
+    ) -> None:
+        await self._write(
+            """INSERT INTO product_events (user_id, name, source, capability, occurred_at)
+               VALUES (?, ?, ?, ?, ?)""",
+            (
+                user_id,
+                name,
+                source,
+                capability,
+                int(time.time()) if occurred_at is None else occurred_at,
+            ),
+        )
+
+    async def activation_progress(self, user_id: int) -> tuple[int, int, bool]:
+        cursor = await self.conn.execute(
+            """SELECT COUNT(*) AS tasks,
+                      COUNT(DISTINCT date(occurred_at, 'unixepoch')) AS active_days,
+                      MAX(CASE WHEN capability != 'chat' THEN 1 ELSE 0 END) AS rich_capability
+               FROM product_events
+               WHERE user_id = ? AND name = 'task_completed'""",
+            (user_id,),
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            return 0, 0, False
+        return int(row["tasks"]), int(row["active_days"]), bool(row["rich_capability"])
+
+    async def grant_earned_trial(self, user_id: int, now: int, duration: int) -> bool:
+        async with self.transaction() as connection:
+            cursor = await connection.execute(
+                """SELECT expires_at, trial_used
+                   FROM star_entitlements WHERE user_id = ?""",
+                (user_id,),
+            )
+            entitlement = await cursor.fetchone()
+            if entitlement is not None and (
+                int(entitlement["expires_at"]) > now or bool(entitlement["trial_used"])
+            ):
+                return False
+            cursor = await connection.execute(
+                """SELECT COUNT(*) AS tasks,
+                          COUNT(DISTINCT date(occurred_at, 'unixepoch')) AS active_days,
+                          MAX(CASE WHEN capability != 'chat' THEN 1 ELSE 0 END)
+                              AS rich_capability
+                   FROM product_events
+                   WHERE user_id = ? AND name = 'task_completed'""",
+                (user_id,),
+            )
+            progress = await cursor.fetchone()
+            if progress is None or not (
+                int(progress["tasks"]) >= 3
+                and int(progress["active_days"]) >= 2
+                and bool(progress["rich_capability"])
+            ):
+                return False
+            await connection.execute(
+                """INSERT INTO star_entitlements (
+                       user_id, plan, auto_renew, expires_at,
+                       telegram_payment_charge_id, trial_used
+                   ) VALUES (?, 'trial', 0, ?, NULL, 1)
+                   ON CONFLICT(user_id) DO UPDATE SET
+                       plan = 'trial',
+                       auto_renew = 0,
+                       expires_at = excluded.expires_at,
+                       telegram_payment_charge_id = NULL,
+                       trial_used = 1,
+                       updated_at = CURRENT_TIMESTAMP""",
+                (user_id, now + duration),
+            )
+            await connection.execute(
+                """INSERT INTO product_events (user_id, name, occurred_at)
+                   VALUES (?, 'trial_started', ?)""",
+                (user_id, now),
+            )
+        return True
 
     async def expire_star_entitlement(self, user_id: int, now: int) -> StarEntitlement | None:
         await self._write(

@@ -272,8 +272,8 @@ class RichMessages:
                 InputRichBlockParagraph(
                     text=(
                         "Free plan, with a basic daily message allowance. "
-                        "Subscribe to Skye Plus for an expanded daily message allowance, "
-                        "paid in Telegram Stars."
+                        "Skye Plus adds more room for longer work and lets you create "
+                        "your own agents. Paid in Telegram Stars."
                     )
                 )
             )
@@ -289,7 +289,7 @@ class RichMessages:
     ) -> InputRichMessage:
         if recurring:
             price = f"{stars} Telegram Stars each month"
-            access = "Expanded daily message allowance while the plan is active."
+            access = "More room for longer work and your own agents while the plan is active."
         else:
             price = f"{stars} Telegram Stars, once"
             access = "Access for a limited time. This offer can be used once."
@@ -309,8 +309,8 @@ class RichMessages:
                 InputRichBlockParagraph(
                     text=(
                         "Paid access uses Telegram Stars. Skye Plus is the paid plan. "
-                        "The free plan has a basic daily message allowance. "
-                        "Creating and editing agents is on Plus."
+                        "Free covers everyday tasks. Plus adds more room for longer work "
+                        "and lets you create and edit your own agents."
                     )
                 ),
                 RichMessages._plan_details(open_by_default=True),
@@ -324,10 +324,9 @@ class RichMessages:
             blocks=[
                 InputRichBlockParagraph(
                     text=(
-                        "Free includes a basic daily message allowance. "
-                        "Creating agents is not included. "
-                        "Skye Plus, 449 Stars each month, includes an expanded daily "
-                        "message allowance and your own agents. Paid in Telegram Stars."
+                        "Free covers everyday tasks with a basic daily message allowance. "
+                        "Skye Plus, 449 Stars each month, adds more room for longer work "
+                        "and lets you create and edit your own agents. Paid in Telegram Stars."
                     )
                 ),
             ],

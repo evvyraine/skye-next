@@ -25,6 +25,7 @@ from .automations import (
 from .billing import BillingService
 from .config import Settings
 from .db import Database
+from .growth import GrowthService
 from .models import Automation, RequestContext, WebFile, WebSession
 from .projects import (
     PROJECT_COLORS,
@@ -65,6 +66,7 @@ class WebApp:
         self.automations = automations
         self.fire_automation = fire_automation
         self.billing = BillingService(database, config.telegram_bot_token)
+        self.growth = GrowthService(database)
         self.quota = QuotaService(database, self.billing, access)
         self.app = web.Application(
             client_max_size=config.skye_max_attachment_bytes + 1_000_000,
@@ -465,6 +467,8 @@ class WebApp:
                 awaiting_reply=True,
             )
             await self.quota.record(context, output.usage_tokens)
+            capability = "document" if uploads else ("tool" if seen_tools else "chat")
+            trial_started = await self.growth.completed_task(session.user_id, capability)
         except asyncio.CancelledError:
             if assistant_file_ids:
                 await persist_assistant("", tuple(assistant_file_ids))
@@ -499,6 +503,17 @@ class WebApp:
             )
             if leftover:
                 await persist_assistant(leftover)
+        if trial_started:
+            await self._sse(
+                response,
+                "notice",
+                {
+                    "message": (
+                        "Your seven-day Skye Plus preview is now active. "
+                        "It ends automatically."
+                    )
+                },
+            )
         await self._sse(response, "done", last_assistant or {"text": ""})
         await response.write_eof()
         return response

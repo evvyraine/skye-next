@@ -72,7 +72,7 @@ class AccessService:
         if await self.database.access_effect(Scope("user", user_id)) == "allow":
             return True
         entitlement = await self.database.active_entitlement(user_id)
-        return entitlement is not None and entitlement.plan == "plus"
+        return entitlement is not None and entitlement.plan in {"trial", "plus"}
 
     async def group_payer(self, chat_id: int) -> int | None:
         return await self._resolve_group_payer(chat_id, refresh=False)

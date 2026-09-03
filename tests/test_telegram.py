@@ -94,7 +94,7 @@ def test_empty_message_has_no_chunks() -> None:
 
 
 def test_help_keyboard_opens_product_links() -> None:
-    from skye.telegram import DOCS_URL, PRIVACY_URL, WEBSITE_URL
+    from skye.telegram import DOCS_URL, PRIVACY_URL, TERMS_URL, WEBSITE_URL
 
     markup = TelegramApp._help_keyboard()
     buttons = [button for row in markup.inline_keyboard for button in row]
@@ -102,6 +102,7 @@ def test_help_keyboard_opens_product_links() -> None:
         ("Website", WEBSITE_URL),
         ("Docs", DOCS_URL),
         ("Privacy policy", PRIVACY_URL),
+        ("Terms", TERMS_URL),
     ]
 
 

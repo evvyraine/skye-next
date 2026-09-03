@@ -138,6 +138,8 @@ def remaining_copy(entitlement: StarEntitlement, now: int) -> str:
         remaining = "1 day left."
     else:
         remaining = f"{days} days left."
+    if entitlement.plan == "trial":
+        return f"{remaining} Your Plus preview ends automatically."
     if entitlement.auto_renew:
         return (
             f"{remaining} Renews automatically. Telegram Stars will be charged again "
@@ -243,7 +245,9 @@ class BillingService:
             return current
         if payment.is_recurring and not payment.is_first_recurring and current is not None:
             expires_at = payment.subscription_expiration_date or (now + SUBSCRIPTION_PERIOD)
-            return await self.database.extend_star_entitlement(user_id, expires_at)
+            entitlement = await self.database.extend_star_entitlement(user_id, expires_at)
+            await self.database.record_product_event(user_id, "subscription_renewed")
+            return entitlement
         expires_at = payment.subscription_expiration_date or (now + SUBSCRIPTION_PERIOD)
         charge_id = payment.telegram_payment_charge_id if plan.recurring else None
         if (
@@ -265,6 +269,7 @@ class BillingService:
             trial_used=False,
         )
         await self._align_model(user_id)
+        await self.database.record_product_event(user_id, "subscription_started")
         return entitlement
 
     async def cancel_renewal(self, user_id: int, bot: Bot) -> StarEntitlement:
@@ -344,6 +349,16 @@ class AccountPanel:
         owner = self.access.is_owner(context.user_id)
         complimentary = await self.billing.complimentary(context, self.access)
         plan = PLANS.get(entitlement.plan) if entitlement is not None else None
+        if entitlement is not None and entitlement.plan == "trial":
+            plan = StarPlan(
+                "trial",
+                "Skye Plus preview",
+                "🌙",
+                0,
+                False,
+                "Skye Plus preview",
+                "Seven-day Skye Plus preview.",
+            )
         content = self.rich.account(
             owner=owner,
             complimentary=complimentary,

@@ -316,7 +316,7 @@ def test_checkout_explains_allowance_without_model_names() -> None:
     blob = " ".join(str(getattr(block, "text", "")) for block in message.blocks)
     blob += " " + " ".join(str(getattr(block, "text", "")) for block in details.blocks)
     assert "449" in blob
-    assert "expanded daily message allowance" in blob.lower()
+    assert "more room for longer work" in blob.lower()
     for banned in ("Luna", "Terra", "Sol", "GPT", "token", "Fair Use", "Try Skye"):
         assert banned not in blob
 

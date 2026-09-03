@@ -46,7 +46,7 @@ class QuotaService:
         self, context: RequestContext, *, billed_user_id: int | None = None
     ) -> tuple[int, int]:
         entitlement = await self.billing.entitlement(self._billed_user_id(context, billed_user_id))
-        if entitlement is not None and entitlement.plan == "plus":
+        if entitlement is not None and entitlement.plan in {"trial", "plus"}:
             return PLUS_DAILY, PLUS_MONTHLY
         return FREE_DAILY, FREE_MONTHLY
 

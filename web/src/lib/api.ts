@@ -118,6 +118,7 @@ export type StreamHandlers = {
   onTool?: (tool: { id: string; name: string; label: string; status: string }) => void
   onImage?: (file: ChatFile) => void
   onFile?: (file: ChatFile) => void
+  onNotice?: (message: string) => void
   onDone?: (message: ChatMessage) => void
   onError?: (message: string) => void
 }
@@ -195,6 +196,8 @@ function dispatch(event: { event: string; data: unknown }, handlers: StreamHandl
     handlers.onImage?.(data)
   } else if (event.event === "file") {
     handlers.onFile?.(data)
+  } else if (event.event === "notice") {
+    handlers.onNotice?.((data as { message: string }).message)
   } else if (event.event === "done") {
     handlers.onDone?.(data)
   } else if (event.event === "error") {
