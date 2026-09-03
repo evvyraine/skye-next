@@ -4,9 +4,7 @@ Operating brief for anyone writing code or copy in this repository.
 
 ## What this is
 
-Skye Next is a private, allowlisted agent host. Users talk to Skye in Telegram or at `chat.skye-bot.com`; Skye talks to OpenAI directly or through OpenRouter.
-
-The product should expose OpenAI's native capabilities with as little application code as possible.
+Skye Next is a public free-to-paid self-hostable agent host. Users talk to Skye in Telegram or at `chat.skye-bot.com`;
 
 Skye's voice is calm, short, warm, and grounded. She is female. Identity and tone live in `BASE_PROMPT.md` — keep that file limited to stable identity, tone, and the product-wide authorization boundary.
 
@@ -18,18 +16,13 @@ Skye's voice is calm, short, warm, and grounded. She is female. Identity and ton
 - Safe composition of the active agent and its tools
 - Reliability, observability, and lifecycle
 
-We do not own a model loop, a general-purpose provider abstraction, a billing provider, an admin web panel, or a plugin framework. Telegram owns Stars payments; Skye stores the resulting entitlement.
-
 ## Core decisions
 
-- **Two viable provider paths.** OpenAI directly is the native path; OpenRouter is a supported alternative through its OpenAI-compatible Responses API. Both use `openai-agents`, and every normal chat turn is `Agent` + `Runner.run_streamed()`. Use the official `openai` client for resource lifecycle (conversations, files, skills), with the existing OpenRouter-specific adaptations where its behavior differs. No Chat Completions fallback and no general-purpose provider framework.
-- **One hosted model.** Chat turns use `gpt-5.6-luna`. There is no user-facing model picker. Public copy never names Luna, Terra, Sol, GPT, or other model IDs. If asked, Skye says she works on Sun Engine.
 - **No Mini App.** Telegram settings stay inline-keyboard messages edited in place. Callback data is a short action plus an opaque id — never JSON, never trusted client state. The web app at `chat.skye-bot.com` is a second transport for private project chats, not a Mini App and not an admin panel.
 - **Automations are in-process.** Scheduled cron and webhook triggers run a normal Skye turn in the bound Telegram chat or forum topic, with that chat's tools and conversation. The scheduler is an asyncio loop in the bot process. Webhooks are `POST /automations/{id}/hook` on the web app, authenticated by a stored Authorization header. Skye creates them with function tools; `/settings` lists and deletes one at a time. Anyone who can edit settings can manage them.
 - **Connectors are per user.** Hosted apps connect through Composio; custom HTTPS MCP is stored locally. A group run receives a connector only after the owner explicitly shares that one item with that group. The owner or a group admin can revoke the share.
 - **Explicit composition.** One typed app container, one startup function. Features expose services; they do not register themselves.
 - **Two memories, never mixed.** OpenAI `conversation_id` is the working context for a Telegram thread or a web project — send only the new turn; `/reset` (or web reset) starts a new conversation. Skye memories are small, inspectable, scoped facts (`remember` / `recall` / `forget`). Private memories are `scope=user`. Group memories are `scope=chat`. A group run never sees a participant's private memories. Never combine an Agents SDK `Session` with `conversation_id` on the same run. Telegram stores the OpenAI conversation id, not a duplicate transcript. The web UI may keep a display/search event log; that log is never sent back as model history. Web projects never share a conversation id with a Telegram DM.
-- **Hosted execution only.** Shell never runs on the bot host. `ShellTool` uses `container_auto` with a request-level domain allowlist (`SKYE_SANDBOX_ALLOWED_DOMAINS`; must be a subset of the org allow list). Never pass bot secrets into that container. Web search and image generation/editing are native hosted tools; users ask in natural language.
 - **Skills are data.** Users upload a zip bundle or a `SKILL.md` file; every file in the zip is stored locally and sent together to OpenAI `/v1/skills`. Mount them on hosted shell as `skill_reference`. Delete removes both the local copy and the OpenAI skill. Skills are scoped like memories: private skills stay `scope=user`, group skills stay `scope=chat`.
 - **Custom agents are data**, not Python: name, description, instructions, optional model, hosted capabilities, visibility. Users cannot upload function tools. Sharing pins an immutable published version; later edits never change an imported install. Default orchestration is manager-style: Skye is the root, specialists are `Agent.as_tool()`. Selecting an agent as active makes that profile the root.
 - **Access is deny-by-default for groups.** Private Telegram and web chat are allowed on Free unless the user is banned. The owner is always allowed. A ban beats every allow except the immutable owner. A group, supergroup, or forum is allowed if it is allowlisted, or if a chat admin has Skye Plus (or complimentary/owner access). Free members may talk there; a Free plan alone does not unlock a group. Group usage is billed to a sticky paying admin — the chat creator if they qualify, otherwise the first qualifying administrator — not to the speaker. Allowlisting a group still grants access inside that group. Skye Plus (or complimentary/owner access) is required to create, edit, or share custom agents.
@@ -54,7 +47,6 @@ We do not own a model loop, a general-purpose provider abstraction, a billing pr
 
 ## Do not add
 
-- Model providers beyond the supported OpenAI and OpenRouter paths
 - A Mini App or an admin web panel
 - A second payment provider, or product tiers outside Telegram Stars
 - Token numbers in user-facing copy
@@ -65,15 +57,6 @@ We do not own a model loop, a general-purpose provider abstraction, a billing pr
 - Handoffs, unless a workflow truly needs the specialist to take over
 - Tool manuals pasted into the prompt
 - Secrets, full prompts, or memory contents in logs
-
-Before adding a subsystem, ask:
-
-1. Can OpenAI or Telegram already own this?
-2. Is it required by a real current user flow?
-3. Can it be data, a hosted tool, or one small function tool?
-4. Does it preserve user/chat isolation and immutable sharing?
-
-If (1) is yes or (2) is no, do not add it.
 
 ## Commands
 
