@@ -11,7 +11,7 @@ skye-bot.com {
 		-X-Powered-By
 	}
 
-	root * /Users/x/www/skye-bot.com/current
+	root * __SKYE_WWW_ROOT__/skye-bot.com/current
 
 	@assets path /assets/* /css/* /js/* /vendor/*
 	handle @assets {
