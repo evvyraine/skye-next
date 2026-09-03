@@ -284,11 +284,7 @@ class TelegramApp:
                 return
             await self.rich.send(
                 message,
-                "Hi. I'm Skye. Start with something useful:\n\n"
-                "• Send a voice note and ask me to turn it into a plan.\n"
-                "• Attach a document and ask for the decisions or risks.\n"
-                "• Tell me what you need to finish today and we will work through it.\n\n"
-                "Use your own words. I will choose the right tools.",
+                self.rich.onboarding(),
                 reply_markup=await self._private_reply_keyboard(context),
             )
         else:

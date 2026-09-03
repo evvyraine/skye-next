@@ -11,6 +11,8 @@ from aiogram.types import (
     BufferedInputFile,
     InlineKeyboardMarkup,
     InputRichBlockDetails,
+    InputRichBlockList,
+    InputRichBlockListItem,
     InputRichBlockParagraph,
     InputRichBlockSectionHeading,
     InputRichBlockTable,
@@ -245,12 +247,36 @@ class RichMessages:
         )
 
     @staticmethod
+    def onboarding() -> InputRichMessage:
+        items = [
+            "Send a voice note and ask me to turn it into a plan.",
+            "Attach a document and ask for the decisions or risks.",
+            "Tell me what you need to finish today and we will work through it.",
+        ]
+        return InputRichMessage(
+            blocks=[
+                InputRichBlockSectionHeading(text="Hi. I'm Skye.", size=2),
+                InputRichBlockParagraph(text="Start with something useful."),
+                InputRichBlockList(
+                    items=[
+                        InputRichBlockListItem(
+                            blocks=[InputRichBlockParagraph(text=item)]
+                        )
+                        for item in items
+                    ]
+                ),
+                InputRichBlockParagraph(
+                    text="Use your own words. I will choose the right tools."
+                ),
+            ]
+        )
+
+    @staticmethod
     def account(
         *,
         owner: bool,
         complimentary: bool,
         plan_name: str | None,
-        plan_emoji: str | None,
         status: str | None,
         notice: str | None = None,
     ) -> InputRichMessage:
@@ -260,22 +286,56 @@ class RichMessages:
         if owner:
             blocks.append(InputRichBlockParagraph(text="Owner access. No Stars plan is required."))
             return InputRichMessage(blocks=blocks)
-        if plan_name and plan_emoji and status:
-            blocks.append(InputRichBlockSectionHeading(text=f"{plan_emoji} {plan_name}", size=3))
+        if plan_name and status:
+            blocks.append(InputRichBlockSectionHeading(text=plan_name, size=3))
             blocks.append(InputRichBlockParagraph(text=status))
         elif status:
             blocks.append(InputRichBlockParagraph(text=status))
         elif complimentary:
             blocks.append(InputRichBlockParagraph(text="Complimentary access from the allowlist."))
         else:
-            blocks.append(
-                InputRichBlockParagraph(
-                    text=(
-                        "Free plan, with a basic daily message allowance. "
-                        "Skye Plus adds more room for longer work and lets you create "
-                        "your own agents. Paid in Telegram Stars."
-                    )
-                )
+            blocks.extend(
+                [
+                    InputRichBlockSectionHeading(text="Free", size=3),
+                    InputRichBlockList(
+                        items=[
+                            InputRichBlockListItem(
+                                blocks=[
+                                    InputRichBlockParagraph(
+                                        text="A basic daily message allowance."
+                                    )
+                                ]
+                            ),
+                            InputRichBlockListItem(
+                                blocks=[
+                                    InputRichBlockParagraph(
+                                        text="Text, voice, images, documents, and web search."
+                                    )
+                                ]
+                            ),
+                        ]
+                    ),
+                    InputRichBlockSectionHeading(text="Skye Plus", size=3),
+                    InputRichBlockList(
+                        items=[
+                            InputRichBlockListItem(
+                                blocks=[
+                                    InputRichBlockParagraph(
+                                        text="More room for longer work."
+                                    )
+                                ]
+                            ),
+                            InputRichBlockListItem(
+                                blocks=[
+                                    InputRichBlockParagraph(
+                                        text="Create and edit your own agents."
+                                    )
+                                ]
+                            ),
+                        ]
+                    ),
+                    InputRichBlockParagraph(text="Paid monthly in Telegram Stars."),
+                ]
             )
         return InputRichMessage(blocks=blocks)
 

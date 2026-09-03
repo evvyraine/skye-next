@@ -6,6 +6,7 @@ from aiogram.types import (
     BufferedInputFile,
     Chat,
     InputRichBlockDetails,
+    InputRichBlockList,
     InputRichBlockParagraph,
     InputRichBlockSectionHeading,
     InputRichBlockTable,
@@ -483,7 +484,6 @@ def test_account_screen_shows_renewal_status() -> None:
         owner=False,
         complimentary=False,
         plan_name="Skye Plus",
-        plan_emoji="🌙",
         status="18 days left. Renews automatically. Telegram Stars will be charged again "
         "at the end of this period.",
     )
@@ -491,11 +491,35 @@ def test_account_screen_shows_renewal_status() -> None:
     heading = message.blocks[1]
     status = message.blocks[2]
     assert isinstance(heading, InputRichBlockSectionHeading)
-    assert heading.text == "🌙 Skye Plus"
+    assert heading.text == "Skye Plus"
     assert isinstance(status, InputRichBlockParagraph)
     assert "Terra" not in str(status.text)
     assert "Luna" not in str(status.text)
     assert "Renews automatically" in str(status.text)
+
+
+def test_onboarding_uses_a_native_rich_list() -> None:
+    message = RichMessages.onboarding()
+
+    assert isinstance(message.blocks[0], InputRichBlockSectionHeading)
+    assert message.blocks[0].text == "Hi. I'm Skye."
+    suggestions = message.blocks[2]
+    assert isinstance(suggestions, InputRichBlockList)
+    assert len(suggestions.items) == 3
+    assert all(len(item.blocks) == 1 for item in suggestions.items)
+
+
+def test_free_account_uses_native_plan_lists() -> None:
+    message = RichMessages.account(
+        owner=False,
+        complimentary=False,
+        plan_name=None,
+        status=None,
+    )
+
+    lists = [block for block in message.blocks if isinstance(block, InputRichBlockList)]
+    assert len(lists) == 2
+    assert [len(block.items) for block in lists] == [2, 2]
 
 
 def test_plus_agents_prompt_points_to_account() -> None:

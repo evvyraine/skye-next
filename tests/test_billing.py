@@ -71,7 +71,7 @@ def test_plan_catalog_matches_the_product() -> None:
     assert list(PLANS) == ["plus"]
     assert PLANS["plus"].stars == 449
     assert PLANS["plus"].recurring is True
-    assert PLANS["plus"].button_label.startswith("🌙")
+    assert not PLANS["plus"].button_label.startswith("🌙")
     assert all(len(plan.invoice_title) <= 32 for plan in PLANS.values())
     assert all(len(plan.invoice_description) <= 255 for plan in PLANS.values())
     joined = " ".join(

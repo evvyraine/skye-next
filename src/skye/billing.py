@@ -47,8 +47,8 @@ class StarPlan:
     @property
     def button_label(self) -> str:
         if self.recurring:
-            return f"{self.emoji} {self.name} · {self.stars} ⭐ / month"
-        return f"{self.emoji} {self.name} · {self.stars} ⭐"
+            return f"{self.name} · {self.stars} ⭐ / month"
+        return f"{self.name} · {self.stars} ⭐"
 
     @property
     def pay_label(self) -> str:
@@ -363,7 +363,6 @@ class AccountPanel:
             owner=owner,
             complimentary=complimentary,
             plan_name=None if plan is None else plan.name,
-            plan_emoji=None if plan is None else plan.emoji,
             status=None if entitlement is None else remaining_copy(entitlement, now),
             notice=notice,
         )
