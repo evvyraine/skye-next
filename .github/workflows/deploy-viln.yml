@@ -19,9 +19,8 @@ jobs:
           host: 76.13.249.8
           username: root
           key: ${{ secrets.SSH_PRIVATE_KEY }}
-          fingerprint: SHA256:Rn+eoOWluYxRnWmAD21XO0uHA7MKnuCwVAVaLCjPr6s
+          fingerprint: SHA256:JlAuNmnaal3xHQ70R5mxR/Zf39oYcFn+FBdQskd7C+M
           command_timeout: 20m
-          script_stop: true
           script: |
             set -euo pipefail
             if [[ ! -d /root/skye-next/.git ]]; then
