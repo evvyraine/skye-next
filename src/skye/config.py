@@ -6,7 +6,6 @@ from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 ModelId = str
 Reasoning = Literal["none", "low", "medium", "high", "xhigh", "max"]
-Provider = Literal["openai", "openrouter"]
 
 HOSTED_MODEL: ModelId = "gpt-5.6-luna"
 MODELS: dict[ModelId, str] = {
@@ -173,15 +172,6 @@ class Settings(BaseSettings):
         return self
 
     @property
-    def provider(self) -> Provider:
-        # Legacy routing flag for the Responses-era branches in runtime/app.
-        # Removed step by step as hosted tools move to local function tools.
-        base_url = (self.skye_provider_base_url or "").lower()
-        if base_url:
-            return "openrouter" if "openrouter" in base_url else "openai"
-        return "openrouter" if self.openrouter_api_key else "openai"
-
-    @property
     def provider_api_key(self) -> str:
         key = self.skye_provider_api_key or self.openrouter_api_key or self.openai_api_key
         if key is None:  # guarded by validation; keeps this property precisely typed
@@ -192,7 +182,9 @@ class Settings(BaseSettings):
     def provider_base_url(self) -> str | None:
         if self.skye_provider_base_url:
             return self.skye_provider_base_url
-        return "https://openrouter.ai/api/v1" if self.provider == "openrouter" else None
+        if self.openrouter_api_key and not self.skye_provider_api_key:
+            return "https://openrouter.ai/api/v1"
+        return None
 
     @field_validator(
         "skye_web_origin",

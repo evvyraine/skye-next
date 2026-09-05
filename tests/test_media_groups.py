@@ -78,15 +78,6 @@ class DownloadBot:
         destination.write(self.files[media.file_id])
 
 
-class FileUploads:
-    def __init__(self) -> None:
-        self.names: list[str] = []
-
-    async def create(self, *, file: tuple[str, bytes, str], purpose: str) -> Any:
-        self.names.append(file[0])
-        return SimpleNamespace(id=f"openai-{len(self.names)}")
-
-
 def item(index: int, kind: str = "photo") -> MediaGroupItem:
     return MediaGroupItem(
         chat_id=42,
@@ -133,17 +124,11 @@ async def test_album_photos_become_multiple_vision_inputs() -> None:
     ]
 
 
-async def test_openrouter_album_photos_use_image_data_urls() -> None:
+async def test_album_photos_use_image_data_urls() -> None:
     service = AttachmentService(
-        Settings.model_construct(
-            skye_max_attachment_bytes=1024,
-            skye_media_group_settle_seconds=0.1,
-            skye_transcription_model="gpt-transcribe",
-            openai_api_key=None,
-            openrouter_api_key="sk-or-test",
-        ),
+        settings(),
         cast(Any, DownloadBot({"file-1": b"one", "file-2": b"two"})),
-        cast(AsyncOpenAI, SimpleNamespace(files=FileUploads())),
+        cast(AsyncOpenAI, SimpleNamespace()),
     )
     content: list[dict[str, Any]] = []
 
@@ -155,7 +140,7 @@ async def test_openrouter_album_photos_use_image_data_urls() -> None:
         "data:image/jpeg;base64,b25l",
         "data:image/jpeg;base64,dHdv",
     ]
-    assert file_ids == ("openai-1", "openai-2")
+    assert file_ids == ()
 
 
 async def test_album_documents_become_multiple_file_inputs() -> None:
@@ -174,23 +159,24 @@ async def test_album_documents_become_multiple_file_inputs() -> None:
     ]
 
 
-async def test_album_file_ids_are_available_to_the_hosted_sandbox() -> None:
-    uploads = FileUploads()
-    client = cast(AsyncOpenAI, SimpleNamespace(files=uploads))
+async def test_album_documents_use_inline_file_data() -> None:
     service = AttachmentService(
         settings(),
         cast(Any, DownloadBot({"file-1": b"one", "file-2": b"two"})),
-        client,
+        cast(AsyncOpenAI, SimpleNamespace()),
     )
     content: list[dict[str, Any]] = []
 
-    await service.add(text_message(), content, album=[item(1, "document"), item(2, "document")])
+    file_ids = await service.add(
+        text_message(), content, album=[item(1, "document"), item(2, "document")]
+    )
 
-    assert [part["file_id"] for part in content if part["type"] == "input_file"] == [
-        "openai-1",
-        "openai-2",
+    assert file_ids == ()
+    assert [part["filename"] for part in content if part["type"] == "input_file"] == [
+        "file-1.pdf",
+        "file-2.pdf",
     ]
-    assert uploads.names == ["album-1-file-1.pdf", "album-2-file-2.pdf"]
+    assert all("file_data" in part for part in content if part["type"] == "input_file")
 
 
 async def test_album_videos_become_text_placeholders() -> None:
@@ -198,7 +184,7 @@ async def test_album_videos_become_text_placeholders() -> None:
     service = AttachmentService(
         settings(),
         cast(Any, bot),
-        cast(AsyncOpenAI, SimpleNamespace(files=FileUploads())),
+        cast(AsyncOpenAI, SimpleNamespace()),
     )
     content: list[dict[str, Any]] = []
     album = [

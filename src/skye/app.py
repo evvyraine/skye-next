@@ -33,7 +33,6 @@ from .images import ImageService
 from .media_groups import MediaGroupService
 from .memory import MemoryService
 from .projects import ProjectService
-from .providers import OpenRouterTransport
 from .runtime import OPENAI_MAX_RETRIES, AgentRuntime
 from .sandbox import SandboxService
 from .skills import SkillService
@@ -73,34 +72,23 @@ async def run() -> None:
     await database.open()
 
     proxy_url = config.skye_proxy_url
-    # Step 1 of provider unification: one client from provider_base_url/api_key.
-    # The OpenRouterTransport shim stays until the runtime moves to Chat Completions.
-    if config.provider == "openrouter" and config.provider_base_url is not None:
-        transport = OpenRouterTransport(
-            httpx.AsyncHTTPTransport(proxy=proxy_url) if proxy_url else None
-        )
-        http_client: httpx.AsyncClient | None = httpx.AsyncClient(
-            transport=transport,
-            timeout=httpx.Timeout(600, connect=10),
-            follow_redirects=True,
-        )
-    elif proxy_url:
-        http_client = httpx.AsyncClient(
+    http_client: httpx.AsyncClient | None = (
+        httpx.AsyncClient(
             proxy=proxy_url,
             timeout=httpx.Timeout(600, connect=10),
             follow_redirects=True,
         )
-    else:
-        http_client = None
+        if proxy_url
+        else None
+    )
     client = AsyncOpenAI(
         api_key=config.provider_api_key,
         base_url=config.provider_base_url,
         max_retries=OPENAI_MAX_RETRIES,
         http_client=http_client,
     )
-    trace_with_openai = config.skye_tracing and config.provider == "openai"
-    set_default_openai_client(client, use_for_tracing=trace_with_openai)
-    set_tracing_disabled(not trace_with_openai)
+    set_default_openai_client(client, use_for_tracing=False)
+    set_tracing_disabled(True)
 
     bot = Bot(
         config.telegram_bot_token,

@@ -67,7 +67,7 @@ def test_any_non_empty_model_is_accepted() -> None:
     )
 
 
-def test_openrouter_key_selects_openrouter_and_accepts_namespaced_models() -> None:
+def test_openrouter_key_selects_openrouter_base_url_and_namespaced_models() -> None:
     loaded = settings(
         openai_api_key=None,
         openrouter_api_key="sk-or-test",
@@ -77,15 +77,15 @@ def test_openrouter_key_selects_openrouter_and_accepts_namespaced_models() -> No
         skye_image_model="openai/gpt-5-image",
     )
 
-    assert loaded.provider == "openrouter"
     assert loaded.provider_api_key == "sk-or-test"
     assert loaded.provider_base_url == "https://openrouter.ai/api/v1"
 
 
-def test_openrouter_key_takes_precedence_when_both_keys_are_present() -> None:
-    loaded = settings(openrouter_api_key="sk-or-test")
+def test_openai_key_alone_means_default_base_url() -> None:
+    loaded = settings(openrouter_api_key=None)
 
-    assert loaded.provider == "openrouter"
+    assert loaded.provider_api_key == "sk-test"
+    assert loaded.provider_base_url is None
 
 
 def test_unified_provider_key_wins_over_legacy_keys() -> None:
@@ -98,19 +98,18 @@ def test_unified_provider_key_wins_over_legacy_keys() -> None:
 
     assert loaded.provider_api_key == "sk-unified"
     assert loaded.provider_base_url == "https://llm.example.com/v1"
-    assert loaded.provider == "openai"
 
 
-def test_unified_openrouter_base_url_routes_to_openrouter_shim() -> None:
+def test_explicit_base_url_wins_over_legacy_openrouter_key() -> None:
     loaded = settings(
         openai_api_key=None,
-        openrouter_api_key=None,
+        openrouter_api_key="sk-or-legacy",
         skye_provider_api_key="sk-unified",
-        skye_provider_base_url="https://openrouter.ai/api/v1",
+        skye_provider_base_url="https://llm.example.com/v1",
     )
 
-    assert loaded.provider == "openrouter"
-    assert loaded.provider_base_url == "https://openrouter.ai/api/v1"
+    assert loaded.provider_api_key == "sk-unified"
+    assert loaded.provider_base_url == "https://llm.example.com/v1"
 
 
 def test_sandbox_and_exa_defaults() -> None:

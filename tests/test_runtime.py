@@ -8,23 +8,11 @@ from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
-from agents import (
-    FunctionTool,
-    HostedMCPTool,
-    ModelSettings,
-)
-from agents.models.interface import ModelResponse
-from agents.run_internal.turn_resolution import process_model_response
-from agents.usage import Usage
+from agents import FunctionTool
 from openai import APIError, BadRequestError, RateLimitError
-from openai.types.responses import (
-    ResponseOutputMessage,
-    ResponseOutputText,
-)
 
 from skye.artifacts import GeneratedFile
-from skye.config import SANDBOX_DOMAINS, Settings
-from skye.connectors import ConnectorTools
+from skye.config import Settings
 from skye.custom_agents import AgentComposition
 from skye.exa import ExaService
 from skye.images import ImageService, TurnImages, sniff_mime, turn_sources
@@ -42,14 +30,13 @@ from skye.runtime import (
     FALLBACK_EMPTY,
     AgentRuntime,
     ContextLimitError,
-    GuardedResponsesModel,
+    GuardedChatModel,
     RunEvent,
     RunOutput,
-    StatelessResponsesModel,
     StreamStartedError,
     TokenRateLimiter,
     TurnDelivery,
-    _dump_conversation_item,
+    _tool_specs,
     describe_activity_event,
     image_tool_call_limit,
     is_transient,
@@ -95,10 +82,6 @@ def config(**overrides: object) -> Settings:
     }
     values.update(overrides)
     return Settings(**values)  # type: ignore[arg-type]
-
-
-def sandbox_network_policy() -> dict[str, object]:
-    return {"type": "allowlist", "allowed_domains": list(SANDBOX_DOMAINS)}
 
 
 def test_agent_toolset_without_optional_services_is_delivery_plus_memory() -> None:
@@ -185,46 +168,6 @@ def test_shell_tools_are_absent_without_a_sandbox_service() -> None:
         assert "deliver_file" not in names
 
 
-def test_openrouter_tools_have_metadata_required_by_response_processing() -> None:
-    memory = MemoryService(cast(Any, None))
-    runtime = AgentRuntime(
-        config(
-            openai_api_key=None,
-            openrouter_api_key="sk-or-test",
-            skye_default_model="openai/gpt-5.6-luna",
-        ),
-        cast(Any, None),
-        memory,
-        "You are Skye.",
-    )
-    agent = runtime._agent(
-        RequestContext(1, "private", 1),
-        ChatSettings("openai/gpt-5.6-luna", "medium"),
-    )
-
-    processed = process_model_response(
-        agent=agent,
-        all_tools=agent.tools,
-        response=ModelResponse(
-            [
-                ResponseOutputMessage(
-                    id="msg_1",
-                    content=[ResponseOutputText(annotations=[], text="ok", type="output_text")],
-                    role="assistant",
-                    status="completed",
-                    type="message",
-                )
-            ],
-            Usage(),
-            None,
-        ),
-        output_schema=None,
-        handoffs=[],
-    )
-
-    assert len(processed.new_items) == 1
-
-
 def test_disabled_memory_is_not_injected_or_exposed() -> None:
     memory = MemoryService(cast(Any, None))
     runtime = AgentRuntime(config(), cast(Any, None), memory, "You are Skye.")
@@ -278,27 +221,26 @@ def test_automation_tools_are_attached_when_managing() -> None:
     assert "You can create scheduled or webhook automations" in cast(str, agent.instructions)
 
 
-def test_connector_labels_are_private_context_only() -> None:
-    memory = MemoryService(cast(Any, None))
-    runtime = AgentRuntime(config(), cast(Any, None), memory, "You are Skye.")
-    tools = ConnectorTools((), ("Gmail", "Work CRM"))
+async def test_connected_apps_stay_detached_until_the_mcp_bridge_lands() -> None:
+    from skye.connectors import ConnectorTools
 
-    private = runtime._agent(
-        RequestContext(1, "private", 1),
-        ChatSettings("gpt-5.6-luna", "medium", memory_enabled=False),
-        connector_tools=tools,
+    runtime = runtime_for_run()
+    connectors = AsyncMock()
+    connectors.hosted_tools.return_value = ConnectorTools(
+        (cast(Any, SimpleNamespace(name="mcp_tool")),), ("Gmail",)
     )
-    group = runtime._agent(
-        RequestContext(-100, "supergroup", 1),
-        ChatSettings("gpt-5.6-luna", "medium", memory_enabled=False),
-        connector_tools=ConnectorTools((), ()),
-    )
+    runtime.connectors = connectors
 
-    assert "Gmail" in cast(str, private.instructions)
-    assert "Work CRM" in cast(str, private.instructions)
-    assert "Gmail" not in cast(str, group.instructions)
-    assert "includes message_id" in cast(str, group.instructions)
-    assert "free-standing bubble" in cast(str, group.instructions)
+    with patch("skye.runtime.Runner.run_streamed", return_value=FakeStream()):
+        output = await runtime.run(
+            RequestContext(1, "private", 1),
+            ChatSettings("gpt-5.6-luna", "medium", memory_enabled=False),
+            "hello",
+            AsyncMock(),
+        )
+
+    assert output.text == "done"
+    connectors.hosted_tools.assert_awaited_once()
 
 
 def test_turn_images_collect_finished_pictures_within_limit() -> None:
@@ -348,25 +290,17 @@ def test_image_request_caps_native_tool_calls_in_model_settings() -> None:
     )
 
     assert agent.model_settings is not None
-    assert agent.model_settings.extra_args == {"max_tool_calls": 1}
     assert agent.model_settings.parallel_tool_calls is False
+    assert agent.model_settings.store is False
+    assert set(agent.model_settings.extra_body or {}) == {"safety_identifier"}
 
-    model = GuardedResponsesModel(
-        "gpt-5.6-luna", AsyncMock(), AsyncMock(), 50_000, 4_000
-    )
-    request = model._build_response_create_kwargs(
-        cast(str, agent.instructions),
-        "Generate an image of a corgi",
-        agent.model_settings,
-        agent.tools,
-        None,
-        [],
-        conversation_id="conv_1",
-        stream=True,
+    plain = runtime._model_settings(
+        RequestContext(1, "private", 1),
+        ChatSettings("gpt-5.6-luna", "medium", memory_enabled=False),
     )
 
-    assert request["max_tool_calls"] == 1
-    assert request["parallel_tool_calls"] is False
+    assert plain.parallel_tool_calls is None
+    assert plain.max_tokens == 4_000
 
 
 async def test_turn_sources_reads_inline_data_url_images() -> None:
@@ -495,42 +429,19 @@ async def test_image_service_decodes_provider_payload() -> None:
     client.images.generate.assert_awaited_once_with(model="img-model", prompt="a cat")
 
 
-def test_counting_tools_remove_streaming_only_image_options() -> None:
-    tools = [
-        {
-            "type": "image_generation",
-            "model": "gpt-image-2",
-            "partial_images": 1,
-        }
-    ]
-
-    counted = GuardedResponsesModel._counting_tools(cast(Any, tools))
-
-    assert counted == [{"type": "image_generation", "model": "gpt-image-2"}]
-    assert tools[0]["partial_images"] == 1
-
-
-def test_counting_generated_image_omits_raw_base64_result() -> None:
-    counted = GuardedResponsesModel._counting_image_generation_call(
-        {
-            "id": "image_1",
-            "type": "image_generation_call",
-            "status": "completed",
-            "result": "a" * 1_000_000,
-        }
+def test_tool_specs_describe_function_tools_for_sizing() -> None:
+    memory = MemoryService(cast(Any, None))
+    runtime = AgentRuntime(config(), cast(Any, None), memory, "You are Skye.")
+    agent = runtime._agent(
+        RequestContext(1, "private", 1),
+        ChatSettings("gpt-5.6-luna", "medium", memory_enabled=False),
     )
 
-    assert counted == {
-        "id": "image_1",
-        "type": "image_generation_call",
-        "status": "completed",
-    }
+    specs = _tool_specs(agent.tools)
 
-
-def test_counting_uploaded_file_uses_only_file_id() -> None:
-    assert GuardedResponsesModel._counting_file_part(
-        {"type": "input_file", "filename": "voice.ogg", "file_id": "file_voice"}
-    ) == {"type": "input_file", "file_id": "file_voice"}
+    assert specs
+    assert all("name" in item for item in specs if isinstance(item, dict))
+    assert "send_message" in [item["name"] for item in specs if isinstance(item, dict)]
 
 
 def test_shell_file_note_follows_capabilities() -> None:
@@ -733,22 +644,6 @@ def rate_limit_error(message: str, *, headers: dict[str, str] | None = None) -> 
     )
 
 
-def conversation_locked_error() -> BadRequestError:
-    return BadRequestError(
-        "Error code: 400 - Another process is currently operating on this conversation.",
-        response=httpx.Response(400, request=_request()),
-        body={
-            "error": {
-                "message": "Another process is currently operating on this conversation. "
-                "Please retry in a few seconds.",
-                "type": "invalid_request_error",
-                "param": "conversation",
-                "code": "conversation_locked",
-            }
-        },
-    )
-
-
 class FakeStream:
     def __init__(self, error: Exception | None = None, output: str = "done") -> None:
         self._error = error
@@ -833,13 +728,6 @@ def test_retry_after_prefers_retry_after_header() -> None:
 
     assert is_transient(error)
     assert retry_after(error) == pytest.approx(6.0)
-
-
-def test_retry_after_waits_for_a_locked_conversation() -> None:
-    error = conversation_locked_error()
-
-    assert is_transient(error)
-    assert retry_after(error) is None
 
 
 def test_retry_after_ignores_permanent_errors() -> None:
@@ -934,14 +822,9 @@ async def test_run_does_not_retry_after_streaming_started() -> None:
     assert run_streamed.call_count == 1
 
 
-async def test_openrouter_failed_run_rolls_back_session_items() -> None:
-    runtime = runtime_for_run(
-        openai_api_key=None,
-        openrouter_api_key="sk-or-test",
-        skye_default_model="openai/gpt-5.6-luna",
-    )
+async def test_failed_run_rolls_back_session_items() -> None:
+    runtime = runtime_for_run()
     runtime.conversations.database.session_item_count.return_value = 8
-    runtime.conversations.database.session_files.return_value = ()
     tool_called = SimpleNamespace(
         name="tool_called",
         item=SimpleNamespace(
@@ -959,7 +842,7 @@ async def test_openrouter_failed_run_rolls_back_session_items() -> None:
     ):
         await runtime.run(
             RequestContext(1, "private", 1),
-            ChatSettings("openai/gpt-5.6-luna", "medium", memory_enabled=False),
+            ChatSettings("gpt-5.6-luna", "medium", memory_enabled=False),
             "hello",
             AsyncMock(),
         )
@@ -967,16 +850,16 @@ async def test_openrouter_failed_run_rolls_back_session_items() -> None:
     runtime.conversations.database.truncate_session.assert_awaited_once_with("conv_1", 8)
 
 
-def test_model_settings_enable_compaction_and_disable_implicit_truncation() -> None:
+def test_model_settings_are_provider_independent() -> None:
     runtime = runtime_for_run()
     settings = runtime._model_settings(
         RequestContext(1, "private", 1),
         ChatSettings("gpt-5.6-luna", "medium", memory_enabled=False),
     )
 
-    assert settings.context_management == [{"type": "compaction", "compact_threshold": 40_000}]
-    assert settings.truncation == "disabled"
-    assert settings.extra_body["service_tier"] == "fast"
+    assert settings.store is False
+    assert settings.max_tokens == 4_000
+    assert set(settings.extra_body or {}) == {"safety_identifier"}
 
 
 async def test_token_rate_limiter_waits_for_the_rolling_budget() -> None:
@@ -998,44 +881,28 @@ async def test_token_rate_limiter_waits_for_the_rolling_budget() -> None:
     assert waits == [pytest.approx(60.0)]
 
 
-async def test_guard_rejects_a_current_request_above_50k() -> None:
-    client = AsyncMock()
-    client.conversations.items.list.return_value = type(
-        "Page", (), {"data": [], "has_next_page": lambda self: False}
-    )()
-    client.responses.input_tokens.count.side_effect = [
-        type("Count", (), {"input_tokens": 80_000})(),
-        type("Count", (), {"input_tokens": 51_000})(),
-    ]
+async def test_chat_model_rejects_a_request_above_the_context_budget() -> None:
     limiter = AsyncMock()
-    model = GuardedResponsesModel("gpt-5.6-luna", client, limiter, 50_000, 4_000)
+    model = GuardedChatModel("test-model", AsyncMock(), limiter, 50_000, 4_000)
 
     with pytest.raises(ContextLimitError):
-        await model._admit("instructions", "large input", ModelSettings(), [], [], "conv_1")
+        await model._admit("instructions", "x" * 200_000, [])
 
     limiter.acquire.assert_not_awaited()
 
 
-async def test_guard_reserves_50k_when_conversation_requires_compaction() -> None:
-    client = AsyncMock()
-    client.conversations.items.list.return_value = type(
-        "Page", (), {"data": [], "has_next_page": lambda self: False}
-    )()
-    client.responses.input_tokens.count.side_effect = [
-        type("Count", (), {"input_tokens": 80_000})(),
-        type("Count", (), {"input_tokens": 2_000})(),
-    ]
+async def test_chat_model_admits_a_small_request_through_the_limiter() -> None:
     limiter = AsyncMock()
-    model = GuardedResponsesModel("gpt-5.6-luna", client, limiter, 50_000, 4_000)
+    model = GuardedChatModel("test-model", AsyncMock(), limiter, 50_000, 4_000)
 
-    await model._admit("instructions", "hello", ModelSettings(), [], [], "conv_1")
+    await model._admit("instructions", "hello", [])
 
-    limiter.acquire.assert_awaited_once_with(54_000)
+    limiter.acquire.assert_awaited_once()
 
 
-async def test_openrouter_admits_a_large_inline_image() -> None:
+async def test_chat_model_admits_a_large_inline_image() -> None:
     limiter = AsyncMock()
-    model = StatelessResponsesModel("openrouter/test", AsyncMock(), limiter, 50_000, 4_000)
+    model = GuardedChatModel("test-model", AsyncMock(), limiter, 50_000, 4_000)
     image = "data:image/jpeg;base64," + ("A" * 400_000)
     user_input: list[Any] = [
         {
@@ -1047,25 +914,15 @@ async def test_openrouter_admits_a_large_inline_image() -> None:
         }
     ]
 
-    await model._admit("instructions", user_input, ModelSettings(), [], [], None)
+    await model._admit("instructions", user_input, [])
 
     acquired = limiter.acquire.await_args.args[0]
     assert acquired < 20_000
 
 
-async def test_openrouter_still_rejects_huge_text() -> None:
+async def test_chat_model_trims_complete_old_turns_to_fit_request() -> None:
     limiter = AsyncMock()
-    model = StatelessResponsesModel("openrouter/test", AsyncMock(), limiter, 50_000, 4_000)
-
-    with pytest.raises(ContextLimitError, match="too large"):
-        await model._admit("instructions", "x" * 200_000, ModelSettings(), [], [], None)
-
-    limiter.acquire.assert_not_awaited()
-
-
-async def test_openrouter_trims_complete_old_turns_to_fit_request() -> None:
-    limiter = AsyncMock()
-    model = StatelessResponsesModel("openrouter/test", AsyncMock(), limiter, 220, 40)
+    model = GuardedChatModel("test-model", AsyncMock(), limiter, 220, 40)
     user_input: list[Any] = [
         {"role": "user", "content": "old question " + ("x" * 180)},
         {"role": "assistant", "content": "old answer " + ("y" * 180)},
@@ -1074,43 +931,37 @@ async def test_openrouter_trims_complete_old_turns_to_fit_request() -> None:
         {"role": "user", "content": "current question"},
     ]
 
-    await model._admit("short", user_input, ModelSettings(), [], [], None)
+    await model._admit("short", user_input, [])
 
     assert user_input == [{"role": "user", "content": "current question"}]
     limiter.acquire.assert_awaited_once()
 
 
-async def test_openrouter_trimming_accounts_for_tool_schema_size() -> None:
+async def test_chat_model_trimming_accounts_for_tool_schema_size() -> None:
+    from agents import function_tool
+
+    @function_tool
+    async def large_tool(payload: str) -> str:
+        """Large tool with a long description to inflate the request size estimate."""
+        return payload + ("z" * 120)
+
     limiter = AsyncMock()
-    model = StatelessResponsesModel("openrouter/test", AsyncMock(), limiter, 260, 40)
+    model = GuardedChatModel("test-model", AsyncMock(), limiter, 260, 40)
     user_input: list[Any] = [
         {"role": "user", "content": "old " + ("x" * 180)},
         {"role": "assistant", "content": "answer " + ("y" * 120)},
         {"role": "user", "content": "current"},
     ]
-    tools = [
-        HostedMCPTool(
-            cast(
-                Any,
-                {
-                    "type": "mcp",
-                    "server_label": "large_tool",
-                    "server_url": "https://example.com/mcp",
-                    "server_description": "z" * 120,
-                },
-            )
-        )
-    ]
 
-    await model._admit("short", user_input, ModelSettings(), tools, [], None)
+    await model._admit("short", user_input, [large_tool])
 
     assert user_input == [{"role": "user", "content": "current"}]
     limiter.acquire.assert_awaited_once()
 
 
-async def test_openrouter_rejects_current_turn_that_cannot_fit_after_trimming() -> None:
+async def test_chat_model_rejects_current_turn_that_cannot_fit_after_trimming() -> None:
     limiter = AsyncMock()
-    model = StatelessResponsesModel("openrouter/test", AsyncMock(), limiter, 200, 40)
+    model = GuardedChatModel("test-model", AsyncMock(), limiter, 200, 40)
     user_input: list[Any] = [
         {"role": "user", "content": "old"},
         {"role": "assistant", "content": "answer"},
@@ -1118,152 +969,26 @@ async def test_openrouter_rejects_current_turn_that_cannot_fit_after_trimming() 
     ]
 
     with pytest.raises(ContextLimitError, match="too large"):
-        await model._admit("short", user_input, ModelSettings(), [], [], None)
+        await model._admit("short", user_input, [])
 
     assert len(user_input) == 3
     limiter.acquire.assert_not_awaited()
 
 
-async def test_guard_counts_a_snapshot_without_locking_the_conversation() -> None:
-    client = AsyncMock()
-    history = type(
-        "Item",
-        (),
-        {"model_dump": lambda self, **_kwargs: {"role": "user", "content": "earlier"}},
-    )()
-    client.conversations.items.list.return_value = type(
-        "Page", (), {"data": [history], "has_next_page": lambda self: False}
-    )()
-    client.responses.input_tokens.count.return_value = type("Count", (), {"input_tokens": 100})()
-    limiter = AsyncMock()
-    model = GuardedResponsesModel("gpt-5.6-luna", client, limiter, 50_000, 4_000)
+def test_chat_model_provider_caches_models_by_name() -> None:
+    from skye.runtime import GuardedModelProvider
 
-    await model._admit("instructions", "now", ModelSettings(), [], [], "conv_1")
+    provider = GuardedModelProvider(config(), AsyncMock(), AsyncMock())
 
-    kwargs = client.responses.input_tokens.count.await_args.kwargs
-    assert "conversation" not in kwargs
-    assert kwargs["input"] == [
-        {"role": "user", "content": "earlier"},
-        {"role": "user", "content": "now"},
-    ]
+    assert provider.get_model(None) is provider.get_model("gpt-5.6-luna")
+    assert provider.get_model("other") is not provider.get_model(None)
 
 
-async def test_guard_replaces_incomplete_images_in_conversation_snapshots() -> None:
-    client = AsyncMock()
-    history = type(
-        "Item",
-        (),
-        {
-            "model_dump": lambda self, **_kwargs: {
-                "role": "user",
-                "content": [
-                    {"type": "input_text", "text": "look"},
-                    {"type": "input_text", "text": "Attached image:"},
-                    {"type": "input_image", "detail": "auto"},
-                    {
-                        "type": "input_image",
-                        "file_id": "file_123",
-                        "image_url": None,
-                        "detail": "high",
-                    },
-                    {
-                        "type": "input_image",
-                        "image_url": "data:image/png;base64,abc",
-                        "detail": "auto",
-                    },
-                    {
-                        "type": "input_file",
-                        "filename": "notes.pdf",
-                        "detail": "auto",
-                    },
-                ],
-            }
-        },
-    )()
-    client.conversations.items.list.return_value = type(
-        "Page", (), {"data": [history], "has_next_page": lambda self: False}
-    )()
-    client.responses.input_tokens.count.return_value = type("Count", (), {"input_tokens": 100})()
-    limiter = AsyncMock()
-    model = GuardedResponsesModel("gpt-5.6-luna", client, limiter, 50_000, 4_000)
-
-    await model._admit("instructions", "now", ModelSettings(), [], [], "conv_1")
-
-    kwargs = client.responses.input_tokens.count.await_args.kwargs
-    assert kwargs["input"][0]["content"] == [
-        {"type": "input_text", "text": "look"},
-        {"type": "input_text", "text": "Attached image:"},
-        {"type": "input_text", "text": "[image]"},
-        {"type": "input_image", "file_id": "file_123", "detail": "high"},
-        {"type": "input_image", "image_url": "data:image/png;base64,abc", "detail": "auto"},
-        {"type": "input_text", "text": "[notes.pdf]"},
-    ]
-    assert kwargs["input"][1] == {"role": "user", "content": "now"}
-
-
-async def test_guard_drops_image_generation_action_from_conversation_snapshots() -> None:
-    client = AsyncMock()
-    history = type(
-        "Item",
-        (),
-        {
-            "model_dump": lambda self, **_kwargs: {
-                "type": "image_generation_call",
-                "id": "ig_1",
-                "status": "completed",
-                "action": "edit",
-                "revised_prompt": "make it bluer",
-            }
-        },
-    )()
-    client.conversations.items.list.return_value = type(
-        "Page", (), {"data": [history], "has_next_page": lambda self: False}
-    )()
-    client.responses.input_tokens.count.return_value = type("Count", (), {"input_tokens": 100})()
-    limiter = AsyncMock()
-    model = GuardedResponsesModel("gpt-5.6-luna", client, limiter, 50_000, 4_000)
-
-    await model._admit("instructions", "now", ModelSettings(), [], [], "conv_1")
-
-    kwargs = client.responses.input_tokens.count.await_args.kwargs
-    assert kwargs["input"][0] == {
-        "type": "image_generation_call",
-        "id": "ig_1",
-        "status": "completed",
-    }
-    assert "action" not in kwargs["input"][0]
-
-
-def test_conversation_dump_keeps_only_declared_fields() -> None:
-    class StoredCall:
-        model_fields = {"id": object(), "status": object(), "type": object()}
-
-        def model_dump(self, **_kwargs: object) -> dict[str, object]:
-            return {
-                "type": "image_generation_call",
-                "id": "ig_1",
-                "status": "completed",
-                "action": "edit",
-            }
-
-    assert _dump_conversation_item(StoredCall()) == {
-        "type": "image_generation_call",
-        "id": "ig_1",
-        "status": "completed",
-    }
-
-
-async def test_run_strips_sandbox_links_and_attaches_files() -> None:
+async def test_run_strips_sandbox_links_from_final_text() -> None:
     runtime = runtime_for_run()
-    files = (GeneratedFile("notes.md", b"hi"),)
     stream = FakeStream(output="Done: [download notes.md](sandbox:/mnt/data/notes.md)")
-    collect = AsyncMock(return_value=files)
 
-    with (
-        patch("skye.runtime.Runner.run_streamed", return_value=stream),
-        patch("skye.runtime.collect_container_files", collect),
-        patch("skye.runtime.time.time", return_value=1234.9),
-    ):
+    with patch("skye.runtime.Runner.run_streamed", return_value=stream):
         output = await runtime.run(
             RequestContext(1, "private", 1),
             ChatSettings("gpt-5.6-luna", "medium", memory_enabled=False),
@@ -1272,30 +997,7 @@ async def test_run_strips_sandbox_links_and_attaches_files() -> None:
         )
 
     assert output.text == "Done: download notes.md"
-    assert output.files == files
-    assert collect.await_args.kwargs["created_after"] == 1234
-
-
-async def test_run_retries_conversation_locks() -> None:
-    runtime = runtime_for_run()
-    delays: list[float] = []
-
-    async def instant_delay(_active: object, seconds: float) -> None:
-        delays.append(seconds)
-
-    runtime._delay = instant_delay  # type: ignore[method-assign]
-    streams = [FakeStream(error=conversation_locked_error()), FakeStream(output="Later")]
-
-    with patch("skye.runtime.Runner.run_streamed", side_effect=streams):
-        output = await runtime.run(
-            RequestContext(1, "private", 1),
-            ChatSettings("gpt-5.6-luna", "medium", memory_enabled=False),
-            "hello",
-            AsyncMock(),
-        )
-
-    assert output.text == "Later"
-    assert delays[0] >= 1.0
+    assert output.files == ()
 
 
 async def test_run_recovers_delivered_turn_when_followup_fails_transiently() -> None:
@@ -1325,53 +1027,6 @@ async def test_run_recovers_delivered_turn_when_followup_fails_transiently() -> 
     assert delivered == ["Delivered once."]
     assert output.sent == 1
     assert attempts == 1
-
-
-async def test_openrouter_keeps_delivered_turn_when_followup_fails_transiently() -> None:
-    runtime = runtime_for_run(
-        openai_api_key=None,
-        openrouter_api_key="sk-or-test",
-        skye_default_model="openai/gpt-5.6-luna",
-    )
-    runtime.conversations.database.session_item_count.return_value = 8
-    runtime.conversations.database.session_files.return_value = ()
-    delivered: list[str] = []
-
-    async def on_reply(text: str, _reply_to: int | None = None) -> None:
-        delivered.append(text)
-
-    def run_streamed(agent: Any, *_args: Any, **_kwargs: Any) -> DeliveryThenFailure:
-        return DeliveryThenFailure(agent, fail=True)
-
-    recovered_file = GeneratedFile("audit.txt", b"saved")
-    with (
-        patch("skye.runtime.Runner.run_streamed", side_effect=run_streamed),
-        patch(
-            "skye.runtime.collect_container_files",
-            new=AsyncMock(return_value=(recovered_file,)),
-        ) as collect_files,
-    ):
-        output = await runtime.run(
-            RequestContext(1, "private", 1),
-            ChatSettings("openai/gpt-5.6-luna", "medium", memory_enabled=False),
-            "hello",
-            AsyncMock(),
-            on_reply=on_reply,
-        )
-
-    assert delivered == ["Delivered once."]
-    assert output.sent == 1
-    assert output.files == (recovered_file,)
-    collect_files.assert_awaited_once()
-    runtime.conversations.database.truncate_session.assert_not_awaited()
-    runtime.conversations.database.replace_session_tail.assert_awaited_once_with(
-        "conv_1",
-        8,
-        [
-            {"role": "user", "content": "hello"},
-            {"role": "assistant", "content": "Delivered once."},
-        ],
-    )
 
 
 async def test_run_does_not_retry_permanent_errors() -> None:
@@ -1786,10 +1441,7 @@ async def test_run_keeps_inner_monologue_off_the_reply_callback() -> None:
 
     runtime = runtime_for_run()
     stream = FakeStream(output="HIDDEN leftover prose")
-    with (
-        patch("skye.runtime.Runner.run_streamed", return_value=stream),
-        patch("skye.runtime.collect_container_files", AsyncMock(return_value=())),
-    ):
+    with patch("skye.runtime.Runner.run_streamed", return_value=stream):
         output = await runtime.run(
             RequestContext(1, "private", 1),
             ChatSettings("gpt-5.6-luna", "medium", memory_enabled=False),
@@ -1848,10 +1500,7 @@ async def test_run_replaces_cited_tokens_from_web_search_annotations() -> None:
         )
     ]
     runtime = runtime_for_run()
-    with (
-        patch("skye.runtime.Runner.run_streamed", return_value=stream),
-        patch("skye.runtime.collect_container_files", AsyncMock(return_value=())),
-    ):
+    with patch("skye.runtime.Runner.run_streamed", return_value=stream):
         output = await runtime.run(
             RequestContext(1, "private", 1),
             ChatSettings("gpt-5.6-luna", "medium", memory_enabled=False),

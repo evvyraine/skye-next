@@ -15,7 +15,7 @@ from .config import Settings
 from .models import MediaGroupItem
 
 AUDIO_EXTENSIONS = {".aac", ".flac", ".m4a", ".mp3", ".mp4", ".mpeg", ".ogg", ".wav", ".webm"}
-OPENROUTER_AUDIO_FORMATS = {
+AUDIO_FORMATS = {
     ".aac": "aac",
     ".aif": "aiff",
     ".aiff": "aiff",
@@ -29,7 +29,7 @@ OPENROUTER_AUDIO_FORMATS = {
     ".wav": "wav",
     ".wave": "wav",
 }
-OPENROUTER_AUDIO_MIMES = {
+AUDIO_MIMES = {
     "audio/aac": "aac",
     "audio/aiff": "aiff",
     "audio/flac": "flac",
@@ -116,10 +116,6 @@ class AttachmentService:
                 await self._collect(file_ids, self._document(source.document, label, content, seen))
         return tuple(file_ids)
 
-    @property
-    def _inline_media(self) -> bool:
-        return self.config.provider == "openrouter"
-
     async def _photo(
         self,
         photo: PhotoSize | MediaGroupItem,
@@ -131,14 +127,13 @@ class AttachmentService:
         if not self._new(photo.file_unique_id, seen):
             return None
         data = await self._download(photo, photo.file_size, "image")
-        file_id = await upload_openai_file(self.client, upload_filename, "image/jpeg", data)
         content.extend(
             [
                 {"type": "input_text", "text": f"{label} image:"},
-                image_input_part("image/jpeg", data, file_id, inline=self._inline_media),
+                image_input_part("image/jpeg", data),
             ]
         )
-        return file_id
+        return None
 
     async def _audio(
         self,
@@ -163,27 +158,11 @@ class AttachmentService:
         )
         data = await self._download(audio, audio.file_size, kind)
         mime = getattr(audio, "mime_type", None) or "audio/ogg"
-        upload_filename = (
-            f"album-{audio.message_id}-{filename}"
-            if isinstance(audio, MediaGroupItem)
-            else filename
-        )
-        file_id = await upload_openai_file(self.client, upload_filename, mime, data)
         transcript = await transcribe_audio(
             self.client, self.config.skye_transcription_model, filename, data
         )
-        content.extend(
-            audio_model_parts(
-                label,
-                kind,
-                filename,
-                mime,
-                data,
-                transcript,
-                inline=self._inline_media,
-            )
-        )
-        return file_id
+        content.extend(audio_model_parts(label, kind, filename, mime, data, transcript))
+        return None
 
     async def _document(
         self,
@@ -201,44 +180,28 @@ class AttachmentService:
             self._video(document, label, content, seen, already_seen=True)
             return None
         data = await self._download(document, getattr(document, "file_size", None), "document")
-        upload_filename = (
-            f"album-{document.message_id}-{filename}"
-            if isinstance(document, MediaGroupItem)
-            else filename
-        )
-        file_id = await upload_openai_file(self.client, upload_filename, mime, data)
         extension = Path(filename).suffix.lower()
         if mime.startswith("audio/") or extension in AUDIO_EXTENSIONS:
             transcript = await transcribe_audio(
                 self.client, self.config.skye_transcription_model, filename, data
             )
-            content.extend(
-                audio_model_parts(
-                    label,
-                    "audio",
-                    filename,
-                    mime,
-                    data,
-                    transcript,
-                    inline=self._inline_media,
-                )
-            )
-            return file_id
+            content.extend(audio_model_parts(label, "audio", filename, mime, data, transcript))
+            return None
         if mime.startswith("image/") or mime in IMAGE_MIMES:
             content.extend(
                 [
                     {"type": "input_text", "text": f"{label} image ({filename}):"},
-                    image_input_part(mime, data, file_id, inline=self._inline_media),
+                    image_input_part(mime, data),
                 ]
             )
-            return file_id
+            return None
         content.extend(
             [
                 {"type": "input_text", "text": f"{label} document ({filename}):"},
-                file_input_part(filename, mime, data, file_id, inline=self._inline_media),
+                file_input_part(filename, mime, data),
             ]
         )
-        return file_id
+        return None
 
     def _video(
         self,
@@ -299,18 +262,6 @@ async def transcribe_audio(client: AsyncOpenAI, model: str, filename: str, data:
     return str(result.text).strip()
 
 
-async def upload_openai_file(
-    client: AsyncOpenAI, filename: str, mime: str, data: bytes
-) -> str | None:
-    files = getattr(client, "files", None)
-    create = getattr(files, "create", None)
-    if create is None:
-        return None
-    uploaded = await create(file=(filename, data, mime), purpose="user_data")
-    file_id = getattr(uploaded, "id", None)
-    return str(file_id) if file_id else None
-
-
 def data_url(mime: str, data: bytes) -> str:
     return f"data:{mime};base64,{base64.b64encode(data).decode()}"
 
@@ -320,54 +271,36 @@ def openai_file_parts(
     mime: str,
     data: bytes,
     transcript: str | None = None,
-    file_id: str | None = None,
-    *,
-    inline: bool = False,
 ) -> list[dict[str, Any]]:
     if mime.startswith("image/") or mime in IMAGE_MIMES:
         return [
             {"type": "input_text", "text": f"Attached image ({filename}):"},
-            image_input_part(mime, data, file_id, inline=inline),
+            image_input_part(mime, data),
         ]
     if transcript is not None:
-        return audio_model_parts(
-            "Attached",
-            "audio",
-            filename,
-            mime,
-            data,
-            transcript,
-            inline=inline,
-        )
+        return audio_model_parts("Attached", "audio", filename, mime, data, transcript)
     return [
         {"type": "input_text", "text": f"Attached document ({filename}):"},
-        file_input_part(filename, mime, data, file_id, inline=inline),
+        file_input_part(filename, mime, data),
     ]
 
 
-def image_input_part(
-    mime: str, data: bytes, file_id: str | None, *, inline: bool
-) -> dict[str, Any]:
-    image: dict[str, Any] = {"type": "input_image", "detail": "auto"}
-    if inline or not file_id:
-        image["image_url"] = data_url(mime or "image/jpeg", data)
-    else:
-        image["file_id"] = file_id
-    return image
+def image_input_part(mime: str, data: bytes) -> dict[str, Any]:
+    return {
+        "type": "input_image",
+        "detail": "auto",
+        "image_url": data_url(mime or "image/jpeg", data),
+    }
 
 
-def file_input_part(
-    filename: str, mime: str, data: bytes, file_id: str | None, *, inline: bool
-) -> dict[str, Any]:
+def file_input_part(filename: str, mime: str, data: bytes) -> dict[str, Any]:
     extra = {"detail": "auto"} if Path(filename).suffix.lower() == ".pdf" else {}
-    if inline or not file_id:
-        return {
-            "type": "input_file",
-            "filename": filename,
-            "file_data": data_url(mime or "application/octet-stream", data),
-            **extra,
-        }
-    return {"type": "input_file", "file_id": file_id, **extra}
+    return {
+        "type": "input_file",
+        "filename": filename,
+        "file_data": data_url(mime or "application/octet-stream", data),
+        **extra,
+    }
 
 
 def audio_model_parts(
@@ -377,8 +310,6 @@ def audio_model_parts(
     mime: str,
     data: bytes,
     transcript: str,
-    *,
-    inline: bool,
 ) -> list[dict[str, Any]]:
     parts: list[dict[str, Any]] = [
         {
@@ -386,7 +317,7 @@ def audio_model_parts(
             "text": f"{label} {kind} transcript ({filename}):\n{transcript}",
         }
     ]
-    if inline and kind == "audio":
+    if kind == "audio":
         audio = audio_input_part(filename, mime, data)
         if audio is not None:
             parts.append(audio)
@@ -394,7 +325,7 @@ def audio_model_parts(
 
 
 def audio_input_part(filename: str, mime: str, data: bytes) -> dict[str, Any] | None:
-    fmt = openrouter_audio_format(filename, mime)
+    fmt = audio_format(filename, mime)
     if fmt is None:
         return None
     return {
@@ -403,11 +334,11 @@ def audio_input_part(filename: str, mime: str, data: bytes) -> dict[str, Any] | 
     }
 
 
-def openrouter_audio_format(filename: str, mime: str) -> str | None:
+def audio_format(filename: str, mime: str) -> str | None:
     extension = Path(filename).suffix.lower()
-    if extension in OPENROUTER_AUDIO_FORMATS:
-        return OPENROUTER_AUDIO_FORMATS[extension]
-    return OPENROUTER_AUDIO_MIMES.get(mime.lower())
+    if extension in AUDIO_FORMATS:
+        return AUDIO_FORMATS[extension]
+    return AUDIO_MIMES.get(mime.lower())
 
 
 def is_audio_upload(filename: str, mime: str) -> bool:

@@ -102,7 +102,7 @@ async def test_session_replay_ignores_generated_image_base64_size(database: Data
     assert await session.get_items() == items
 
 
-async def test_session_replay_ignores_openrouter_generated_image_payloads(
+async def test_session_replay_ignores_generated_image_payloads(
     database: Database,
 ) -> None:
     session = DatabaseSession(database, "telegram:1:0", max_chars=400)
@@ -111,10 +111,9 @@ async def test_session_replay_ignores_openrouter_generated_image_payloads(
         [
             {
                 "id": "image_1",
-                "type": "openrouter:image_generation",
+                "type": "image_generation_call",
                 "status": "completed",
                 "result": "data:image/png;base64," + ("A" * 20_000),
-                "imageUrl": "data:image/png;base64," + ("A" * 20_000),
                 "prompt": "purple circle",
             },
             {"role": "assistant", "content": "recent"},
@@ -125,20 +124,6 @@ async def test_session_replay_ignores_openrouter_generated_image_payloads(
     await session.add_items(items)
 
     assert await session.get_items() == items
-
-
-async def test_session_attachment_ids_are_deduplicated_and_cascade(database: Database) -> None:
-    await database.add_session_files("web-project:p1", ["or_file_1", "or_file_2"])
-    await database.add_session_files("web-project:p1", ["or_file_1"])
-
-    assert set(await database.session_files("web-project:p1")) == {
-        "or_file_1",
-        "or_file_2",
-    }
-
-    await database.clear_session("web-project:p1")
-
-    assert await database.session_files("web-project:p1") == ()
 
 
 async def test_session_can_rollback_items_added_after_a_checkpoint(database: Database) -> None:

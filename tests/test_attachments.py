@@ -47,17 +47,11 @@ class Transcriptions:
         return SimpleNamespace(text="Hello from the voice note.")
 
 
-class FileUploads:
-    async def create(self, **_kwargs: Any) -> Any:
-        return SimpleNamespace(id="file_uploaded")
-
-
-def settings(limit: int = 1024, *, openrouter: bool = False) -> Settings:
+def settings(limit: int = 1024) -> Settings:
     return Settings.model_construct(
         skye_max_attachment_bytes=limit,
         skye_transcription_model="gpt-transcribe",
-        openai_api_key=None if openrouter else "sk-test",
-        openrouter_api_key="sk-or-test" if openrouter else None,
+        openai_api_key="sk-test",
     )
 
 
@@ -98,19 +92,18 @@ async def test_transcribes_direct_voice() -> None:
         {
             "type": "input_text",
             "text": "Attached audio transcript (voice.ogg):\nHello from the voice note.",
-        }
+        },
+        {"type": "input_audio", "input_audio": {"data": "YXVkaW8=", "format": "ogg"}},
     ]
     assert transcriptions.calls[0]["model"] == "gpt-transcribe"
     assert transcriptions.calls[0]["file"] == ("voice.ogg", b"audio")
 
 
 @pytest.mark.asyncio
-async def test_replied_voice_is_transcript_input_and_keeps_file_id() -> None:
+async def test_replied_voice_is_transcript_plus_native_audio() -> None:
     voice = Voice(file_id="voice", file_unique_id="unique-voice", duration=3, file_size=5)
     transcriptions = Transcriptions()
-    client = SimpleNamespace(
-        audio=SimpleNamespace(transcriptions=transcriptions), files=FileUploads()
-    )
+    client = SimpleNamespace(audio=SimpleNamespace(transcriptions=transcriptions))
     service = AttachmentService(
         settings(), cast(Any, FakeBot({"voice": b"audio"})), cast(AsyncOpenAI, client)
     )
@@ -118,12 +111,13 @@ async def test_replied_voice_is_transcript_input_and_keeps_file_id() -> None:
 
     file_ids = await service.add(message(reply_to_message=message(voice=voice)), content)
 
-    assert file_ids == ("file_uploaded",)
+    assert file_ids == ()
     assert content == [
         {
             "type": "input_text",
             "text": "Replied-to audio transcript (voice.ogg):\nHello from the voice note.",
-        }
+        },
+        {"type": "input_audio", "input_audio": {"data": "YXVkaW8=", "format": "ogg"}},
     ]
 
 
@@ -175,7 +169,7 @@ async def test_transcribes_video_note(reply: bool) -> None:
 @pytest.mark.parametrize("reply", [False, True])
 async def test_video_becomes_text_placeholder(reply: bool) -> None:
     bot = FakeBot({})
-    client = SimpleNamespace(files=FileUploads())
+    client = SimpleNamespace()
     service = AttachmentService(settings(), cast(Any, bot), cast(AsyncOpenAI, client))
     content: list[dict[str, Any]] = []
     clip = video()
@@ -202,7 +196,7 @@ async def test_video_placeholder_skips_download_even_when_over_size_limit() -> N
     service = AttachmentService(
         settings(10),
         cast(Any, bot),
-        cast(AsyncOpenAI, SimpleNamespace(files=FileUploads())),
+        cast(AsyncOpenAI, SimpleNamespace()),
     )
     content: list[dict[str, Any]] = []
 
@@ -295,38 +289,18 @@ def _target(reply: bool, **media: Any) -> Message:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("reply", [False, True])
-async def test_openai_photo_uses_uploaded_file_id(reply: bool) -> None:
+async def test_photo_uses_image_data_url(reply: bool) -> None:
     service = AttachmentService(
         settings(),
         cast(Any, FakeBot({"photo": b"jpeg-bytes"})),
-        cast(AsyncOpenAI, SimpleNamespace(files=FileUploads())),
+        cast(AsyncOpenAI, SimpleNamespace()),
     )
     content: list[dict[str, Any]] = []
 
     file_ids = await service.add(_target(reply, photo=[photo()]), content)
 
     label = "Replied-to" if reply else "Attached"
-    assert file_ids == ("file_uploaded",)
-    assert content == [
-        {"type": "input_text", "text": f"{label} image:"},
-        {"type": "input_image", "detail": "auto", "file_id": "file_uploaded"},
-    ]
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("reply", [False, True])
-async def test_openrouter_photo_uses_image_data_url(reply: bool) -> None:
-    service = AttachmentService(
-        settings(openrouter=True),
-        cast(Any, FakeBot({"photo": b"jpeg-bytes"})),
-        cast(AsyncOpenAI, SimpleNamespace(files=FileUploads())),
-    )
-    content: list[dict[str, Any]] = []
-
-    file_ids = await service.add(_target(reply, photo=[photo()]), content)
-
-    label = "Replied-to" if reply else "Attached"
-    assert file_ids == ("file_uploaded",)
+    assert file_ids == ()
     assert content == [
         {"type": "input_text", "text": f"{label} image:"},
         {
@@ -339,7 +313,7 @@ async def test_openrouter_photo_uses_image_data_url(reply: bool) -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("reply", [False, True])
-async def test_openrouter_pdf_uses_file_data_after_upload(reply: bool) -> None:
+async def test_pdf_uses_file_data(reply: bool) -> None:
     document = Document(
         file_id="pdf",
         file_unique_id="unique-pdf",
@@ -348,16 +322,16 @@ async def test_openrouter_pdf_uses_file_data_after_upload(reply: bool) -> None:
         file_size=4,
     )
     service = AttachmentService(
-        settings(openrouter=True),
+        settings(),
         cast(Any, FakeBot({"pdf": b"%PDF"})),
-        cast(AsyncOpenAI, SimpleNamespace(files=FileUploads())),
+        cast(AsyncOpenAI, SimpleNamespace()),
     )
     content: list[dict[str, Any]] = []
 
     file_ids = await service.add(_target(reply, document=document), content)
 
     label = "Replied-to" if reply else "Attached"
-    assert file_ids == ("file_uploaded",)
+    assert file_ids == ()
     assert content == [
         {"type": "input_text", "text": f"{label} document (design.pdf):"},
         {
@@ -371,7 +345,7 @@ async def test_openrouter_pdf_uses_file_data_after_upload(reply: bool) -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("reply", [False, True])
-async def test_openrouter_text_document_uses_file_data(reply: bool) -> None:
+async def test_text_document_uses_file_data(reply: bool) -> None:
     document = Document(
         file_id="notes",
         file_unique_id="unique-notes",
@@ -380,16 +354,16 @@ async def test_openrouter_text_document_uses_file_data(reply: bool) -> None:
         file_size=5,
     )
     service = AttachmentService(
-        settings(openrouter=True),
+        settings(),
         cast(Any, FakeBot({"notes": b"hello"})),
-        cast(AsyncOpenAI, SimpleNamespace(files=FileUploads())),
+        cast(AsyncOpenAI, SimpleNamespace()),
     )
     content: list[dict[str, Any]] = []
 
     file_ids = await service.add(_target(reply, document=document), content)
 
     label = "Replied-to" if reply else "Attached"
-    assert file_ids == ("file_uploaded",)
+    assert file_ids == ()
     assert content == [
         {"type": "input_text", "text": f"{label} document (notes.md):"},
         {
@@ -402,7 +376,7 @@ async def test_openrouter_text_document_uses_file_data(reply: bool) -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("reply", [False, True])
-async def test_openrouter_voice_includes_native_audio(reply: bool) -> None:
+async def test_voice_includes_native_audio(reply: bool) -> None:
     voice = Voice(
         file_id="voice",
         file_unique_id="unique-voice",
@@ -412,13 +386,11 @@ async def test_openrouter_voice_includes_native_audio(reply: bool) -> None:
     )
     transcriptions = Transcriptions()
     service = AttachmentService(
-        settings(openrouter=True),
+        settings(),
         cast(Any, FakeBot({"voice": b"audio"})),
         cast(
             AsyncOpenAI,
-            SimpleNamespace(
-                audio=SimpleNamespace(transcriptions=transcriptions), files=FileUploads()
-            ),
+            SimpleNamespace(audio=SimpleNamespace(transcriptions=transcriptions)),
         ),
     )
     content: list[dict[str, Any]] = []
@@ -426,7 +398,7 @@ async def test_openrouter_voice_includes_native_audio(reply: bool) -> None:
     file_ids = await service.add(_target(reply, voice=voice), content)
 
     label = "Replied-to" if reply else "Attached"
-    assert file_ids == ("file_uploaded",)
+    assert file_ids == ()
     assert content == [
         {
             "type": "input_text",
@@ -437,7 +409,7 @@ async def test_openrouter_voice_includes_native_audio(reply: bool) -> None:
 
 
 @pytest.mark.asyncio
-async def test_openrouter_video_note_stays_transcript_only() -> None:
+async def test_video_note_stays_transcript_only() -> None:
     video_note = VideoNote(
         file_id="video-note",
         file_unique_id="unique-video-note",
@@ -447,20 +419,18 @@ async def test_openrouter_video_note_stays_transcript_only() -> None:
     )
     transcriptions = Transcriptions()
     service = AttachmentService(
-        settings(openrouter=True),
+        settings(),
         cast(Any, FakeBot({"video-note": b"video-audio"})),
         cast(
             AsyncOpenAI,
-            SimpleNamespace(
-                audio=SimpleNamespace(transcriptions=transcriptions), files=FileUploads()
-            ),
+            SimpleNamespace(audio=SimpleNamespace(transcriptions=transcriptions)),
         ),
     )
     content: list[dict[str, Any]] = []
 
     file_ids = await service.add(message(video_note=video_note), content)
 
-    assert file_ids == ("file_uploaded",)
+    assert file_ids == ()
     assert content == [
         {
             "type": "input_text",

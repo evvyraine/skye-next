@@ -14,7 +14,6 @@ from .attachments import (
     is_audio_upload,
     openai_file_parts,
     transcribe_audio,
-    upload_openai_file,
 )
 from .auth import COOKIE_NAME, OIDC_COOKIE, AuthError, TelegramAuth
 from .automations import (
@@ -313,7 +312,6 @@ class WebApp:
         settings = await self.billing.clamp_settings(context, settings, self.access)
         content: list[dict[str, Any]] = []
         file_ids: list[str] = []
-        openai_file_ids: list[str] = []
         uploaded_files: list[WebFile] = []
         preview_bits = [text] if text else []
         if text:
@@ -345,17 +343,12 @@ class WebApp:
             )
             file_ids.append(saved.id)
             uploaded_files.append(saved)
-            openai_id = await upload_openai_file(self.client, filename, mime, data)
-            if openai_id:
-                openai_file_ids.append(openai_id)
             content.extend(
                 openai_file_parts(
                     filename,
                     mime,
                     data,
                     transcript,
-                    openai_id,
-                    inline=self.config.provider == "openrouter",
                 )
             )
             preview_bits.append(filename)
@@ -463,7 +456,6 @@ class WebApp:
                 on_event=on_event,
                 on_reply=on_reply,
                 on_voice=on_voice,
-                input_file_ids=tuple(openai_file_ids),
                 awaiting_reply=True,
             )
             await self.quota.record(context, output.usage_tokens)

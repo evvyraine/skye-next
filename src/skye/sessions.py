@@ -68,7 +68,7 @@ def without_inline_payloads(value: Any) -> Any:
         if isinstance(inner, dict):
             stripped["input_audio"] = {**inner, "data": ""}
         return stripped
-    if kind in {"image_generation_call", "openrouter:image_generation"}:
+    if kind == "image_generation_call":
         stripped = dict(value)
         stripped.pop("result", None)
         stripped.pop("imageUrl", None)

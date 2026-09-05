@@ -103,13 +103,6 @@ CREATE TABLE IF NOT EXISTS agent_messages (
 CREATE INDEX IF NOT EXISTS agent_messages_session
 ON agent_messages(session_id, id);
 
-CREATE TABLE IF NOT EXISTS agent_session_files (
-    session_id TEXT NOT NULL REFERENCES agent_sessions(session_id) ON DELETE CASCADE,
-    file_id TEXT NOT NULL,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (session_id, file_id)
-);
-
 CREATE TABLE IF NOT EXISTS telegram_projects (
     id TEXT PRIMARY KEY,
     user_id INTEGER NOT NULL,
@@ -1482,26 +1475,6 @@ class Database:
             "SELECT 1 FROM agent_messages WHERE session_id = ? LIMIT 1", (session_id,)
         )
         return await cursor.fetchone() is not None
-
-    async def add_session_files(self, session_id: str, file_ids: Sequence[str]) -> None:
-        if not file_ids:
-            return
-        async with self.transaction() as connection:
-            await connection.execute(
-                "INSERT OR IGNORE INTO agent_sessions (session_id) VALUES (?)", (session_id,)
-            )
-            await connection.executemany(
-                "INSERT OR IGNORE INTO agent_session_files (session_id, file_id) VALUES (?, ?)",
-                [(session_id, file_id) for file_id in file_ids],
-            )
-
-    async def session_files(self, session_id: str, limit: int = 20) -> tuple[str, ...]:
-        cursor = await self.conn.execute(
-            """SELECT file_id FROM agent_session_files WHERE session_id = ?
-               ORDER BY created_at DESC, file_id DESC LIMIT ?""",
-            (session_id, limit),
-        )
-        return tuple(str(row["file_id"]) for row in await cursor.fetchall())
 
     async def active_telegram_project_id(self, user_id: int) -> str | None:
         cursor = await self.conn.execute(
