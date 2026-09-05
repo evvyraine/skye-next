@@ -27,8 +27,8 @@ COPY src ./src
 COPY BASE_PROMPT.md ./BASE_PROMPT.md
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --locked --no-dev --no-editable \
-    && mkdir /data /data/web \
-    && chown -R skye:skye /data
+    && mkdir /data /data/web /sandbox-work \
+    && chown -R skye:skye /data /sandbox-work
 
 USER skye
 
