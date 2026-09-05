@@ -37,6 +37,7 @@ from skye.runtime import (
     TokenRateLimiter,
     TurnDelivery,
     _tool_specs,
+    _unwrap_audio_payload,
     describe_activity_event,
     image_tool_call_limit,
     is_transient,
@@ -1421,6 +1422,65 @@ async def test_send_voice_converts_openrouter_pcm_to_mp3() -> None:
     assert await delivery.send_voice("Hello", "Calm") == "sent"
     assert delivered and delivered[0].startswith(b"ID3")
     assert delivered[0] != pcm
+
+
+def test_unwrap_audio_payload_decodes_gateway_json_envelope() -> None:
+    raw = b"ID3fake-mp3-bytes"
+    encoded = base64.b64encode(raw).decode()
+    envelope = b'{"audio": "' + encoded.encode() + b'", "contentType": "audio/mpeg"}'
+
+    assert _unwrap_audio_payload(envelope) == raw
+    assert _unwrap_audio_payload(raw) == raw
+    assert _unwrap_audio_payload(b"not json {") == b"not json {"
+    assert _unwrap_audio_payload(b'{"usage": {}}') == b'{"usage": {}}'
+    assert _unwrap_audio_payload(b'{"audio": "!!!"}') == b'{"audio": "!!!"}'
+
+
+async def test_send_voice_uses_configured_voice() -> None:
+    create = AsyncMock(return_value=SimpleNamespace(content=b"opus-audio"))
+    client = SimpleNamespace(audio=SimpleNamespace(speech=SimpleNamespace(create=create)))
+
+    async def on_voice(_audio: bytes, _reply_to: int | None = None) -> None:
+        return
+
+    delivery = TurnDelivery(
+        on_voice=on_voice, client=cast(Any, client), speech_voice="Aoede"
+    )
+
+    assert await delivery.send_voice("Hello", "Calm") == "sent"
+    create.assert_awaited_once_with(
+        model="gpt-4o-mini-tts",
+        voice="Aoede",
+        input="Hello",
+        instructions="Calm",
+        response_format="opus",
+    )
+
+
+async def test_send_voice_retries_without_instructions_when_rejected() -> None:
+    rejected = BadRequestError(
+        "instructions is not supported",
+        response=httpx.Response(400, request=_request()),
+        body={"error": {"message": "instructions is not supported"}},
+    )
+    create = AsyncMock(
+        side_effect=[rejected, SimpleNamespace(content=b"opus-audio")],
+    )
+    client = SimpleNamespace(audio=SimpleNamespace(speech=SimpleNamespace(create=create)))
+
+    async def on_voice(_audio: bytes, _reply_to: int | None = None) -> None:
+        return
+
+    delivery = TurnDelivery(on_voice=on_voice, client=cast(Any, client))
+
+    assert await delivery.send_voice("Hello", "Calm") == "sent"
+    assert create.await_count == 2
+    create.assert_awaited_with(
+        model="gpt-4o-mini-tts",
+        voice="nova",
+        input="Hello",
+        response_format="opus",
+    )
 
 
 async def test_send_voice_validates_before_generating_audio() -> None:

@@ -100,6 +100,7 @@ class Settings(BaseSettings):
     skye_max_attachment_bytes: int = Field(default=25 * 1024 * 1024, ge=1)
     skye_transcription_model: str = "gpt-transcribe"
     skye_speech_model: str = "gpt-4o-mini-tts"
+    skye_speech_voice: str = "nova"
     skye_image_model: str = "gpt-image-2"
     skye_image_api_key: str | None = None
     skye_image_base_url: str | None = None

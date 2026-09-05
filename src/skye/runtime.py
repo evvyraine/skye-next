@@ -31,7 +31,14 @@ from agents.models.interface import Model, ModelProvider
 from agents.models.openai_chatcompletions import OpenAIChatCompletionsModel
 from agents.result import RunResultStreaming
 from agents.stream_events import RawResponsesStreamEvent
-from openai import APIConnectionError, APIError, APITimeoutError, AsyncOpenAI, RateLimitError
+from openai import (
+    APIConnectionError,
+    APIError,
+    APITimeoutError,
+    AsyncOpenAI,
+    BadRequestError,
+    RateLimitError,
+)
 from openai.types.responses.response_text_delta_event import ResponseTextDeltaEvent
 from tenacity import (
     AsyncRetrying,
@@ -161,6 +168,7 @@ class TurnDelivery:
     client: AsyncOpenAI | None = None
     max_audio_bytes: int = 25 * 1024 * 1024
     speech_model: str = "gpt-4o-mini-tts"
+    speech_voice: str = SPEECH_VOICE
     speech_response_format: Literal["opus", "pcm"] = "opus"
     sent: int = 0
     messages: list[str] = field(default_factory=list)
@@ -270,14 +278,24 @@ class TurnDelivery:
             return "Send limit reached for this turn."
         if self.client is None or self.on_voice is None:
             return "Voice delivery is unavailable."
-        response = await self.client.audio.speech.create(
-            model=self.speech_model,
-            voice=SPEECH_VOICE,
-            input=spoken,
-            instructions=delivery_instructions,
-            response_format=self.speech_response_format,
-        )
-        audio = response.content
+        try:
+            response = await self.client.audio.speech.create(
+                model=self.speech_model,
+                voice=self.speech_voice,
+                input=spoken,
+                instructions=delivery_instructions,
+                response_format=self.speech_response_format,
+            )
+        except BadRequestError:
+            # Some TTS models (e.g. Gemini TTS via gateways) reject
+            # instructions; retry once with plain text delivery.
+            response = await self.client.audio.speech.create(
+                model=self.speech_model,
+                voice=self.speech_voice,
+                input=spoken,
+                response_format=self.speech_response_format,
+            )
+        audio = _unwrap_audio_payload(response.content)
         if audio and self.speech_response_format == "pcm":
             audio = _pcm_to_mp3(audio)
         if not audio:
@@ -289,6 +307,29 @@ class TurnDelivery:
         self.messages.append(text.strip())
         self.sent += 1
         return "sent"
+
+
+def _unwrap_audio_payload(audio: bytes) -> bytes:
+    """Decode gateway JSON audio envelopes: {"audio": "<base64>", ...}.
+
+    OpenAI returns raw audio bytes; some OpenAI-compatible gateways wrap the
+    audio in a JSON envelope instead. Anything that is not JSON, or JSON
+    without an audio field, passes through untouched.
+    """
+    stripped = audio.strip()
+    if not stripped.startswith(b"{"):
+        return audio
+    try:
+        payload = json.loads(stripped.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        return audio
+    encoded = payload.get("audio") if isinstance(payload, dict) else None
+    if not isinstance(encoded, str) or not encoded:
+        return audio
+    try:
+        return base64.b64decode(encoded, validate=True)
+    except ValueError:
+        return audio
 
 
 def _pcm_to_mp3(audio: bytes) -> bytes:
@@ -743,6 +784,7 @@ class AgentRuntime:
             client=self.audio_client or self.client,
             max_audio_bytes=self.config.skye_max_attachment_bytes,
             speech_model=self.config.skye_speech_model,
+            speech_voice=self.config.skye_speech_voice,
             speech_response_format="pcm",
         )
         _ = on_text
