@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+import asyncio
 import base64
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
 import structlog
 from agents import FunctionTool, function_tool
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, NotFoundError
 
 log = structlog.get_logger()
 MAX_SOURCE_IMAGES = 4
@@ -35,44 +37,139 @@ def sniff_extension(mime: str) -> str:
 
 
 class ImageService:
-    """Provider-independent pictures: Images API directly, files stay local."""
+    """Provider-independent pictures: Images API directly, files stay local.
 
-    def __init__(self, client: AsyncOpenAI, model: str, max_bytes: int) -> None:
+    Gateway compatibility is response-driven, never per-provider: raw JSON is
+    inspected so task-style answers (an id to poll) and media-style answers
+    (a url or base64 payload) work the same. When the standard edits route is
+    absent, a media request carrying the source pictures is tried once.
+    """
+
+    def __init__(
+        self,
+        client: AsyncOpenAI,
+        model: str,
+        max_bytes: int,
+        *,
+        poll_interval_seconds: float = 4.0,
+        poll_timeout_seconds: float = 180.0,
+    ) -> None:
         self.client = client
         self.model = model
         self.max_bytes = max_bytes
+        self.poll_interval_seconds = poll_interval_seconds
+        self.poll_timeout_seconds = poll_timeout_seconds
 
     async def generate(self, prompt: str) -> bytes:
-        response = await self.client.images.generate(model=self.model, prompt=prompt)
-        return await self._payload(response)
+        payload = await self.client.post(
+            "/images/generations",
+            body={"model": self.model, "prompt": prompt},
+            cast_to=dict[str, Any],
+        )
+        return await self._resolve(payload)
 
     async def edit(self, prompt: str, sources: list[tuple[str, bytes]]) -> bytes:
         files = [
-            (f"source-{index}.{sniff_extension(sniff_mime(data))}", data, sniff_mime(data))
+            (
+                "image",
+                (
+                    f"source-{index}.{sniff_extension(sniff_mime(data))}",
+                    data,
+                    sniff_mime(data),
+                ),
+            )
             for index, (_, data) in enumerate(sources)
         ]
-        response = await self.client.images.edit(
-            model=self.model,
-            prompt=prompt,
-            image=files[0] if len(files) == 1 else files,
-        )
-        return await self._payload(response)
+        try:
+            payload = await self.client.post(
+                "/images/edits",
+                body={"model": self.model, "prompt": prompt},
+                files=files,
+                cast_to=dict[str, Any],
+            )
+        except NotFoundError:
+            log.info("image_edit_route_missing")
+            payload = await self.client.post(
+                "/media",
+                body={
+                    "model": self.model,
+                    "input": {
+                        "prompt": prompt,
+                        "images": [
+                            {"type": "base64", "data": _data_url(data)}
+                            for _, data in sources
+                        ],
+                    },
+                },
+                cast_to=dict[str, Any],
+            )
+        return await self._resolve(payload)
 
-    async def _payload(self, response: Any) -> bytes:
-        data = response.data[0]
-        encoded = getattr(data, "b64_json", None)
-        if encoded:
-            image = base64.b64decode(encoded, validate=True)
-        else:
-            url = getattr(data, "url", None)
-            if not url:
-                raise ValueError("The image provider returned no picture.")
-            image = await _download(url)
+    async def _resolve(self, payload: dict[str, Any]) -> bytes:
+        """Turn a generation answer into picture bytes.
+
+        Accepts a direct Images payload, a completed media object, or a task
+        id that is polled until the picture (or a failure) arrives.
+        """
+        direct = _payload_url_or_b64(payload)
+        if direct is not None:
+            return await self._bytes(direct)
+        task_id = payload.get("requestId") or payload.get("id")
+        if isinstance(task_id, str) and task_id:
+            return await self._poll(task_id)
+        raise ValueError("The image provider returned no picture.")
+
+    async def _poll(self, task_id: str) -> bytes:
+        deadline = time.monotonic() + self.poll_timeout_seconds
+        while True:
+            payload = await self.client.get(f"/media/{task_id}", cast_to=dict[str, Any])
+            status = payload.get("status")
+            if status == "completed":
+                direct = _payload_url_or_b64(payload)
+                if direct is None:
+                    raise ValueError("The image provider returned no picture.")
+                return await self._bytes(direct)
+            if status in {"failed", "cancelled"}:
+                detail = ""
+                error = payload.get("error")
+                if isinstance(error, dict) and error.get("message"):
+                    detail = f": {error['message']}"
+                raise ValueError(f"The image provider failed{detail}.")
+            if time.monotonic() >= deadline:
+                raise ValueError("The image provider timed out.")
+            await asyncio.sleep(self.poll_interval_seconds)
+
+    async def _bytes(self, direct: tuple[str, str]) -> bytes:
+        kind, value = direct
+        image = base64.b64decode(value, validate=True) if kind == "b64" else await _download(value)
         if not image:
             raise ValueError("The image provider returned an empty picture.")
         if len(image) > self.max_bytes:
             raise ValueError("The generated picture is too large.")
         return image
+
+
+def _payload_url_or_b64(payload: Any) -> tuple[str, str] | None:
+    """Extract ("url" | "b64", value) from Images or media answer shapes."""
+    if not isinstance(payload, dict):
+        return None
+    data = payload.get("data")
+    if isinstance(data, dict):
+        data = [data]
+    if isinstance(data, list) and data and isinstance(data[0], dict):
+        first = data[0]
+        encoded = first.get("b64_json")
+        if isinstance(encoded, str) and encoded:
+            return ("b64", encoded)
+        url = first.get("url")
+        if isinstance(url, str) and url:
+            return ("url", url)
+    return None
+
+
+def _data_url(data: bytes) -> str:
+    mime = sniff_mime(data)
+    return f"data:{mime};base64,{base64.b64encode(data).decode()}"
 
 
 async def _download(url: str) -> bytes:

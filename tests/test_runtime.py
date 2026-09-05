@@ -417,22 +417,60 @@ async def test_exa_failure_is_a_readable_answer() -> None:
 
 
 async def test_image_service_decodes_provider_payload() -> None:
-    payload = SimpleNamespace(
-        data=[
-            SimpleNamespace(b64_json=base64.b64encode(b"pic").decode(), url=None),
-        ]
-    )
-    client = SimpleNamespace(
-        images=SimpleNamespace(
-            generate=AsyncMock(return_value=payload),
-            edit=AsyncMock(return_value=payload),
-        )
-    )
+    payload = {"data": [{"b64_json": base64.b64encode(b"pic").decode()}]}
+    post = AsyncMock(return_value=payload)
+    client = SimpleNamespace(post=post)
     service = ImageService(cast(Any, client), "img-model", 1024)
 
     assert await service.generate("a cat") == b"pic"
     assert await service.edit("sharper", [("attached-0", b"src")]) == b"pic"
-    client.images.generate.assert_awaited_once_with(model="img-model", prompt="a cat")
+    assert post.await_args_list[0].args == ("/images/generations",)
+    assert post.await_args_list[0].kwargs["body"] == {"model": "img-model", "prompt": "a cat"}
+    assert post.await_args_list[1].args == ("/images/edits",)
+
+
+async def test_image_service_polls_task_answers_until_completed() -> None:
+    pending = {"requestId": "task-1", "status": "pending"}
+    done = {
+        "status": "completed",
+        "data": [{"b64_json": base64.b64encode(b"pic").decode()}],
+    }
+    post = AsyncMock(return_value=pending)
+    get = AsyncMock(side_effect=[{"status": "processing"}, done])
+    client = SimpleNamespace(post=post, get=get)
+    service = ImageService(cast(Any, client), "img-model", 1024, poll_interval_seconds=0)
+
+    assert await service.generate("a lighthouse") == b"pic"
+    get.assert_awaited_with("/media/task-1", cast_to=dict[str, Any])
+
+
+async def test_image_service_falls_back_to_media_edit_without_edits_route() -> None:
+    from openai import NotFoundError
+
+    done = {
+        "status": "completed",
+        "data": [{"b64_json": base64.b64encode(b"pic").decode()}],
+    }
+    post = AsyncMock(
+        side_effect=[
+            NotFoundError(
+                "unknown route",
+                response=httpx.Response(404, request=_request()),
+                body=None,
+            ),
+            done,
+        ]
+    )
+    client = SimpleNamespace(post=post)
+    service = ImageService(cast(Any, client), "img-model", 1024)
+
+    assert await service.edit("add gull", [("attached-0", b"src")]) == b"pic"
+    assert post.await_count == 2
+    assert post.await_args.args == ("/media",)
+    body = post.await_args.kwargs["body"]
+    assert body["model"] == "img-model"
+    assert body["input"]["prompt"] == "add gull"
+    assert body["input"]["images"][0]["type"] == "base64"
 
 
 def test_tool_specs_describe_function_tools_for_sizing() -> None:
