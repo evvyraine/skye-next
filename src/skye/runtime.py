@@ -20,13 +20,11 @@ import structlog
 from agents import (
     Agent,
     FunctionTool,
-    HostedMCPTool,
     ModelSettings,
     RunConfig,
     Runner,
     ShellTool,
     Tool,
-    WebSearchTool,
     function_tool,
 )
 from agents.items import TResponseInputItem
@@ -51,6 +49,7 @@ from .config import Settings
 from .connectors import ConnectorService, ConnectorTools
 from .conversations import ConversationService
 from .custom_agents import AGENT_CAPABILITIES, AgentComposition, CustomAgentService
+from .exa import ExaService
 from .images import ImageService, TurnImages, turn_sources
 from .memory import MemoryService
 from .models import AgentCapability, ChatSettings, InstalledAgent, RequestContext, Skill
@@ -836,6 +835,7 @@ class AgentRuntime:
         automations: AutomationService | None = None,
         youtube: YoutubeTranscriptService | None = None,
         images: ImageService | None = None,
+        exa: ExaService | None = None,
     ) -> None:
         self.config = config
         self.conversations = conversations
@@ -847,6 +847,7 @@ class AgentRuntime:
         self.automations = automations
         self.youtube = youtube
         self.images = images
+        self.exa = exa
         self.base_prompt = base_prompt.strip()
         self._locks: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
         self._run_slots = asyncio.BoundedSemaphore(config.skye_max_concurrent_runs)
@@ -1320,6 +1321,8 @@ class AgentRuntime:
             tools.append(delivery.file_tool())
         if turn_images is not None and "image" in capabilities:
             tools.extend(turn_images.tools())
+        if self.exa is not None and "web" in capabilities:
+            tools.extend(self.exa.tools())
         if skills:
             tools.append(self._skill_tool(skills))
         tools.extend(connector_tools.tools)
@@ -1457,49 +1460,9 @@ class AgentRuntime:
         capabilities: tuple[AgentCapability, ...],
         input_file_ids: tuple[str, ...] = (),
     ) -> list[Tool]:
-        # Images are served by our own generate_image/edit_image function tools;
-        # web and shell stay hosted until the Exa and sandbox steps land.
+        # Images and web are our own function tools now; only shell stays
+        # hosted until the local sandbox step lands.
         tools: list[Tool] = []
-        if self.config.provider == "openrouter":
-            if "web" in capabilities:
-                tools.extend(
-                    [
-                        HostedMCPTool(
-                            cast(
-                                Any,
-                                {
-                                    "type": "openrouter:web_search",
-                                    "server_label": "openrouter_web_search",
-                                    "parameters": {"search_context_size": "medium"},
-                                },
-                            )
-                        ),
-                        HostedMCPTool(
-                            cast(
-                                Any,
-                                {
-                                    "type": "openrouter:web_fetch",
-                                    "server_label": "openrouter_web_fetch",
-                                },
-                            )
-                        ),
-                    ]
-                )
-            if "shell" in capabilities:
-                openrouter_environment: dict[str, Any] = {
-                    "type": "container_auto",
-                    "network_policy": {
-                        "type": "allowlist",
-                        "allowed_domains": list(self.config.skye_sandbox_allowed_domains),
-                    },
-                }
-                attached_ids = list(input_file_ids)
-                if attached_ids:
-                    openrouter_environment["file_ids"] = attached_ids[:20]
-                tools.append(ShellTool(environment=cast(Any, openrouter_environment)))
-            return tools
-        if "web" in capabilities:
-            tools.append(WebSearchTool(search_context_size="medium"))
         if "shell" in capabilities:
             environment: dict[str, Any] = {
                 "type": "container_auto",
@@ -1568,6 +1531,8 @@ class AgentRuntime:
         tools = self._hosted_tools(installed.version.capabilities, input_file_ids)
         if turn_images is not None and "image" in installed.version.capabilities:
             tools.extend(turn_images.tools())
+        if self.exa is not None and "web" in installed.version.capabilities:
+            tools.extend(self.exa.tools())
         return Agent(
             name=installed.version.name,
             instructions=instructions,

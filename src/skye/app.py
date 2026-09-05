@@ -27,6 +27,7 @@ from .connectors import ComposioClient, ConnectorService
 from .conversations import ConversationService
 from .custom_agents import CustomAgentService
 from .db import Database
+from .exa import ExaService
 from .group_context import GroupContextService
 from .images import ImageService
 from .media_groups import MediaGroupService
@@ -148,6 +149,7 @@ async def run() -> None:
         proxy_url=config.skye_youtube_proxy_url,
     )
     images = ImageService(client, config.skye_image_model, config.skye_max_attachment_bytes)
+    exa = ExaService(config.skye_exa_api_key) if config.skye_exa_api_key else None
     runtime = AgentRuntime(
         config,
         conversations,
@@ -160,6 +162,7 @@ async def run() -> None:
         automations,
         youtube,
         images,
+        exa,
     )
     projects = ProjectService(
         database,

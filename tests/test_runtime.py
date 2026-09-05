@@ -13,7 +13,6 @@ from agents import (
     HostedMCPTool,
     ModelSettings,
     ShellTool,
-    WebSearchTool,
 )
 from agents.models.interface import ModelResponse
 from agents.run_internal.turn_resolution import process_model_response
@@ -29,6 +28,7 @@ from skye.artifacts import GeneratedFile
 from skye.config import SANDBOX_DOMAINS, Settings
 from skye.connectors import ConnectorTools
 from skye.custom_agents import AgentComposition
+from skye.exa import ExaService
 from skye.images import ImageService, TurnImages, sniff_mime, turn_sources
 from skye.memory import MemoryService
 from skye.models import (
@@ -102,7 +102,7 @@ def sandbox_network_policy() -> dict[str, object]:
     return {"type": "allowlist", "allowed_domains": list(SANDBOX_DOMAINS)}
 
 
-def test_agent_uses_only_hosted_capabilities() -> None:
+def test_agent_toolset_without_optional_services_is_shell_plus_delivery() -> None:
     memory = MemoryService(cast(Any, None))
     runtime = AgentRuntime(config(), cast(Any, None), memory, "You are Skye.")
     agent = runtime._agent(
@@ -111,7 +111,6 @@ def test_agent_uses_only_hosted_capabilities() -> None:
     )
 
     assert [type(tool) for tool in agent.tools] == [
-        WebSearchTool,
         ShellTool,
         FunctionTool,
         FunctionTool,
@@ -119,14 +118,14 @@ def test_agent_uses_only_hosted_capabilities() -> None:
         FunctionTool,
         FunctionTool,
     ]
-    assert [cast(FunctionTool, tool).name for tool in agent.tools[2:]] == [
+    assert [cast(FunctionTool, tool).name for tool in agent.tools[1:]] == [
         "send_message",
         "send_voice",
         "remember",
         "recall",
         "forget",
     ]
-    shell = cast(ShellTool, agent.tools[1])
+    shell = cast(ShellTool, agent.tools[0])
     assert shell.executor is None
     assert shell.environment == {
         "type": "container_auto",
@@ -162,7 +161,7 @@ def test_attached_files_are_mounted_in_the_hosted_sandbox() -> None:
         input_file_ids=("file_1", "file_2"),
     )
 
-    shell = cast(ShellTool, agent.tools[1])
+    shell = cast(ShellTool, agent.tools[0])
     assert shell.environment == {
         "type": "container_auto",
         "network_policy": sandbox_network_policy(),
@@ -170,34 +169,28 @@ def test_attached_files_are_mounted_in_the_hosted_sandbox() -> None:
     }
 
 
-def test_openrouter_uses_only_openrouter_server_tools() -> None:
-    memory = MemoryService(cast(Any, None))
-    runtime = AgentRuntime(
+def test_hosted_tools_are_shell_only_for_every_provider() -> None:
+    for settings in (
+        config(),
         config(
             openai_api_key=None,
             openrouter_api_key="sk-or-test",
             skye_default_model="anthropic/claude-sonnet-4.6",
             skye_image_model="openai/gpt-5-image",
         ),
-        cast(Any, None),
-        memory,
-        "You are Skye.",
-    )
+    ):
+        memory = MemoryService(cast(Any, None))
+        runtime = AgentRuntime(settings, cast(Any, None), memory, "You are Skye.")
 
-    tools = runtime._hosted_tools(("web", "image", "shell"), input_file_ids=("or_file_1",))
+        tools = runtime._hosted_tools(("web", "image", "shell"), input_file_ids=("file_1",))
 
-    assert all(isinstance(tool, HostedMCPTool) for tool in tools[:2])
-    assert isinstance(tools[2], ShellTool)
-    configs = [cast(HostedMCPTool, tool).tool_config for tool in tools[:2]]
-    assert [item["type"] for item in configs] == [
-        "openrouter:web_search",
-        "openrouter:web_fetch",
-    ]
-    assert cast(ShellTool, tools[2]).environment == {
-        "type": "container_auto",
-        "network_policy": sandbox_network_policy(),
-        "file_ids": ["or_file_1"],
-    }
+        assert len(tools) == 1
+        assert isinstance(tools[0], ShellTool)
+        assert cast(ShellTool, tools[0]).environment == {
+            "type": "container_auto",
+            "network_policy": sandbox_network_policy(),
+            "file_ids": ["file_1"],
+        }
 
 
 def test_openrouter_tools_have_metadata_required_by_response_processing() -> None:
@@ -289,7 +282,7 @@ def test_disabled_memory_is_not_injected_or_exposed() -> None:
         "secret memory",
     )
 
-    assert len(agent.tools) == 4
+    assert len(agent.tools) == 3
     assert "secret memory" not in cast(str, agent.instructions)
     names = {
         cast(FunctionTool, tool).name for tool in agent.tools if isinstance(tool, FunctionTool)
@@ -477,6 +470,60 @@ def test_sniff_mime_detects_common_formats() -> None:
     assert sniff_mime(b"nope") == "image/png"
 
 
+def test_web_tools_are_attached_only_with_exa_configured() -> None:
+    memory = MemoryService(cast(Any, None))
+    plain = AgentRuntime(config(), cast(Any, None), memory, "You are Skye.")
+    searching = AgentRuntime(
+        config(), cast(Any, None), memory, "You are Skye.", exa=ExaService("exa-test")
+    )
+    context = RequestContext(1, "private", 1)
+    settings = ChatSettings("gpt-5.6-luna", "medium", memory_enabled=False)
+
+    plain_names = {
+        cast(FunctionTool, tool).name for tool in plain._agent(context, settings).tools
+    }
+    searching_names = {
+        cast(FunctionTool, tool).name for tool in searching._agent(context, settings).tools
+    }
+
+    assert "web_search" not in plain_names
+    assert "web_fetch" not in plain_names
+    assert {"web_search", "web_fetch"} <= searching_names
+
+
+async def test_exa_search_formats_results_as_text() -> None:
+    service = ExaService("exa-test")
+    service._post = AsyncMock(  # type: ignore[method-assign]
+        return_value={
+            "results": [
+                {"title": "Example", "url": "https://example.com", "text": "Some facts."},
+                {"title": "", "url": "", "text": "Skipped without a URL."},
+            ]
+        }
+    )
+    search, _fetch = service.tools()
+
+    output = await search.on_invoke_tool(
+        _tool_context("web_search", '{"query":"example"}'), '{"query":"example"}'
+    )
+
+    assert output == "1. Example\nhttps://example.com\nSome facts."
+    service._post.assert_awaited_once()
+
+
+async def test_exa_failure_is_a_readable_answer() -> None:
+    service = ExaService("exa-test")
+    service._post = AsyncMock(side_effect=ValueError("Web search is unavailable right now."))  # type: ignore[method-assign]
+    search, fetch = service.tools()
+
+    assert await search.on_invoke_tool(
+        _tool_context("web_search", '{"query":"x"}'), '{"query":"x"}'
+    ) == ("Web search is unavailable right now.")
+    assert await fetch.on_invoke_tool(
+        _tool_context("web_fetch", '{"url":""}'), '{"url":""}'
+    ) == ("Pass the page URL to read.")
+
+
 async def test_image_service_decodes_provider_payload() -> None:
     payload = SimpleNamespace(
         data=[
@@ -621,7 +668,16 @@ def test_active_agent_and_specialist_are_composed() -> None:
     assert "Follow the Researcher method." in cast(str, agent.instructions)
     assert "You are Skye." not in cast(str, agent.instructions)
     assert "send_message and send_voice are your only ways" in cast(str, agent.instructions)
-    assert isinstance(agent.tools[0], WebSearchTool)
+    # Researcher has the web capability but no Exa service is configured,
+    # so the only tools are delivery, memory, and the Coder specialist.
+    assert [cast(FunctionTool, tool).name for tool in agent.tools] == [
+        "send_message",
+        "send_voice",
+        "remember",
+        "recall",
+        "forget",
+        "agent_b2",
+    ]
     specialist_tool = cast(FunctionTool, agent.tools[-1])
     assert specialist_tool.name == "agent_b2"
     nested = cast(Any, specialist_tool)._agent_instance
@@ -658,7 +714,7 @@ def test_skills_are_exposed_through_read_skill_not_hosted_refs() -> None:
         skills=(skill,),
     )
 
-    shell = cast(ShellTool, agent.tools[1])
+    shell = cast(ShellTool, agent.tools[0])
     assert shell.environment == {
         "type": "container_auto",
         "network_policy": sandbox_network_policy(),
