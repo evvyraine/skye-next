@@ -492,7 +492,7 @@ async def _web_client(
         fired.append((item, body))
 
     config = settings()
-    projects = ProjectService(database, AsyncMock(), tmp_path / "web-files")
+    projects = ProjectService(database, tmp_path / "web-files")
     auth = TelegramAuth(config, database, projects)
     web_app = WebApp(
         config,

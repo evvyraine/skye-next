@@ -22,9 +22,7 @@ async def test_oidc_state_is_signed_and_expires(tmp_path: Path) -> None:
     database = Database(tmp_path / "skye.db", "gpt-5.6-luna", "medium")
     await database.open()
     try:
-        auth = TelegramAuth(
-            settings(), database, ProjectService(database, database, tmp_path / "web")  # type: ignore[arg-type]
-        )
+        auth = TelegramAuth(settings(), database, ProjectService(database, tmp_path / "web"))
         url, packed = auth.login_url("https://chat.skye-bot.com")
         assert "oauth.telegram.org/auth" in url
         state, _verifier = auth.parse_oidc(packed)

@@ -1283,7 +1283,9 @@ async def test_run_retries_conversation_locks() -> None:
     assert delays[0] >= 1.0
 
 
-async def test_run_does_not_retry_after_a_delivery_tool_started() -> None:
+async def test_run_recovers_delivered_turn_when_followup_fails_transiently() -> None:
+    # Local sessions are used for every provider, so a delivered turn is kept
+    # instead of raising StreamStartedError when the stream fails afterwards.
     runtime = runtime_for_run(openai_api_key="sk-test", openrouter_api_key=None)
     delivered: list[str] = []
     attempts = 0
@@ -1296,11 +1298,8 @@ async def test_run_does_not_retry_after_a_delivery_tool_started() -> None:
         attempts += 1
         return DeliveryThenFailure(agent, fail=attempts == 1)
 
-    with (
-        patch("skye.runtime.Runner.run_streamed", side_effect=run_streamed),
-        pytest.raises(StreamStartedError),
-    ):
-        await runtime.run(
+    with patch("skye.runtime.Runner.run_streamed", side_effect=run_streamed):
+        output = await runtime.run(
             RequestContext(1, "private", 1),
             ChatSettings("gpt-5.6-luna", "medium", memory_enabled=False),
             "hello",
@@ -1309,6 +1308,7 @@ async def test_run_does_not_retry_after_a_delivery_tool_started() -> None:
         )
 
     assert delivered == ["Delivered once."]
+    assert output.sent == 1
     assert attempts == 1
 
 

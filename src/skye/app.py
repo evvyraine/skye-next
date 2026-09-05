@@ -104,8 +104,7 @@ async def run() -> None:
         session=AiohttpSession(proxy=proxy_url) if proxy_url else AiohttpSession(),
     )
     dispatcher = Dispatcher()
-    remote_conversations = config.provider == "openai"
-    conversations = ConversationService(database, client, remote=remote_conversations)
+    conversations = ConversationService(database)
     memory = MemoryService(database)
     custom_agents = CustomAgentService(database)
     composio = ComposioClient(config.composio_api_key) if config.composio_api_key else None
@@ -163,13 +162,9 @@ async def run() -> None:
     )
     projects = ProjectService(
         database,
-        client,
         config.skye_web_files_path,
-        remote_conversations=remote_conversations,
     )
-    telegram_projects = TelegramProjectService(
-        database, client, remote_conversations=remote_conversations
-    )
+    telegram_projects = TelegramProjectService(database)
     auth = TelegramAuth(config, database, projects)
     telegram = TelegramApp(
         config,

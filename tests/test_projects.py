@@ -1,7 +1,6 @@
 import asyncio
 from io import BytesIO
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock
 
@@ -26,7 +25,7 @@ async def database(tmp_path: Path):
 
 
 def service(database: Database, tmp_path: Path) -> ProjectService:
-    return ProjectService(database, cast(Any, AsyncMock()), tmp_path / "web")
+    return ProjectService(database, tmp_path / "web")
 
 
 async def test_skye_project_is_created_once_and_cannot_be_deleted(
@@ -53,22 +52,10 @@ async def test_projects_are_isolated_by_user(database: Database, tmp_path: Path)
     assert [item.name for item in listed] == ["Skye"]
 
 
-async def test_concurrent_first_turns_share_one_openai_conversation(
+async def test_concurrent_first_turns_share_one_local_conversation(
     database: Database, tmp_path: Path
 ) -> None:
-    created = 0
-
-    async def create_conversation(**_kwargs: object) -> SimpleNamespace:
-        nonlocal created
-        created += 1
-        conversation_id = f"conv_{created}"
-        await asyncio.sleep(0)
-        return SimpleNamespace(id=conversation_id)
-
-    client = SimpleNamespace(
-        conversations=SimpleNamespace(create=AsyncMock(side_effect=create_conversation))
-    )
-    projects = ProjectService(database, cast(Any, client), tmp_path / "web")
+    projects = ProjectService(database, tmp_path / "web")
     project = await projects.create(1, name="Concurrent")
 
     first, second = await asyncio.gather(
@@ -76,8 +63,7 @@ async def test_concurrent_first_turns_share_one_openai_conversation(
         projects.conversation_id(project),
     )
 
-    assert first == second
-    assert created == 1
+    assert first == second == f"web-project:{project.id}"
     saved = await projects.require(1, project.id)
     assert saved.openai_conversation_id == first
 

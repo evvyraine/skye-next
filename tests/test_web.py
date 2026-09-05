@@ -1,5 +1,4 @@
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock
 
@@ -74,9 +73,7 @@ async def app_client(
     database: Database, tmp_path: Path, *, owner_ids: frozenset[int] = frozenset({1})
 ) -> tuple[TestClient, ProjectService, FakeRuntime]:
     config = settings()
-    client = AsyncMock()
-    client.conversations.create = AsyncMock(return_value=SimpleNamespace(id="conv_web"))
-    projects = ProjectService(database, client, tmp_path / "web-files")
+    projects = ProjectService(database, tmp_path / "web-files")
     auth = TelegramAuth(config, database, projects)
     runtime = FakeRuntime()
     web_app = WebApp(
@@ -326,9 +323,7 @@ async def _client_with_runtime(
     database: Database, tmp_path: Path, runtime: AgentRuntime
 ) -> tuple[TestClient, ProjectService]:
     config = settings()
-    client = AsyncMock()
-    client.conversations.create = AsyncMock(return_value=SimpleNamespace(id="conv_web"))
-    projects = ProjectService(database, client, tmp_path / "web-files")
+    projects = ProjectService(database, tmp_path / "web-files")
     auth = TelegramAuth(config, database, projects)
     web_app = WebApp(
         config,

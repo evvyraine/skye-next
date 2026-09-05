@@ -1,6 +1,6 @@
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import cast
 from unittest.mock import AsyncMock
 
 import pytest
@@ -34,29 +34,8 @@ async def database(tmp_path: Path):
         await value.close()
 
 
-class FakeConversations:
-    def __init__(self) -> None:
-        self.created: list[Any] = []
-        self.deleted: list[str] = []
-        self._n = 0
-        self.items = SimpleNamespace(list=AsyncMock(return_value=SimpleNamespace(data=[])))
-
-    async def create(self, metadata: dict[str, str] | None = None) -> SimpleNamespace:
-        self._n += 1
-        conversation = SimpleNamespace(id=f"conv_tg_{self._n}", metadata=metadata or {})
-        self.created.append(conversation)
-        return conversation
-
-    async def delete(self, conversation_id: str) -> None:
-        self.deleted.append(conversation_id)
-
-
-def client() -> Any:
-    return SimpleNamespace(conversations=FakeConversations())
-
-
-def service(database: Database, openai: Any | None = None) -> TelegramProjectService:
-    return TelegramProjectService(database, openai or client())
+def service(database: Database) -> TelegramProjectService:
+    return TelegramProjectService(database)
 
 
 def private_message(text: str, *, user_id: int = 1) -> Message:
@@ -128,15 +107,15 @@ async def test_existing_private_conversation_migrates_onto_skye(
 async def test_selecting_a_project_changes_the_active_conversation(
     database: Database,
 ) -> None:
-    openai = client()
-    projects = service(database, openai)
+    projects = service(database)
     skye = await projects.ensure_skye(1)
     custom = await projects.create(1, name="Research", emoji="🧠")
 
     skye_id = await projects.conversation_id(skye)
     custom_id = await projects.conversation_id(custom)
     assert skye_id != custom_id
-    assert all(item.metadata.get("telegram_project") for item in openai.conversations.created)
+    assert skye_id == f"telegram-project:{skye.id}"
+    assert custom_id == f"telegram-project:{custom.id}"
 
     selected = await projects.select(1, skye.id)
     assert (await projects.active(1)).id == selected.id
@@ -146,9 +125,8 @@ async def test_selecting_a_project_changes_the_active_conversation(
 async def test_web_and_telegram_conversation_ids_never_match(
     database: Database, tmp_path: Path
 ) -> None:
-    openai = client()
-    telegram = service(database, openai)
-    web = ProjectService(database, openai, tmp_path / "web")
+    telegram = service(database)
+    web = ProjectService(database, tmp_path / "web")
     telegram_project = await telegram.create(1, name="Notes", emoji="📁")
     web_project = await web.create(1, name="Notes")
 
@@ -156,10 +134,8 @@ async def test_web_and_telegram_conversation_ids_never_match(
     web_id = await web.conversation_id(web_project)
 
     assert telegram_id != web_id
-    telegram_meta = openai.conversations.created[0].metadata
-    web_meta = openai.conversations.created[1].metadata
-    assert "telegram_project" in telegram_meta
-    assert "web_project" in web_meta
+    assert telegram_id == f"telegram-project:{telegram_project.id}"
+    assert web_id == f"web-project:{web_project.id}"
 
 
 async def test_delete_active_falls_back_to_skye(database: Database) -> None:

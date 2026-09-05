@@ -916,13 +916,12 @@ class AgentRuntime:
                 for file_id in _input_file_ids(user_input):
                     if file_id not in attached_file_ids:
                         attached_file_ids.append(file_id)
-                if self.config.provider == "openrouter":
-                    await self.conversations.database.add_session_files(
-                        provider_conversation_id, attached_file_ids
-                    )
-                    attached_file_ids = list(
-                        await self.conversations.database.session_files(provider_conversation_id)
-                    )
+                await self.conversations.database.add_session_files(
+                    provider_conversation_id, attached_file_ids
+                )
+                attached_file_ids = list(
+                    await self.conversations.database.session_files(provider_conversation_id)
+                )
                 agent = self._agent(
                     context,
                     settings,
@@ -1086,11 +1085,9 @@ class AgentRuntime:
             with attempt:
                 if active.cancel.is_set():
                     raise asyncio.CancelledError
-                checkpoint: int | None = None
-                if self.config.provider == "openrouter":
-                    checkpoint = await self.conversations.database.session_item_count(
-                        conversation_id
-                    )
+                checkpoint = await self.conversations.database.session_item_count(
+                    conversation_id
+                )
                 try:
                     return await self._consume_stream(
                         agent, user_input, conversation_id, active, on_event
@@ -1098,8 +1095,7 @@ class AgentRuntime:
                 except BaseException as error:
                     cause = error.__cause__
                     if (
-                        checkpoint is not None
-                        and delivery.sent > 0
+                        delivery.sent > 0
                         and isinstance(error, StreamStartedError)
                         and cause is not None
                         and is_transient(cause)
@@ -1129,7 +1125,7 @@ class AgentRuntime:
                             recovered_items,
                         )
                         log.info(
-                            "openrouter_run_completed_after_delivery_error",
+                            "run_completed_after_delivery_error",
                             error=type(cause).__name__,
                             sent=delivery.sent,
                         )
@@ -1151,16 +1147,15 @@ class AgentRuntime:
                             for image in images:
                                 await on_event(RunEvent(kind="image", image=image))
                         return RunOutput("", images, files, 0)
-                    if checkpoint is not None:
-                        try:
-                            await self.conversations.database.truncate_session(
-                                conversation_id, checkpoint
-                            )
-                        except Exception as rollback_error:
-                            log.error(
-                                "openrouter_session_rollback_failed",
-                                error=type(rollback_error).__name__,
-                            )
+                    try:
+                        await self.conversations.database.truncate_session(
+                            conversation_id, checkpoint
+                        )
+                    except Exception as rollback_error:
+                        log.error(
+                            "session_rollback_failed",
+                            error=type(rollback_error).__name__,
+                        )
                     raise
         raise RuntimeError("OpenAI run retry loop exited without a result.")
 
@@ -1178,17 +1173,13 @@ class AgentRuntime:
             if self._model_provider is not None
             else None
         )
-        state: dict[str, Any]
-        if self.config.provider == "openrouter":
-            state = {
-                "session": DatabaseSession(
-                    self.conversations.database,
-                    conversation_id,
-                    self.config.skye_compaction_threshold_tokens * 2,
-                )
-            }
-        else:
-            state = {"conversation_id": conversation_id}
+        state: dict[str, Any] = {
+            "session": DatabaseSession(
+                self.conversations.database,
+                conversation_id,
+                self.config.skye_compaction_threshold_tokens * 2,
+            )
+        }
         result = Runner.run_streamed(
             agent,
             user_input,

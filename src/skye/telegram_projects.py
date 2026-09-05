@@ -6,7 +6,6 @@ import uuid
 from collections import defaultdict
 from collections.abc import Awaitable, Callable, Sequence
 
-import structlog
 from aiogram import Bot
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -17,13 +16,10 @@ from aiogram.types import (
     Message,
     ReplyKeyboardMarkup,
 )
-from openai import AsyncOpenAI
 
 from .db import Database
 from .models import RequestContext, TelegramProject
 from .rich import RichMessages
-
-log = structlog.get_logger()
 
 DEFAULT_EMOJI = "☁️"
 PROJECT_KEYBOARD_PROJECTS = "Projects"
@@ -117,12 +113,8 @@ def origin_suffix(from_settings: bool) -> str:
 
 
 class TelegramProjectService:
-    def __init__(
-        self, database: Database, client: AsyncOpenAI, *, remote_conversations: bool = True
-    ) -> None:
+    def __init__(self, database: Database) -> None:
         self.database = database
-        self.client = client
-        self.remote_conversations = remote_conversations
         self._locks: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
 
     async def ensure_skye(self, user_id: int) -> TelegramProject:
@@ -251,16 +243,7 @@ class TelegramProjectService:
             current = await self.require(project.user_id, project.id)
             if current.openai_conversation_id:
                 return current.openai_conversation_id
-            if self.remote_conversations:
-                conversation = await self.client.conversations.create(
-                    metadata={
-                        "telegram_user": str(project.user_id),
-                        "telegram_project": project.id,
-                    }
-                )
-                conversation_id = conversation.id
-            else:
-                conversation_id = f"telegram-project:{project.id}"
+            conversation_id = f"telegram-project:{project.id}"
             await self.database.set_telegram_conversation(
                 project.user_id, project.id, conversation_id
             )
@@ -277,17 +260,7 @@ class TelegramProjectService:
     async def _delete_conversation(self, conversation_id: str | None) -> None:
         if not conversation_id:
             return
-        if not self.remote_conversations:
-            await self.database.clear_session(conversation_id)
-            return
-        try:
-            await self.client.conversations.delete(conversation_id)
-        except Exception as error:
-            log.warning(
-                "telegram_project_conversation_delete_failed",
-                conversation_id=conversation_id,
-                error=type(error).__name__,
-            )
+        await self.database.clear_session(conversation_id)
 
     @staticmethod
     def _name(name: str) -> str:
