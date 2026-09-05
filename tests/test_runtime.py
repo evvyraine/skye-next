@@ -473,6 +473,49 @@ async def test_image_service_falls_back_to_media_edit_without_edits_route() -> N
     assert body["input"]["images"][0]["type"] == "base64"
 
 
+async def test_image_service_falls_back_on_unparseable_edits_body() -> None:
+    from openai import BadRequestError
+
+    done = {
+        "status": "completed",
+        "data": [{"b64_json": base64.b64encode(b"pic").decode()}],
+    }
+    post = AsyncMock(
+        side_effect=[
+            BadRequestError(
+                "Тело запроса имеет неверный формат JSON",
+                response=httpx.Response(400, request=_request()),
+                body=None,
+            ),
+            done,
+        ]
+    )
+    client = SimpleNamespace(post=post)
+    service = ImageService(cast(Any, client), "img-model", 1024)
+
+    assert await service.edit("add gull", [("attached-0", b"src")]) == b"pic"
+    assert post.await_count == 2
+    assert post.await_args.args == ("/media",)
+
+
+async def test_image_service_raises_real_edit_failures() -> None:
+    from openai import BadRequestError
+
+    post = AsyncMock(
+        side_effect=BadRequestError(
+            "Content was filtered",
+            response=httpx.Response(400, request=_request()),
+            body=None,
+        )
+    )
+    client = SimpleNamespace(post=post)
+    service = ImageService(cast(Any, client), "img-model", 1024)
+
+    with pytest.raises(BadRequestError):
+        await service.edit("add gull", [("attached-0", b"src")])
+    assert post.await_count == 1
+
+
 def test_tool_specs_describe_function_tools_for_sizing() -> None:
     memory = MemoryService(cast(Any, None))
     runtime = AgentRuntime(config(), cast(Any, None), memory, "You are Skye.")

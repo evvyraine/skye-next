@@ -9,7 +9,7 @@ from typing import Any
 import httpx
 import structlog
 from agents import FunctionTool, function_tool
-from openai import AsyncOpenAI, NotFoundError
+from openai import APIError, AsyncOpenAI
 
 log = structlog.get_logger()
 MAX_SOURCE_IMAGES = 4
@@ -87,8 +87,10 @@ class ImageService:
                 files=files,
                 cast_to=dict[str, Any],
             )
-        except NotFoundError:
-            log.info("image_edit_route_missing")
+        except APIError as error:
+            if not _edits_unsupported(error):
+                raise
+            log.info("image_edit_route_missing", status=getattr(error, "status_code", None))
             payload = await self.client.post(
                 "/media",
                 body={
@@ -147,6 +149,23 @@ class ImageService:
         if len(image) > self.max_bytes:
             raise ValueError("The generated picture is too large.")
         return image
+
+
+def _edits_unsupported(error: APIError) -> bool:
+    """Whether a failed edits call means the route itself is unavailable.
+
+    Gateways without an edits route answer 404/405/415/501, or 400 when they
+    cannot parse the multipart body as JSON. Anything else (moderation,
+    billing, bad prompt) is a real failure and must propagate.
+    """
+    status = getattr(error, "status_code", None)
+    if status in {404, 405, 415, 501}:
+        return True
+    if status != 400:
+        return False
+    text = str(error).lower()
+    markers = ("json", "route", "маршрут", "not found", "unknown", "unsupported", "формат")
+    return any(marker in text for marker in markers)
 
 
 def _payload_url_or_b64(payload: Any) -> tuple[str, str] | None:
