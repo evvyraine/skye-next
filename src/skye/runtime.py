@@ -1381,7 +1381,6 @@ class AgentRuntime:
         ).hexdigest()[:32]
         return ModelSettings(
             reasoning={"effort": settings.reasoning},
-            verbosity="low",
             store=False,
             max_tokens=self.config.skye_max_output_tokens,
             parallel_tool_calls=False if image_tool_calls is not None else None,
