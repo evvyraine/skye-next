@@ -26,6 +26,10 @@ services:
     init: true
     restart: unless-stopped
     stop_grace_period: 30s
+    # Host docker group so user skye can drive sandbox containers.
+    # Override with DOCKER_GID if the host group id differs (default 989).
+    group_add:
+      - ${DOCKER_GID:-989}
     security_opt:
       - no-new-privileges:true
 
