@@ -120,6 +120,7 @@ def test_sandbox_and_exa_defaults() -> None:
     assert loaded.skye_sandbox_enabled is False
     assert loaded.skye_sandbox_image == "python:3.14-slim"
     assert loaded.skye_sandbox_timeout_seconds == 120
+    assert loaded.skye_sandbox_allow_network is False
 
 
 def test_sandbox_domains_default_to_the_code_owned_allowlist() -> None:

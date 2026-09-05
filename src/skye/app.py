@@ -35,6 +35,7 @@ from .memory import MemoryService
 from .projects import ProjectService
 from .providers import OpenRouterTransport
 from .runtime import OPENAI_MAX_RETRIES, AgentRuntime
+from .sandbox import SandboxService
 from .skills import SkillService
 from .telegram import COMMANDS, PRIVATE_COMMANDS, TelegramApp, UpdateMiddleware
 from .telegram_projects import TelegramProjectService
@@ -150,6 +151,16 @@ async def run() -> None:
     )
     images = ImageService(client, config.skye_image_model, config.skye_max_attachment_bytes)
     exa = ExaService(config.skye_exa_api_key) if config.skye_exa_api_key else None
+    sandbox = (
+        SandboxService(
+            config.skye_sandbox_image,
+            config.skye_sandbox_timeout_seconds,
+            config.skye_max_attachment_bytes,
+            allow_network=config.skye_sandbox_allow_network,
+        )
+        if config.skye_sandbox_enabled
+        else None
+    )
     runtime = AgentRuntime(
         config,
         conversations,
@@ -163,6 +174,7 @@ async def run() -> None:
         youtube,
         images,
         exa,
+        sandbox,
     )
     projects = ProjectService(
         database,

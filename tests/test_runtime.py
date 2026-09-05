@@ -12,14 +12,12 @@ from agents import (
     FunctionTool,
     HostedMCPTool,
     ModelSettings,
-    ShellTool,
 )
 from agents.models.interface import ModelResponse
 from agents.run_internal.turn_resolution import process_model_response
 from agents.usage import Usage
 from openai import APIError, BadRequestError, RateLimitError
 from openai.types.responses import (
-    ResponseFunctionShellToolCall,
     ResponseOutputMessage,
     ResponseOutputText,
 )
@@ -59,6 +57,7 @@ from skye.runtime import (
     requested_image_limit,
     retry_after,
 )
+from skye.sandbox import SandboxResult, SandboxService
 from skye.youtube import YoutubeTranscriptService
 
 
@@ -102,7 +101,7 @@ def sandbox_network_policy() -> dict[str, object]:
     return {"type": "allowlist", "allowed_domains": list(SANDBOX_DOMAINS)}
 
 
-def test_agent_toolset_without_optional_services_is_shell_plus_delivery() -> None:
+def test_agent_toolset_without_optional_services_is_delivery_plus_memory() -> None:
     memory = MemoryService(cast(Any, None))
     runtime = AgentRuntime(config(), cast(Any, None), memory, "You are Skye.")
     agent = runtime._agent(
@@ -110,27 +109,13 @@ def test_agent_toolset_without_optional_services_is_shell_plus_delivery() -> Non
         ChatSettings("gpt-5.6-luna", "medium"),
     )
 
-    assert [type(tool) for tool in agent.tools] == [
-        ShellTool,
-        FunctionTool,
-        FunctionTool,
-        FunctionTool,
-        FunctionTool,
-        FunctionTool,
-    ]
-    assert [cast(FunctionTool, tool).name for tool in agent.tools[1:]] == [
+    assert [cast(FunctionTool, tool).name for tool in agent.tools] == [
         "send_message",
         "send_voice",
         "remember",
         "recall",
         "forget",
     ]
-    shell = cast(ShellTool, agent.tools[0])
-    assert shell.executor is None
-    assert shell.environment == {
-        "type": "container_auto",
-        "network_policy": sandbox_network_policy(),
-    }
 
 
 def test_agent_includes_youtube_transcript_tool_when_configured() -> None:
@@ -152,45 +137,52 @@ def test_agent_includes_youtube_transcript_tool_when_configured() -> None:
     ]
 
 
-def test_attached_files_are_mounted_in_the_hosted_sandbox() -> None:
+async def test_sandbox_tools_execute_commands_and_offer_delivery() -> None:
+    service = SandboxService("python:3.14-slim", 10, 1024)
+    service.execute = AsyncMock(  # type: ignore[method-assign]
+        return_value=SandboxResult("hi", "", False, (("out.txt", b"data"),))
+    )
+    turn = service.new_turn()
+    try:
+        memory = MemoryService(cast(Any, None))
+        runtime = AgentRuntime(config(), cast(Any, None), memory, "You are Skye.")
+        agent = runtime._agent(
+            RequestContext(1, "private", 1),
+            ChatSettings("gpt-5.6-luna", "medium", memory_enabled=False),
+            turn_sandbox=turn,
+        )
+        names = [cast(FunctionTool, tool).name for tool in agent.tools]
+
+        assert "shell_exec" in names
+        assert "deliver_file" in names
+        shell = next(cast(FunctionTool, tool) for tool in agent.tools if tool.name == "shell_exec")
+        output = await shell.on_invoke_tool(
+            _tool_context("shell_exec", '{"command":"echo hi"}'), '{"command":"echo hi"}'
+        )
+
+        assert "hi" in output
+        assert "out.txt" in output
+    finally:
+        turn.close()
+
+
+def test_shell_tools_are_absent_without_a_sandbox_service() -> None:
     memory = MemoryService(cast(Any, None))
     runtime = AgentRuntime(config(), cast(Any, None), memory, "You are Skye.")
     agent = runtime._agent(
         RequestContext(1, "private", 1),
-        ChatSettings("gpt-5.6-luna", "medium"),
-        input_file_ids=("file_1", "file_2"),
+        ChatSettings("gpt-5.6-luna", "medium", memory_enabled=False),
+    )
+    web_only = runtime._agent(
+        RequestContext(1, "private", 1),
+        ChatSettings("gpt-5.6-luna", "medium", memory_enabled=False, active_agent_id="a1"),
+        composition=AgentComposition(installed_agent("a1", "Researcher", ("web",)), ()),
     )
 
-    shell = cast(ShellTool, agent.tools[0])
-    assert shell.environment == {
-        "type": "container_auto",
-        "network_policy": sandbox_network_policy(),
-        "file_ids": ["file_1", "file_2"],
-    }
-
-
-def test_hosted_tools_are_shell_only_for_every_provider() -> None:
-    for settings in (
-        config(),
-        config(
-            openai_api_key=None,
-            openrouter_api_key="sk-or-test",
-            skye_default_model="anthropic/claude-sonnet-4.6",
-            skye_image_model="openai/gpt-5-image",
-        ),
-    ):
-        memory = MemoryService(cast(Any, None))
-        runtime = AgentRuntime(settings, cast(Any, None), memory, "You are Skye.")
-
-        tools = runtime._hosted_tools(("web", "image", "shell"), input_file_ids=("file_1",))
-
-        assert len(tools) == 1
-        assert isinstance(tools[0], ShellTool)
-        assert cast(ShellTool, tools[0]).environment == {
-            "type": "container_auto",
-            "network_policy": sandbox_network_policy(),
-            "file_ids": ["file_1"],
-        }
+    for candidate in (agent, web_only):
+        names = [cast(FunctionTool, tool).name for tool in candidate.tools]
+        assert "shell_exec" not in names
+        assert "deliver_file" not in names
 
 
 def test_openrouter_tools_have_metadata_required_by_response_processing() -> None:
@@ -233,46 +225,6 @@ def test_openrouter_tools_have_metadata_required_by_response_processing() -> Non
     assert len(processed.new_items) == 1
 
 
-def test_openrouter_native_shell_call_has_matching_agent_tool() -> None:
-    memory = MemoryService(cast(Any, None))
-    runtime = AgentRuntime(
-        config(
-            openai_api_key=None,
-            openrouter_api_key="sk-or-test",
-            skye_default_model="openai/gpt-5.6-luna",
-        ),
-        cast(Any, None),
-        memory,
-        "You are Skye.",
-    )
-    agent = runtime._agent(
-        RequestContext(1, "private", 1),
-        ChatSettings("openai/gpt-5.6-luna", "medium"),
-    )
-
-    processed = process_model_response(
-        agent=agent,
-        all_tools=agent.tools,
-        response=ModelResponse(
-            [
-                ResponseFunctionShellToolCall(
-                    id="item_1",
-                    action={"commands": ["date"]},
-                    call_id="call_1",
-                    status="completed",
-                    type="shell_call",
-                )
-            ],
-            Usage(),
-            None,
-        ),
-        output_schema=None,
-        handoffs=[],
-    )
-
-    assert len(processed.new_items) == 1
-
-
 def test_disabled_memory_is_not_injected_or_exposed() -> None:
     memory = MemoryService(cast(Any, None))
     runtime = AgentRuntime(config(), cast(Any, None), memory, "You are Skye.")
@@ -282,7 +234,7 @@ def test_disabled_memory_is_not_injected_or_exposed() -> None:
         "secret memory",
     )
 
-    assert len(agent.tools) == 3
+    assert len(agent.tools) == 2
     assert "secret memory" not in cast(str, agent.instructions)
     names = {
         cast(FunctionTool, tool).name for tool in agent.tools if isinstance(tool, FunctionTool)
@@ -583,7 +535,13 @@ def test_counting_uploaded_file_uses_only_file_id() -> None:
 
 def test_shell_file_note_follows_capabilities() -> None:
     memory = MemoryService(cast(Any, None))
-    runtime = AgentRuntime(config(), cast(Any, None), memory, "You are Skye.")
+    runtime = AgentRuntime(
+        config(),
+        cast(Any, None),
+        memory,
+        "You are Skye.",
+        sandbox=SandboxService("python:3.14-slim", 10, 1024),
+    )
     with_shell = runtime._agent(
         RequestContext(1, "private", 1),
         ChatSettings("gpt-5.6-luna", "medium", memory_enabled=False),
@@ -594,9 +552,10 @@ def test_shell_file_note_follows_capabilities() -> None:
         composition=AgentComposition(installed_agent("a1", "Researcher", ("web",)), ()),
     )
 
-    assert "/mnt/data" in cast(str, with_shell.instructions)
-    assert "can reach the public internet" in cast(str, with_shell.instructions)
-    assert "/mnt/data" not in cast(str, without_shell.instructions)
+    assert "shell_exec" in cast(str, with_shell.instructions)
+    assert "deliver_file" in cast(str, with_shell.instructions)
+    assert "no internet access" in cast(str, with_shell.instructions)
+    assert "shell_exec" not in cast(str, without_shell.instructions)
 
 
 def test_image_delivery_note_follows_capabilities() -> None:
@@ -684,7 +643,8 @@ def test_active_agent_and_specialist_are_composed() -> None:
     assert nested.name == "Coder"
     assert "You are Skye." not in cast(str, nested.instructions)
     assert "send_message and send_voice are your only ways" not in cast(str, nested.instructions)
-    assert isinstance(nested.tools[0], ShellTool)
+    # No sandbox service is configured, so the shell specialist has no tools.
+    assert nested.tools == []
 
 
 def test_skills_are_exposed_through_read_skill_not_hosted_refs() -> None:
@@ -714,19 +674,13 @@ def test_skills_are_exposed_through_read_skill_not_hosted_refs() -> None:
         skills=(skill,),
     )
 
-    shell = cast(ShellTool, agent.tools[0])
-    assert shell.environment == {
-        "type": "container_auto",
-        "network_policy": sandbox_network_policy(),
-    }
     assert "basic-math" in cast(str, agent.instructions)
     assert "read_skill" in [
         cast(FunctionTool, tool).name for tool in agent.tools if isinstance(tool, FunctionTool)
     ]
     nested = cast(Any, cast(FunctionTool, composed.tools[-1])._agent_instance)
-    nested_shell = cast(ShellTool, nested.tools[0])
-    assert nested_shell.environment is not None
-    assert "skills" not in nested_shell.environment
+    # No sandbox service is configured, so the shell specialist has no tools.
+    assert nested.tools == []
 
 
 @pytest.mark.asyncio

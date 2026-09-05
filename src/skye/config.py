@@ -82,6 +82,7 @@ class Settings(BaseSettings):
     skye_sandbox_enabled: bool = False
     skye_sandbox_image: str = "python:3.14-slim"
     skye_sandbox_timeout_seconds: int = Field(default=120, ge=5, le=600)
+    skye_sandbox_allow_network: bool = False
     composio_api_key: str | None = None
     skye_owner_ids: OwnerIds = Field(min_length=1)
     skye_database_path: Path = Path("data/skye.db")

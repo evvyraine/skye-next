@@ -23,7 +23,6 @@ from agents import (
     ModelSettings,
     RunConfig,
     Runner,
-    ShellTool,
     Tool,
     function_tool,
 )
@@ -53,6 +52,7 @@ from .exa import ExaService
 from .images import ImageService, TurnImages, turn_sources
 from .memory import MemoryService
 from .models import AgentCapability, ChatSettings, InstalledAgent, RequestContext, Skill
+from .sandbox import SandboxService, TurnSandbox, turn_files
 from .sessions import DatabaseSession, without_inline_payloads
 from .skills import SkillService
 from .youtube import YoutubeTranscriptService
@@ -131,6 +131,7 @@ _TOOL_LABELS: dict[str, str] = {
     "shell": "Ran a command",
     "shell_call": "Ran a command",
     "local_shell_call": "Ran a command",
+    "shell_exec": "Ran a command",
     "remember": "Saved a memory",
     "recall": "Looked up a memory",
     "forget": "Forgot a memory",
@@ -836,6 +837,7 @@ class AgentRuntime:
         youtube: YoutubeTranscriptService | None = None,
         images: ImageService | None = None,
         exa: ExaService | None = None,
+        sandbox: SandboxService | None = None,
     ) -> None:
         self.config = config
         self.conversations = conversations
@@ -848,6 +850,7 @@ class AgentRuntime:
         self.youtube = youtube
         self.images = images
         self.exa = exa
+        self.sandbox = sandbox
         self.base_prompt = base_prompt.strip()
         self._locks: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
         self._run_slots = asyncio.BoundedSemaphore(config.skye_max_concurrent_runs)
@@ -893,6 +896,7 @@ class AgentRuntime:
         async with self._locks[key]:
             active = _ActiveRun()
             self._active[key] = active
+            turn_sandbox: TurnSandbox | None = None
             try:
                 if active.cancel.is_set():
                     raise asyncio.CancelledError
@@ -940,6 +944,15 @@ class AgentRuntime:
                         requested_image_limit(user_input),
                         sources,
                     )
+                if self.sandbox is not None:
+                    turn_sandbox = self.sandbox.new_turn()
+                    turn_sandbox.seed(
+                        await turn_files(
+                            user_input,
+                            self.client,
+                            self.config.skye_max_attachment_bytes,
+                        )
+                    )
                 agent = self._agent(
                     context,
                     settings,
@@ -948,13 +961,13 @@ class AgentRuntime:
                     connector_tools,
                     skills,
                     extra_instructions,
-                    tuple(attached_file_ids),
                     manage_automations,
                     delivery,
                     awaiting_reply,
                     provider_conversation_id,
                     image_tool_calls=image_tool_call_limit(user_input),
                     turn_images=turn_images,
+                    turn_sandbox=turn_sandbox,
                 )
                 async with self._provider_slot(active, context, key):
                     if active.cancel.is_set():
@@ -979,6 +992,8 @@ class AgentRuntime:
                         )
             finally:
                 self._active.pop(key, None)
+                if turn_sandbox is not None:
+                    turn_sandbox.close()
 
     def busy(self, chat_id: int, thread_id: int) -> bool:
         return telegram_run_key(chat_id, thread_id) in self._active
@@ -1288,13 +1303,13 @@ class AgentRuntime:
         connector_tools: ConnectorTools | None = None,
         skills: tuple[Skill, ...] = (),
         extra_instructions: str = "",
-        input_file_ids: tuple[str, ...] = (),
         manage_automations: bool = False,
         delivery: TurnDelivery | None = None,
         awaiting_reply: bool = True,
         provider_session_id: str | None = None,
         image_tool_calls: int | None = None,
         turn_images: TurnImages | None = None,
+        turn_sandbox: TurnSandbox | None = None,
     ) -> Agent[None]:
         composition = composition or AgentComposition(None, ())
         connector_tools = connector_tools or ConnectorTools((), ())
@@ -1314,10 +1329,11 @@ class AgentRuntime:
             awaiting_reply=awaiting_reply,
             include_send_message=True,
         )
-        tools = self._hosted_tools(capabilities, input_file_ids)
+        tools: list[Tool] = []
         tools.append(delivery.tool())
         tools.append(delivery.voice_tool())
-        if self.config.provider == "openrouter" and "shell" in capabilities:
+        if "shell" in capabilities and turn_sandbox is not None:
+            tools.extend(turn_sandbox.tools())
             tools.append(delivery.file_tool())
         if turn_images is not None and "image" in capabilities:
             tools.extend(turn_images.tools())
@@ -1339,10 +1355,10 @@ class AgentRuntime:
                 settings,
                 memory_context,
                 skills,
-                input_file_ids,
                 provider_session_id,
                 image_tool_calls=image_tool_calls,
                 turn_images=turn_images,
+                turn_sandbox=turn_sandbox,
             ).as_tool(
                 tool_name=f"agent_{item.profile.id}",
                 tool_description=(
@@ -1420,22 +1436,21 @@ class AgentRuntime:
                 "Only make more calls when the user explicitly asks for a number of images. "
                 "A completed image is delivery; never generate another variant afterward."
             )
-        if "shell" in capabilities:
+        if "shell" in capabilities and self.sandbox is not None:
             instructions += (
-                "\n\nThe hosted sandbox can reach the public internet. "
-                "Files attached to the current turn are available there by their original names."
+                "\n\nCall shell_exec to run commands in a fresh Linux sandbox. "
+                "Files attached to the current turn are available there by their original "
+                "names, and the work directory persists across your calls within this turn."
             )
-            if self.config.provider == "openrouter":
-                instructions += (
-                    " To deliver a sandbox-created file, base64 encode its complete bytes and "
-                    "call deliver_file with a plain filename. Never paste base64 into a message. "
-                    "Zip multiple files before delivery."
-                )
+            if self.sandbox.allow_network:
+                instructions += " The sandbox can reach the public internet."
             else:
-                instructions += (
-                    " Files you write under /mnt/data are sent to the user as Telegram documents. "
-                    "Put a folder there, or a zip, when they want more than one file."
-                )
+                instructions += " The sandbox has no internet access."
+            instructions += (
+                " To deliver a sandbox-created file, read it back, base64 encode its complete "
+                "bytes and call deliver_file with a plain filename. Never paste base64 into "
+                "a message. Zip multiple files before delivery."
+            )
         if skills:
             listed = ", ".join(item.name for item in skills)
             instructions += (
@@ -1454,27 +1469,6 @@ class AgentRuntime:
                 "A schedule can repeat, or run once at the next matching time."
             )
         return instructions
-
-    def _hosted_tools(
-        self,
-        capabilities: tuple[AgentCapability, ...],
-        input_file_ids: tuple[str, ...] = (),
-    ) -> list[Tool]:
-        # Images and web are our own function tools now; only shell stays
-        # hosted until the local sandbox step lands.
-        tools: list[Tool] = []
-        if "shell" in capabilities:
-            environment: dict[str, Any] = {
-                "type": "container_auto",
-                "network_policy": {
-                    "type": "allowlist",
-                    "allowed_domains": list(self.config.skye_sandbox_allowed_domains),
-                },
-            }
-            if input_file_ids:
-                environment["file_ids"] = list(input_file_ids)
-            tools.append(ShellTool(environment=cast(Any, environment)))
-        return tools
 
     @staticmethod
     def _skill_tool(skills: tuple[Skill, ...]) -> FunctionTool:
@@ -1514,11 +1508,11 @@ class AgentRuntime:
         settings: ChatSettings,
         memory_context: str,
         skills: tuple[Skill, ...] = (),
-        input_file_ids: tuple[str, ...] = (),
         provider_session_id: str | None = None,
         *,
         image_tool_calls: int | None = None,
         turn_images: TurnImages | None = None,
+        turn_sandbox: TurnSandbox | None = None,
     ) -> Agent[None]:
         instructions = self._instructions(
             context,
@@ -1528,7 +1522,9 @@ class AgentRuntime:
             skills=skills,
             include_send_message=False,
         )
-        tools = self._hosted_tools(installed.version.capabilities, input_file_ids)
+        tools: list[Tool] = []
+        if "shell" in installed.version.capabilities and turn_sandbox is not None:
+            tools.extend(turn_sandbox.tools())
         if turn_images is not None and "image" in installed.version.capabilities:
             tools.extend(turn_images.tools())
         if self.exa is not None and "web" in installed.version.capabilities:
