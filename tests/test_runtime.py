@@ -626,7 +626,7 @@ def test_active_agent_and_specialist_are_composed() -> None:
     assert isinstance(nested.tools[0], ShellTool)
 
 
-def test_shell_mounts_uploaded_skills() -> None:
+def test_skills_are_exposed_through_read_skill_not_hosted_refs() -> None:
     memory = MemoryService(cast(Any, None))
     runtime = AgentRuntime(config(), cast(Any, None), memory, "You are Skye.")
     skill = Skill(
@@ -657,22 +657,22 @@ def test_shell_mounts_uploaded_skills() -> None:
     assert shell.environment == {
         "type": "container_auto",
         "network_policy": sandbox_network_policy(),
-        "skills": [{"type": "skill_reference", "skill_id": "skill_abc"}],
     }
     assert "basic-math" in cast(str, agent.instructions)
+    assert "read_skill" in [
+        cast(FunctionTool, tool).name for tool in agent.tools if isinstance(tool, FunctionTool)
+    ]
     nested = cast(Any, cast(FunctionTool, composed.tools[-1])._agent_instance)
     nested_shell = cast(ShellTool, nested.tools[0])
     assert nested_shell.environment is not None
-    assert nested_shell.environment["skills"] == [
-        {"type": "skill_reference", "skill_id": "skill_abc"}
-    ]
+    assert "skills" not in nested_shell.environment
 
 
 @pytest.mark.asyncio
-async def test_openrouter_reads_skill_bundle_through_function_tool() -> None:
+async def test_reads_skill_bundle_through_function_tool() -> None:
     memory = MemoryService(cast(Any, None))
     runtime = AgentRuntime(
-        config(openai_api_key=None, openrouter_api_key="sk-or-test"),
+        config(),
         cast(Any, None),
         memory,
         "You are Skye.",
@@ -695,7 +695,7 @@ async def test_openrouter_reads_skill_bundle_through_function_tool() -> None:
 
     agent = runtime._agent(
         RequestContext(1, "private", 1),
-        ChatSettings("openai/gpt-5.6-luna", "medium"),
+        ChatSettings("gpt-5.6-luna", "medium"),
         skills=(skill,),
     )
     tool = next(cast(FunctionTool, item) for item in agent.tools if item.name == "read_skill")

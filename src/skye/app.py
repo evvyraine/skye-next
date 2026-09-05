@@ -140,9 +140,7 @@ async def run() -> None:
         database, config.skye_owner_ids, list_administrators=list_chat_administrators
     )
     billing = BillingService(database, config.telegram_bot_token)
-    skills = SkillService(
-        database, client, config.skye_max_attachment_bytes, provider=config.provider
-    )
+    skills = SkillService(database, config.skye_max_attachment_bytes)
     automations = AutomationService(database, config.skye_web_origin)
     youtube = YoutubeTranscriptService(
         max_chars=config.skye_youtube_transcript_max_chars,

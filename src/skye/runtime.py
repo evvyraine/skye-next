@@ -56,7 +56,7 @@ from .custom_agents import AGENT_CAPABILITIES, AgentComposition, CustomAgentServ
 from .memory import MemoryService
 from .models import AgentCapability, ChatSettings, InstalledAgent, RequestContext, Skill
 from .sessions import DatabaseSession, without_inline_payloads
-from .skills import SkillService, hosted_skill_refs
+from .skills import SkillService
 from .youtube import YoutubeTranscriptService
 
 log = structlog.get_logger()
@@ -1300,8 +1300,8 @@ class AgentRuntime:
         tools.append(delivery.voice_tool())
         if self.config.provider == "openrouter" and "shell" in capabilities:
             tools.append(delivery.file_tool())
-        if self.config.provider == "openrouter" and skills:
-            tools.append(self._openrouter_skill_tool(skills))
+        if skills:
+            tools.append(self._skill_tool(skills))
         tools.extend(connector_tools.tools)
         if self.youtube is not None:
             tools.append(self.youtube.tool())
@@ -1411,16 +1411,10 @@ class AgentRuntime:
                     " Files you write under /mnt/data are sent to the user as Telegram documents. "
                     "Put a folder there, or a zip, when they want more than one file."
                 )
-        if "shell" in capabilities and skills and self.config.provider == "openai":
+        if skills:
             listed = ", ".join(item.name for item in skills)
             instructions += (
-                f"\n\nHosted skills are mounted in the sandbox: {listed}. "
-                "Read a skill's SKILL.md when the task matches it."
-            )
-        if "shell" in capabilities and skills and self.config.provider == "openrouter":
-            listed = ", ".join(item.name for item in skills)
-            instructions += (
-                f"\n\nAvailable hosted skills: {listed}. Before using one, call read_skill "
+                f"\n\nAvailable skills: {listed}. Before using one, call read_skill "
                 "for its SKILL.md and follow those instructions. Read referenced files with "
                 "the same tool when needed."
             )
@@ -1489,8 +1483,7 @@ class AgentRuntime:
                         "allowed_domains": list(self.config.skye_sandbox_allowed_domains),
                     },
                 }
-                attached_ids = [item.openai_skill_id for item in skills]
-                attached_ids.extend(input_file_ids)
+                attached_ids = list(input_file_ids)
                 if attached_ids:
                     openrouter_environment["file_ids"] = attached_ids[:20]
                 tools.append(ShellTool(environment=cast(Any, openrouter_environment)))
@@ -1520,15 +1513,13 @@ class AgentRuntime:
                     "allowed_domains": list(self.config.skye_sandbox_allowed_domains),
                 },
             }
-            if skills:
-                environment["skills"] = hosted_skill_refs(skills)
             if input_file_ids:
                 environment["file_ids"] = list(input_file_ids)
             tools.append(ShellTool(environment=cast(Any, environment)))
         return tools
 
     @staticmethod
-    def _openrouter_skill_tool(skills: tuple[Skill, ...]) -> FunctionTool:
+    def _skill_tool(skills: tuple[Skill, ...]) -> FunctionTool:
         @function_tool(strict_mode=False)
         async def read_skill(skill_name: str, path: str = "SKILL.md") -> str:
             """Read a file from an uploaded skill bundle before applying that skill."""

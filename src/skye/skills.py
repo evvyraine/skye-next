@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import base64
 import io
-import json
 import re
 import sqlite3
 import uuid
@@ -10,20 +8,16 @@ import zipfile
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import PurePosixPath
-from typing import Any
 
-import structlog
 from aiogram import Bot
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
-from openai import APIError, AsyncOpenAI
 
 from .db import Database
 from .models import RequestContext, Scope, Skill
 from .rich import RichMessages
 
-log = structlog.get_logger()
 MAX_SKILLS = 16
 MAX_FILES = 500
 MAX_FILE_BYTES = 25 * 1024 * 1024
@@ -206,18 +200,16 @@ def _yaml_fields(raw: str) -> dict[str, str]:
 
 
 class SkillService:
+    """Local-only skill storage. Bundles live in SQLite; the model reads them
+    through the read_skill function tool. No provider upload involved."""
+
     def __init__(
         self,
         database: Database,
-        client: AsyncOpenAI,
         max_bytes: int,
-        *,
-        provider: str = "openai",
     ) -> None:
         self.database = database
-        self.client = client
         self.max_bytes = max_bytes
-        self.provider = provider
 
     async def list(self, scope: Scope) -> list[Skill]:
         return await self.database.list_skills(scope)
@@ -238,20 +230,14 @@ class SkillService:
         bundle = bundle_from_upload(filename, data, max_bytes=self.max_bytes)
         if any(item.name == bundle.name for item in existing):
             raise SkillError(f"A skill named `{bundle.name}` is already in this chat.")
-        created = await self._create(bundle)
-        openai_id = str(getattr(created, "id", "") or "")
-        if not openai_id:
-            raise SkillError("The model provider did not return a skill id.")
-        name = str(getattr(created, "name", "") or bundle.name)
-        description = str(getattr(created, "description", "") or bundle.description)
         try:
             return await self.database.save_skill(
                 Skill(
                     id=uuid.uuid4().hex[:12],
                     scope=scope,
-                    openai_skill_id=openai_id,
-                    name=name,
-                    description=description,
+                    openai_skill_id=f"local_{uuid.uuid4().hex[:12]}",
+                    name=bundle.name,
+                    description=bundle.description,
                     filename=bundle.filename,
                     file_count=bundle.file_count,
                     created_by=created_by,
@@ -260,68 +246,15 @@ class SkillService:
                 )
             )
         except sqlite3.IntegrityError as error:
-            await self._delete_remote(openai_id)
-            raise SkillError(f"A skill named `{name}` is already in this chat.") from error
-        except Exception:
-            await self._delete_remote(openai_id)
-            raise
+            raise SkillError(
+                f"A skill named `{bundle.name}` is already in this chat."
+            ) from error
 
     async def delete(self, scope: Scope, skill_id: str) -> Skill:
-        skill = await self.require(scope, skill_id)
-        await self._delete_remote(skill.openai_skill_id)
         removed = await self.database.delete_skill(scope, skill_id)
         if removed is None:
             raise SkillError("That skill is not in this chat.")
         return removed
-
-    async def _create(self, bundle: SkillBundle) -> Any:
-        try:
-            if self.provider == "openrouter":
-                payload = json.dumps(
-                    {
-                        "format": "skye-skill-v1",
-                        "name": bundle.name,
-                        "files": {
-                            path: base64.b64encode(data).decode() for path, data in bundle.files
-                        },
-                    },
-                    separators=(",", ":"),
-                ).encode()
-                return await self.client.files.create(
-                    file=(f"{bundle.name}.skill.json", payload, "application/json"),
-                    purpose="user_data",
-                )
-            return await self.client.skills.create(
-                files=[(bundle.filename, bundle.archive, "application/zip")]
-            )
-        except APIError as error:
-            log.warning("skill_upload_failed", error=type(error).__name__)
-            raise SkillError(_openai_message(error)) from error
-
-    async def _delete_remote(self, openai_skill_id: str) -> None:
-        try:
-            if self.provider == "openrouter":
-                await self.client.files.delete(openai_skill_id)
-            else:
-                await self.client.skills.delete(openai_skill_id)
-        except APIError as error:
-            status = getattr(error, "status_code", None)
-            if status == 404:
-                return
-            log.warning("skill_delete_failed", error=type(error).__name__)
-            raise SkillError(
-                "Couldn't delete that skill from remote storage. Try again."
-            ) from error
-
-
-def _openai_message(error: APIError) -> str:
-    body = error.body
-    if isinstance(body, dict):
-        nested = body.get("error")
-        message = nested.get("message") if isinstance(nested, dict) else body.get("message")
-        if isinstance(message, str) and message:
-            return "The model provider rejected that skill. Check SKILL.md and its files."
-    return "The model provider could not store that skill. Try again."
 
 
 def skills_keyboard(skills: Sequence[Skill], *, editable: bool) -> InlineKeyboardMarkup:
@@ -474,5 +407,3 @@ class SkillPanel:
         raise SkillError("Send a `.zip` archive or a `SKILL.md` file.")
 
 
-def hosted_skill_refs(skills: Sequence[Skill]) -> list[dict[str, str]]:
-    return [{"type": "skill_reference", "skill_id": item.openai_skill_id} for item in skills]

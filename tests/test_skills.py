@@ -1,7 +1,6 @@
 import io
 import zipfile
-from types import SimpleNamespace
-from typing import Any, cast
+from typing import Any
 
 import pytest
 
@@ -37,47 +36,8 @@ def make_zip(files: dict[str, str | bytes]) -> bytes:
     return buffer.getvalue()
 
 
-class FakeSkills:
-    def __init__(self) -> None:
-        self.created: list[object] = []
-        self.deleted: list[str] = []
-        self.next_id = 1
-        self.fail_create = False
-
-    async def create(self, *, files: object) -> Any:
-        if self.fail_create:
-            raise RuntimeError("upload failed")
-        self.created.append(files)
-        skill_id = f"skill_{self.next_id}"
-        self.next_id += 1
-        return SimpleNamespace(
-            id=skill_id,
-            name="basic-math",
-            description="Add or multiply numbers.",
-        )
-
-    async def delete(self, skill_id: str) -> Any:
-        self.deleted.append(skill_id)
-        return SimpleNamespace(id=skill_id, deleted=True)
-
-
-class FakeClient:
-    def __init__(self) -> None:
-        self.skills = FakeSkills()
-
-
-def service(
-    database: Database, client: FakeClient | None = None
-) -> tuple[SkillService, FakeClient]:
-    host = client or FakeClient()
-    return SkillService(database, cast(Any, host), 1024 * 1024), host
-
-
-def zip_payload(files: object) -> bytes:
-    uploaded = files[0]
-    _name, data, mime = uploaded
-    assert mime == "application/zip"
-    return data
+def service(database: Database) -> SkillService:
+    return SkillService(database, 1024 * 1024)
 
 
 def test_markdown_skill_is_wrapped_into_a_zip() -> None:
@@ -134,8 +94,8 @@ def test_zip_must_contain_exactly_one_skill_md() -> None:
         bundle_from_upload("skill.zip", archive, max_bytes=1024 * 1024)
 
 
-async def test_upload_sends_and_stores_every_file(database: Database) -> None:
-    skills, client = service(database)
+async def test_upload_stores_every_file_locally_without_a_provider(database: Database) -> None:
+    skills = service(database)
     private = Scope("user", 42)
     archive = make_zip(
         {
@@ -148,46 +108,40 @@ async def test_upload_sends_and_stores_every_file(database: Database) -> None:
     stored = await database.get_skill(private, saved.id)
 
     assert stored is not None
-    assert stored.openai_skill_id == "skill_1"
+    assert stored.openai_skill_id.startswith("local_")
+    assert stored.name == "basic-math"
+    assert stored.description == "Add or multiply numbers."
     assert stored.file_count == 2
     assert set(skill_paths(stored.archive)) == {
         "basic-math/SKILL.md",
         "basic-math/calculate.py",
     }
-    assert len(client.skills.created) == 1
-    uploaded = zipfile.ZipFile(io.BytesIO(zip_payload(client.skills.created[0])))
-    assert set(uploaded.namelist()) == {
-        "basic-math/SKILL.md",
-        "basic-math/calculate.py",
-    }
-    assert uploaded.read("basic-math/calculate.py") == b"def add(a, b): return a + b\n"
     assert await skills.list(Scope("chat", -100)) == []
     mounted = await skills.mounted(private)
-    assert [item.openai_skill_id for item in mounted] == ["skill_1"]
+    assert [item.id for item in mounted] == [saved.id]
     assert set(skill_paths(mounted[0].archive)) == {
         "basic-math/SKILL.md",
         "basic-math/calculate.py",
     }
 
 
-async def test_delete_removes_local_and_openai_skill(database: Database) -> None:
-    skills, client = service(database)
+async def test_delete_removes_the_local_skill(database: Database) -> None:
+    skills = service(database)
     private = Scope("user", 42)
     saved = await skills.upload(private, 42, "SKILL.md", SKILL_MD.encode())
 
     removed = await skills.delete(private, saved.id)
 
-    assert removed.openai_skill_id == "skill_1"
+    assert removed.id == saved.id
     assert await database.get_skill(private, saved.id) is None
-    assert client.skills.deleted == ["skill_1"]
 
 
-async def test_failed_openai_upload_is_not_stored(database: Database) -> None:
-    client = FakeClient()
-    client.skills.fail_create = True
-    skills, _host = service(database, client)
+async def test_duplicate_skill_names_are_rejected(database: Database) -> None:
+    skills = service(database)
+    private = Scope("user", 42)
+    await skills.upload(private, 42, "SKILL.md", SKILL_MD.encode())
 
-    with pytest.raises(RuntimeError):
-        await skills.upload(Scope("user", 42), 42, "SKILL.md", SKILL_MD.encode())
+    with pytest.raises(SkillError, match="already in this chat"):
+        await skills.upload(private, 42, "SKILL.md", SKILL_MD.encode())
 
-    assert await skills.list(Scope("user", 42)) == []
+    assert len(await skills.list(private)) == 1
