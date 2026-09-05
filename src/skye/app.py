@@ -145,6 +145,8 @@ async def run() -> None:
             config.skye_sandbox_timeout_seconds,
             config.skye_max_attachment_bytes,
             allow_network=config.skye_sandbox_allow_network,
+            volume=config.skye_sandbox_volume,
+            work_dir=config.skye_sandbox_work_dir,
         )
         if config.skye_sandbox_enabled
         else None

@@ -43,19 +43,28 @@ class SandboxService:
         max_bytes: int,
         *,
         allow_network: bool = False,
+        volume: str = "skye-sandbox-work",
+        work_dir: Path = Path("/sandbox-work"),
     ) -> None:
         self.image = image
         self.timeout_seconds = timeout_seconds
         self.max_bytes = max_bytes
         self.allow_network = allow_network
+        self.volume = volume
+        self.work_dir = work_dir
 
     def new_turn(self) -> TurnSandbox:
-        path = Path(tempfile.mkdtemp(prefix="skye-sandbox-"))
+        self.work_dir.mkdir(parents=True, exist_ok=True)
+        path = Path(tempfile.mkdtemp(prefix="turn-", dir=str(self.work_dir)))
         return TurnSandbox(self, path)
 
     async def execute(self, workdir: Path, command: str) -> SandboxResult:
         if not shutil.which("docker"):
-            raise SandboxUnavailableError("Docker is not installed on the host.")
+            raise SandboxUnavailableError("Docker is not available.")
+        try:
+            container_workdir = f"/work/{workdir.relative_to(self.work_dir).as_posix()}"
+        except ValueError as error:
+            raise SandboxUnavailableError("The sandbox work directory is invalid.") from error
         argv = [
             "docker",
             "run",
@@ -70,9 +79,9 @@ class SandboxService:
             "--pids-limit",
             "128",
             "-v",
-            f"{workdir}:/work",
+            f"{self.volume}:/work",
             "-w",
-            "/work",
+            container_workdir,
             self.image,
             "sh",
             "-c",
@@ -94,7 +103,7 @@ class SandboxService:
                 await process.wait()
                 return SandboxResult("", "", True, ())
         except FileNotFoundError as error:
-            raise SandboxUnavailableError("Docker is not installed on the host.") from error
+            raise SandboxUnavailableError("Docker is not available.") from error
         except OSError as error:
             log.warning("sandbox_spawn_failed", error=type(error).__name__)
             raise SandboxUnavailableError("The sandbox could not start.") from error

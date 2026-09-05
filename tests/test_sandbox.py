@@ -28,12 +28,14 @@ def tool_context(name: str, payload: str) -> Any:
     )
 
 
-def service() -> SandboxService:
-    return SandboxService("python:3.14-slim", 10, 1024)
+def service(tmp_path: Path) -> SandboxService:
+    return SandboxService(
+        "python:3.14-slim", 10, 1024, volume="test-sandbox-work", work_dir=tmp_path / "work"
+    )
 
 
 def test_seed_writes_safe_paths_only(tmp_path: Path) -> None:
-    turn = service().new_turn()
+    turn = service(tmp_path).new_turn()
     try:
         turn.seed([("report.txt", b"hi"), ("../evil.txt", b"no"), ("", b"empty")])
 
@@ -80,11 +82,11 @@ async def test_execute_without_docker_is_unavailable(tmp_path: Path) -> None:
         patch("skye.sandbox.shutil.which", return_value=None),
         pytest.raises(SandboxUnavailableError),
     ):
-        await service().execute(tmp_path, "echo hi")
+        await service(tmp_path).execute(tmp_path, "echo hi")
 
 
 async def test_shell_exec_validates_commands(tmp_path: Path) -> None:
-    turn = service().new_turn()
+    turn = service(tmp_path).new_turn()
     try:
         (shell,) = turn.tools()
         assert isinstance(shell, FunctionTool)
@@ -96,13 +98,48 @@ async def test_shell_exec_validates_commands(tmp_path: Path) -> None:
         assert await invoke("") == "Pass the command to run."
         assert await invoke("x" * 4001) == "That command is too long. Split it into smaller steps."
         with patch("skye.sandbox.shutil.which", return_value=None):
-            assert await invoke("echo hi") == "Docker is not installed on the host."
+            assert await invoke("echo hi") == "Docker is not available."
     finally:
         turn.close()
 
 
+async def test_execute_mounts_the_shared_volume_at_the_turn_subdir(tmp_path: Path) -> None:
+    spawned: list[list[str]] = []
+
+    async def fake_exec(*argv: str, **_kwargs: object) -> object:
+        spawned.append(list(argv))
+
+        class Process:
+            async def communicate(self) -> tuple[bytes, bytes]:
+                return b"out", b""
+
+            def kill(self) -> None:
+                return None
+
+            async def wait(self) -> int:
+                return 0
+
+        return Process()
+
+    turn = service(tmp_path).new_turn()
+    try:
+        with (
+            patch("skye.sandbox.shutil.which", return_value="/usr/bin/docker"),
+            patch("skye.sandbox.asyncio.create_subprocess_exec", side_effect=fake_exec),
+        ):
+            await turn.service.execute(turn.workdir, "echo hi")
+    finally:
+        turn.close()
+
+    assert spawned
+    argv = spawned[0]
+    assert argv[argv.index("-v") + 1] == "test-sandbox-work:/work"
+    assert argv[argv.index("-w") + 1].startswith("/work/turn-")
+    assert "--network" in argv and argv[argv.index("--network") + 1] == "none"
+
+
 async def test_shell_exec_reports_timeout_and_files(tmp_path: Path) -> None:
-    turn = service().new_turn()
+    turn = service(tmp_path).new_turn()
     try:
         turn.service.execute = AsyncMock(  # type: ignore[method-assign]
             return_value=SandboxResult("", "boom", True, (("a.txt", b"a"),))

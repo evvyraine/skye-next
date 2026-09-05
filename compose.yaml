@@ -17,6 +17,12 @@ services:
       - "127.0.0.1:18780:8080"
     volumes:
       - skye-data:/data
+      # Sandbox control: the bot spawns one Docker container per shell_exec
+      # through the host daemon. This grants the bot container control over
+      # host Docker (root-equivalent); keep the image minimal and network off
+      # unless SKYE_SANDBOX_ALLOW_NETWORK=true.
+      - /var/run/docker.sock:/var/run/docker.sock
+      - skye-sandbox-work:/sandbox-work
     init: true
     restart: unless-stopped
     stop_grace_period: 30s
@@ -25,3 +31,5 @@ services:
 
 volumes:
   skye-data:
+  skye-sandbox-work:
+    name: skye-sandbox-work

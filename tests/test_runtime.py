@@ -120,8 +120,13 @@ def test_agent_includes_youtube_transcript_tool_when_configured() -> None:
     ]
 
 
-async def test_sandbox_tools_execute_commands_and_offer_delivery() -> None:
-    service = SandboxService("python:3.14-slim", 10, 1024)
+async def test_sandbox_tools_execute_commands_and_offer_delivery(tmp_path: object) -> None:
+    from pathlib import Path
+
+    work = Path(str(tmp_path)) / "work"
+    service = SandboxService(
+        "python:3.14-slim", 10, 1024, volume="test-sandbox-work", work_dir=work
+    )
     service.execute = AsyncMock(  # type: ignore[method-assign]
         return_value=SandboxResult("hi", "", False, (("out.txt", b"data"),))
     )

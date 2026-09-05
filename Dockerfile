@@ -1,5 +1,7 @@
 FROM ghcr.io/astral-sh/uv:0.11.32 AS uv
 
+FROM docker:28-cli AS docker-cli
+
 FROM python:3.14-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -9,6 +11,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PATH="/app/.venv/bin:$PATH"
 
 COPY --from=uv /uv /uvx /bin/
+COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker
 
 RUN groupadd --system --gid 10001 skye \
     && useradd --system --uid 10001 --gid skye --home-dir /nonexistent skye
