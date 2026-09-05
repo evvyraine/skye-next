@@ -101,6 +101,10 @@ class Settings(BaseSettings):
     skye_transcription_model: str = "gpt-transcribe"
     skye_speech_model: str = "gpt-4o-mini-tts"
     skye_image_model: str = "gpt-image-2"
+    skye_image_api_key: str | None = None
+    skye_image_base_url: str | None = None
+    skye_audio_api_key: str | None = None
+    skye_audio_base_url: str | None = None
     skye_youtube_transcript_max_chars: int = Field(default=48_000, ge=1_000, le=200_000)
     skye_youtube_proxy_url: str | None = None
     skye_media_group_settle_seconds: float = Field(default=0.75, ge=0.1, le=5.0)
@@ -152,6 +156,10 @@ class Settings(BaseSettings):
         "openrouter_api_key",
         "skye_provider_api_key",
         "skye_exa_api_key",
+        "skye_image_api_key",
+        "skye_image_base_url",
+        "skye_audio_api_key",
+        "skye_audio_base_url",
         "skye_youtube_proxy_url",
         "skye_proxy_url",
         "skye_provider_base_url",
@@ -187,6 +195,30 @@ class Settings(BaseSettings):
         if self.openrouter_api_key and not self.skye_provider_api_key:
             return "https://openrouter.ai/api/v1"
         return None
+
+    @property
+    def image_api_key(self) -> str:
+        return self.skye_image_api_key or self.provider_api_key
+
+    @property
+    def image_base_url(self) -> str | None:
+        return self.skye_image_base_url or self.provider_base_url
+
+    @property
+    def image_endpoint_overridden(self) -> bool:
+        return bool(self.skye_image_api_key or self.skye_image_base_url)
+
+    @property
+    def audio_api_key(self) -> str:
+        return self.skye_audio_api_key or self.provider_api_key
+
+    @property
+    def audio_base_url(self) -> str | None:
+        return self.skye_audio_base_url or self.provider_base_url
+
+    @property
+    def audio_endpoint_overridden(self) -> bool:
+        return bool(self.skye_audio_api_key or self.skye_audio_base_url)
 
     @field_validator(
         "skye_web_origin",

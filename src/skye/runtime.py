@@ -690,6 +690,7 @@ class AgentRuntime:
         images: ImageService | None = None,
         exa: ExaService | None = None,
         sandbox: SandboxService | None = None,
+        audio_client: AsyncOpenAI | None = None,
     ) -> None:
         self.config = config
         self.conversations = conversations
@@ -697,6 +698,7 @@ class AgentRuntime:
         self.custom_agents = custom_agents
         self.connectors = connectors
         self.client = client
+        self.audio_client = audio_client
         self.skills = skills
         self.automations = automations
         self.youtube = youtube
@@ -738,7 +740,7 @@ class AgentRuntime:
         delivery = TurnDelivery(
             on_reply=on_reply,
             on_voice=on_voice,
-            client=self.client,
+            client=self.audio_client or self.client,
             max_audio_bytes=self.config.skye_max_attachment_bytes,
             speech_model=self.config.skye_speech_model,
             speech_response_format="pcm",

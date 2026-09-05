@@ -1438,6 +1438,56 @@ async def test_send_voice_validates_before_generating_audio() -> None:
     create.assert_not_awaited()
 
 
+async def test_run_routes_voice_generation_to_audio_client() -> None:
+    audio = cast(Any, SimpleNamespace(name="audio-client"))
+    runtime = runtime_for_run()
+    runtime.audio_client = audio
+    seen: dict[str, Any] = {}
+    real_delivery = TurnDelivery
+
+    def spy(**kwargs: Any) -> TurnDelivery:
+        seen.update(kwargs)
+        return real_delivery(**kwargs)
+
+    stream = FakeStream(output="hello")
+    with (
+        patch("skye.runtime.TurnDelivery", side_effect=spy),
+        patch("skye.runtime.Runner.run_streamed", return_value=stream),
+    ):
+        await runtime.run(
+            RequestContext(1, "private", 1),
+            ChatSettings("gpt-5.6-luna", "medium", memory_enabled=False),
+            "hello",
+            AsyncMock(),
+        )
+
+    assert seen["client"] is audio
+
+
+async def test_run_falls_back_to_chat_client_for_voice() -> None:
+    runtime = runtime_for_run()
+    seen: dict[str, Any] = {}
+    real_delivery = TurnDelivery
+
+    def spy(**kwargs: Any) -> TurnDelivery:
+        seen.update(kwargs)
+        return real_delivery(**kwargs)
+
+    stream = FakeStream(output="hello")
+    with (
+        patch("skye.runtime.TurnDelivery", side_effect=spy),
+        patch("skye.runtime.Runner.run_streamed", return_value=stream),
+    ):
+        await runtime.run(
+            RequestContext(1, "private", 1),
+            ChatSettings("gpt-5.6-luna", "medium", memory_enabled=False),
+            "hello",
+            AsyncMock(),
+        )
+
+    assert seen["client"] is None
+
+
 async def test_run_keeps_inner_monologue_off_the_reply_callback() -> None:
     delivered: list[str] = []
 

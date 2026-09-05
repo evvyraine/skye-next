@@ -112,6 +112,35 @@ def test_explicit_base_url_wins_over_legacy_openrouter_key() -> None:
     assert loaded.provider_base_url == "https://llm.example.com/v1"
 
 
+def test_media_endpoints_fall_back_to_chat_provider() -> None:
+    loaded = settings(
+        skye_provider_api_key="sk-unified",
+        skye_provider_base_url="https://llm.example.com/v1",
+    )
+
+    assert loaded.image_api_key == "sk-unified"
+    assert loaded.image_base_url == "https://llm.example.com/v1"
+    assert loaded.audio_api_key == "sk-unified"
+    assert loaded.audio_base_url == "https://llm.example.com/v1"
+    assert loaded.image_endpoint_overridden is False
+    assert loaded.audio_endpoint_overridden is False
+
+
+def test_media_endpoints_accept_separate_keys_and_urls() -> None:
+    loaded = settings(
+        skye_image_api_key="sk-img",
+        skye_image_base_url="https://img.example.com/v1",
+        skye_audio_base_url="https://audio.example.com/v1",
+    )
+
+    assert loaded.image_api_key == "sk-img"
+    assert loaded.image_base_url == "https://img.example.com/v1"
+    assert loaded.audio_api_key == "sk-test"
+    assert loaded.audio_base_url == "https://audio.example.com/v1"
+    assert loaded.image_endpoint_overridden is True
+    assert loaded.audio_endpoint_overridden is True
+
+
 def test_sandbox_and_exa_defaults() -> None:
     loaded = settings()
 

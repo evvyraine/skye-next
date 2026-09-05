@@ -87,6 +87,34 @@ async def run() -> None:
         max_retries=OPENAI_MAX_RETRIES,
         http_client=http_client,
     )
+    # Pictures and audio may live on separate OpenAI-compatible endpoints
+    # (e.g. a chat gateway without Images or audio APIs). Without overrides
+    # these reuse the main chat client.
+    image_client = (
+        AsyncOpenAI(
+            api_key=config.image_api_key,
+            base_url=config.image_base_url,
+            max_retries=OPENAI_MAX_RETRIES,
+            http_client=http_client,
+        )
+        if config.image_endpoint_overridden
+        else client
+    )
+    audio_client = (
+        AsyncOpenAI(
+            api_key=config.audio_api_key,
+            base_url=config.audio_base_url,
+            max_retries=OPENAI_MAX_RETRIES,
+            http_client=http_client,
+        )
+        if config.audio_endpoint_overridden
+        else client
+    )
+    log.info(
+        "media_endpoints",
+        image_override=config.image_endpoint_overridden,
+        audio_override=config.audio_endpoint_overridden,
+    )
     set_default_openai_client(client, use_for_tracing=False)
     set_tracing_disabled(True)
 
@@ -108,7 +136,7 @@ async def run() -> None:
     connectors = ConnectorService(database, composio)
     groups = GroupContextService(config, database, bot)
     media_groups = MediaGroupService(config, database)
-    attachments = AttachmentService(config, bot, client)
+    attachments = AttachmentService(config, bot, audio_client)
 
     async def list_chat_administrators(
         chat_id: int,
@@ -137,7 +165,9 @@ async def run() -> None:
         max_chars=config.skye_youtube_transcript_max_chars,
         proxy_url=config.skye_youtube_proxy_url,
     )
-    images = ImageService(client, config.skye_image_model, config.skye_max_attachment_bytes)
+    images = ImageService(
+        image_client, config.skye_image_model, config.skye_max_attachment_bytes
+    )
     exa = ExaService(config.skye_exa_api_key) if config.skye_exa_api_key else None
     sandbox = (
         SandboxService(
@@ -165,6 +195,7 @@ async def run() -> None:
         images,
         exa,
         sandbox,
+        audio_client=audio_client,
     )
     projects = ProjectService(
         database,
@@ -197,7 +228,7 @@ async def run() -> None:
         runtime,
         projects,
         auth,
-        client,
+        audio_client,
         automations,
         telegram.enqueue_automation,
     )
@@ -248,6 +279,10 @@ async def run() -> None:
     finally:
         await connectors.aclose()
         await client.close()
+        if image_client is not client:
+            await image_client.close()
+        if audio_client is not client and audio_client is not image_client:
+            await audio_client.close()
         await bot.session.close()
         await database.close()
 
