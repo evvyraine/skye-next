@@ -7,7 +7,7 @@ import secrets
 import uuid
 from dataclasses import dataclass
 
-from .config import MODELS, ModelId
+from .config import ModelId
 from .db import Database
 from .models import AgentCapability, AgentVersion, InstalledAgent, Scope
 
@@ -187,7 +187,7 @@ class CustomAgentService:
             raise ValueError("Description must be 1–240 characters.")
         if not 1 <= len(instructions) <= 12_000:
             raise ValueError("Instructions must be 1–12,000 characters.")
-        if model is not None and model not in MODELS:
+        if model is not None and not model.strip():
             raise ValueError("Unknown model.")
         capabilities = tuple(item for item in AGENT_CAPABILITIES if item in capabilities)
         payload = {

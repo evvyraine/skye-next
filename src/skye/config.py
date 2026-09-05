@@ -76,6 +76,12 @@ class Settings(BaseSettings):
     telegram_bot_token: str = Field(min_length=1)
     openai_api_key: str | None = None
     openrouter_api_key: str | None = None
+    skye_provider_api_key: str | None = None
+    skye_provider_base_url: str | None = None
+    skye_exa_api_key: str | None = None
+    skye_sandbox_enabled: bool = False
+    skye_sandbox_image: str = "python:3.14-slim"
+    skye_sandbox_timeout_seconds: int = Field(default=120, ge=5, le=600)
     composio_api_key: str | None = None
     skye_owner_ids: OwnerIds = Field(min_length=1)
     skye_database_path: Path = Path("data/skye.db")
@@ -142,8 +148,11 @@ class Settings(BaseSettings):
     @field_validator(
         "openai_api_key",
         "openrouter_api_key",
+        "skye_provider_api_key",
+        "skye_exa_api_key",
         "skye_youtube_proxy_url",
         "skye_proxy_url",
+        "skye_provider_base_url",
         mode="before",
     )
     @classmethod
@@ -152,25 +161,36 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _provider_key_is_required(self) -> Settings:
-        if not self.openai_api_key and not self.openrouter_api_key:
-            raise ValueError("OPENAI_API_KEY or OPENROUTER_API_KEY is required")
-        if not self.openrouter_api_key and self.skye_default_model not in MODELS:
-            raise ValueError("OpenAI chat model must be one of the hosted Skye models")
+        has_key = bool(
+            self.skye_provider_api_key or self.openai_api_key or self.openrouter_api_key
+        )
+        if not has_key:
+            msg = "SKYE_PROVIDER_API_KEY, OPENAI_API_KEY or OPENROUTER_API_KEY is required"
+            raise ValueError(msg)
+        if not self.skye_default_model.strip():
+            raise ValueError("SKYE_DEFAULT_MODEL must not be empty")
         return self
 
     @property
     def provider(self) -> Provider:
+        # Legacy routing flag for the Responses-era branches in runtime/app.
+        # Removed step by step as hosted tools move to local function tools.
+        base_url = (self.skye_provider_base_url or "").lower()
+        if base_url:
+            return "openrouter" if "openrouter" in base_url else "openai"
         return "openrouter" if self.openrouter_api_key else "openai"
 
     @property
     def provider_api_key(self) -> str:
-        key = self.openrouter_api_key or self.openai_api_key
+        key = self.skye_provider_api_key or self.openrouter_api_key or self.openai_api_key
         if key is None:  # guarded by validation; keeps this property precisely typed
             raise RuntimeError("No model provider API key is configured")
         return key
 
     @property
     def provider_base_url(self) -> str | None:
+        if self.skye_provider_base_url:
+            return self.skye_provider_base_url
         return "https://openrouter.ai/api/v1" if self.provider == "openrouter" else None
 
     @field_validator(

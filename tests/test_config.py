@@ -59,9 +59,12 @@ def test_composio_key_strips_wrapping(raw: str, cleaned: str) -> None:
     assert settings(composio_api_key=raw).composio_api_key == cleaned
 
 
-def test_model_catalog_rejects_unknown_model() -> None:
-    with pytest.raises(ValidationError):
-        settings(skye_default_model="unknown")
+def test_any_non_empty_model_is_accepted() -> None:
+    assert settings(skye_default_model="unknown").skye_default_model == "unknown"
+    assert (
+        settings(skye_default_model="anthropic/claude-sonnet-4.6").skye_default_model
+        == "anthropic/claude-sonnet-4.6"
+    )
 
 
 def test_openrouter_key_selects_openrouter_and_accepts_namespaced_models() -> None:
@@ -83,6 +86,40 @@ def test_openrouter_key_takes_precedence_when_both_keys_are_present() -> None:
     loaded = settings(openrouter_api_key="sk-or-test")
 
     assert loaded.provider == "openrouter"
+
+
+def test_unified_provider_key_wins_over_legacy_keys() -> None:
+    loaded = settings(
+        openai_api_key="sk-legacy",
+        openrouter_api_key="sk-or-legacy",
+        skye_provider_api_key="sk-unified",
+        skye_provider_base_url="https://llm.example.com/v1",
+    )
+
+    assert loaded.provider_api_key == "sk-unified"
+    assert loaded.provider_base_url == "https://llm.example.com/v1"
+    assert loaded.provider == "openai"
+
+
+def test_unified_openrouter_base_url_routes_to_openrouter_shim() -> None:
+    loaded = settings(
+        openai_api_key=None,
+        openrouter_api_key=None,
+        skye_provider_api_key="sk-unified",
+        skye_provider_base_url="https://openrouter.ai/api/v1",
+    )
+
+    assert loaded.provider == "openrouter"
+    assert loaded.provider_base_url == "https://openrouter.ai/api/v1"
+
+
+def test_sandbox_and_exa_defaults() -> None:
+    loaded = settings()
+
+    assert loaded.skye_exa_api_key is None
+    assert loaded.skye_sandbox_enabled is False
+    assert loaded.skye_sandbox_image == "python:3.14-slim"
+    assert loaded.skye_sandbox_timeout_seconds == 120
 
 
 def test_sandbox_domains_default_to_the_code_owned_allowlist() -> None:

@@ -70,7 +70,9 @@ async def run() -> None:
     await database.open()
 
     proxy_url = config.skye_proxy_url
-    if config.provider == "openrouter":
+    # Step 1 of provider unification: one client from provider_base_url/api_key.
+    # The OpenRouterTransport shim stays until the runtime moves to Chat Completions.
+    if config.provider == "openrouter" and config.provider_base_url is not None:
         transport = OpenRouterTransport(
             httpx.AsyncHTTPTransport(proxy=proxy_url) if proxy_url else None
         )
