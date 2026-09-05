@@ -16,13 +16,11 @@ from dataclasses import dataclass, field
 from typing import Any, Literal, cast
 
 import av
-import httpx
 import structlog
 from agents import (
     Agent,
     FunctionTool,
     HostedMCPTool,
-    ImageGenerationTool,
     ModelSettings,
     RunConfig,
     Runner,
@@ -53,6 +51,7 @@ from .config import Settings
 from .connectors import ConnectorService, ConnectorTools
 from .conversations import ConversationService
 from .custom_agents import AGENT_CAPABILITIES, AgentComposition, CustomAgentService
+from .images import ImageService, TurnImages, turn_sources
 from .memory import MemoryService
 from .models import AgentCapability, ChatSettings, InstalledAgent, RequestContext, Skill
 from .sessions import DatabaseSession, without_inline_payloads
@@ -128,6 +127,8 @@ _TOOL_LABELS: dict[str, str] = {
     "web_search_call": "Searched the web",
     "image_generation": "Generating image",
     "image_generation_call": "Generating image",
+    "generate_image": "Generating image",
+    "edit_image": "Editing image",
     "shell": "Ran a command",
     "shell_call": "Ran a command",
     "local_shell_call": "Ran a command",
@@ -834,6 +835,7 @@ class AgentRuntime:
         skills: SkillService | None = None,
         automations: AutomationService | None = None,
         youtube: YoutubeTranscriptService | None = None,
+        images: ImageService | None = None,
     ) -> None:
         self.config = config
         self.conversations = conversations
@@ -844,6 +846,7 @@ class AgentRuntime:
         self.skills = skills
         self.automations = automations
         self.youtube = youtube
+        self.images = images
         self.base_prompt = base_prompt.strip()
         self._locks: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
         self._run_slots = asyncio.BoundedSemaphore(config.skye_max_concurrent_runs)
@@ -922,6 +925,20 @@ class AgentRuntime:
                 attached_file_ids = list(
                     await self.conversations.database.session_files(provider_conversation_id)
                 )
+                turn_images: TurnImages | None = None
+                if self.images is not None:
+                    sources: list[tuple[str, bytes]] = []
+                    if self.client is not None:
+                        sources = await turn_sources(
+                            user_input,
+                            self.client,
+                            self.config.skye_max_attachment_bytes,
+                        )
+                    turn_images = TurnImages(
+                        self.images,
+                        requested_image_limit(user_input),
+                        sources,
+                    )
                 agent = self._agent(
                     context,
                     settings,
@@ -936,6 +953,7 @@ class AgentRuntime:
                     awaiting_reply,
                     provider_conversation_id,
                     image_tool_calls=image_tool_call_limit(user_input),
+                    turn_images=turn_images,
                 )
                 async with self._provider_slot(active, context, key):
                     if active.cancel.is_set():
@@ -949,6 +967,7 @@ class AgentRuntime:
                             context,
                             delivery,
                             on_event,
+                            turn_images,
                         )
                         return RunOutput(
                             output.text,
@@ -1055,6 +1074,7 @@ class AgentRuntime:
         context: RequestContext,
         delivery: TurnDelivery,
         on_event: EventCallback | None = None,
+        turn_images: TurnImages | None = None,
     ) -> RunOutput:
         async def sleep(seconds: float) -> None:
             await self._delay(active, float(seconds))
@@ -1090,7 +1110,7 @@ class AgentRuntime:
                 )
                 try:
                     return await self._consume_stream(
-                        agent, user_input, conversation_id, active, on_event
+                        agent, user_input, conversation_id, active, on_event, turn_images
                     )
                 except BaseException as error:
                     cause = error.__cause__
@@ -1135,13 +1155,10 @@ class AgentRuntime:
                             self.config.skye_max_attachment_bytes,
                             created_after=error.started,
                         )
-                        image_limit = requested_image_limit(user_input)
-                        inline_images = self._images(error.result, limit=image_limit)
                         images = (
-                            *inline_images,
-                            *await self._remote_images(
-                                error.result, limit=image_limit - len(inline_images)
-                            ),
+                            tuple(turn_images.images[: requested_image_limit(user_input)])
+                            if turn_images is not None
+                            else ()
                         )
                         if on_event is not None:
                             for image in images:
@@ -1166,6 +1183,7 @@ class AgentRuntime:
         conversation_id: str,
         active: _ActiveRun,
         on_event: EventCallback | None = None,
+        turn_images: TurnImages | None = None,
     ) -> RunOutput:
         started = int(time.time())
         run_config = (
@@ -1234,11 +1252,10 @@ class AgentRuntime:
             self.config.skye_max_attachment_bytes,
             created_after=started,
         )
-        image_limit = requested_image_limit(user_input)
-        inline_images = self._images(result, limit=image_limit)
         images = (
-            *inline_images,
-            *await self._remote_images(result, limit=image_limit - len(inline_images)),
+            tuple(turn_images.images[: requested_image_limit(user_input)])
+            if turn_images is not None
+            else ()
         )
         if on_event is not None:
             for image in images:
@@ -1276,6 +1293,7 @@ class AgentRuntime:
         awaiting_reply: bool = True,
         provider_session_id: str | None = None,
         image_tool_calls: int | None = None,
+        turn_images: TurnImages | None = None,
     ) -> Agent[None]:
         composition = composition or AgentComposition(None, ())
         connector_tools = connector_tools or ConnectorTools((), ())
@@ -1295,11 +1313,13 @@ class AgentRuntime:
             awaiting_reply=awaiting_reply,
             include_send_message=True,
         )
-        tools = self._hosted_tools(capabilities, skills, input_file_ids)
+        tools = self._hosted_tools(capabilities, input_file_ids)
         tools.append(delivery.tool())
         tools.append(delivery.voice_tool())
         if self.config.provider == "openrouter" and "shell" in capabilities:
             tools.append(delivery.file_tool())
+        if turn_images is not None and "image" in capabilities:
+            tools.extend(turn_images.tools())
         if skills:
             tools.append(self._skill_tool(skills))
         tools.extend(connector_tools.tools)
@@ -1319,6 +1339,7 @@ class AgentRuntime:
                 input_file_ids,
                 provider_session_id,
                 image_tool_calls=image_tool_calls,
+                turn_images=turn_images,
             ).as_tool(
                 tool_name=f"agent_{item.profile.id}",
                 tool_description=(
@@ -1390,8 +1411,9 @@ class AgentRuntime:
             )
         if "image" in capabilities:
             instructions += (
-                "\n\nGenerated images are delivered to the user automatically. "
-                "For a singular request, make exactly one image-generation call. "
+                "\n\nCall generate_image for new pictures and edit_image to change a photo "
+                "attached to the current message. Finished pictures are delivered to the "
+                "user automatically. For a singular request, make exactly one call. "
                 "Only make more calls when the user explicitly asks for a number of images. "
                 "A completed image is delivery; never generate another variant afterward."
             )
@@ -1433,9 +1455,10 @@ class AgentRuntime:
     def _hosted_tools(
         self,
         capabilities: tuple[AgentCapability, ...],
-        skills: tuple[Skill, ...] = (),
         input_file_ids: tuple[str, ...] = (),
     ) -> list[Tool]:
+        # Images are served by our own generate_image/edit_image function tools;
+        # web and shell stay hosted until the Exa and sandbox steps land.
         tools: list[Tool] = []
         if self.config.provider == "openrouter":
             if "web" in capabilities:
@@ -1462,19 +1485,6 @@ class AgentRuntime:
                         ),
                     ]
                 )
-            if "image" in capabilities:
-                tools.append(
-                    HostedMCPTool(
-                        cast(
-                            Any,
-                            {
-                                "type": "openrouter:image_generation",
-                                "server_label": "openrouter_image_generation",
-                                "parameters": {"model": self.config.skye_image_model},
-                            },
-                        )
-                    )
-                )
             if "shell" in capabilities:
                 openrouter_environment: dict[str, Any] = {
                     "type": "container_auto",
@@ -1490,21 +1500,6 @@ class AgentRuntime:
             return tools
         if "web" in capabilities:
             tools.append(WebSearchTool(search_context_size="medium"))
-        if "image" in capabilities:
-            tools.append(
-                ImageGenerationTool(
-                    tool_config={
-                        "type": "image_generation",
-                        "model": self.config.skye_image_model,
-                        "size": "auto",
-                        "quality": "auto",
-                        "output_format": "png",
-                        "background": "auto",
-                        "moderation": "auto",
-                        "partial_images": 1,
-                    }
-                )
-            )
         if "shell" in capabilities:
             environment: dict[str, Any] = {
                 "type": "container_auto",
@@ -1560,6 +1555,7 @@ class AgentRuntime:
         provider_session_id: str | None = None,
         *,
         image_tool_calls: int | None = None,
+        turn_images: TurnImages | None = None,
     ) -> Agent[None]:
         instructions = self._instructions(
             context,
@@ -1569,7 +1565,9 @@ class AgentRuntime:
             skills=skills,
             include_send_message=False,
         )
-        tools = self._hosted_tools(installed.version.capabilities, skills, input_file_ids)
+        tools = self._hosted_tools(installed.version.capabilities, input_file_ids)
+        if turn_images is not None and "image" in installed.version.capabilities:
+            tools.extend(turn_images.tools())
         return Agent(
             name=installed.version.name,
             instructions=instructions,
@@ -1645,53 +1643,6 @@ class AgentRuntime:
                 if content.get("type") == "input_text":
                     texts.append(content.get("text", ""))
         return " ".join(texts)
-
-    @staticmethod
-    def _images(result: RunResultStreaming, *, limit: int | None = None) -> tuple[bytes, ...]:
-        images: list[bytes] = []
-        for response in result.raw_responses:
-            for item in response.output:
-                if getattr(item, "type", None) not in {
-                    "image_generation_call",
-                    "openrouter:image_generation",
-                }:
-                    continue
-                encoded = getattr(item, "result", None) or getattr(item, "imageUrl", None)
-                value = str(encoded or "")
-                if value.startswith("data:image/") and ";base64," in value:
-                    value = value.split(",", 1)[1]
-                if value and not value.startswith(("https://", "http://")):
-                    images.append(base64.b64decode(value, validate=True))
-                    if limit is not None and len(images) >= limit:
-                        return tuple(images)
-        return tuple(images)
-
-    @staticmethod
-    async def _remote_images(
-        result: RunResultStreaming, *, limit: int | None = None
-    ) -> tuple[bytes, ...]:
-        if limit is not None and limit <= 0:
-            return ()
-        urls: list[str] = []
-        for response in result.raw_responses:
-            for item in response.output:
-                encoded = getattr(item, "result", None) or getattr(item, "imageUrl", None)
-                if getattr(item, "type", None) in {
-                    "image_generation_call",
-                    "openrouter:image_generation",
-                } and str(encoded).startswith(("https://", "http://")):
-                    urls.append(str(encoded))
-                    if limit is not None and len(urls) >= limit:
-                        break
-            if limit is not None and len(urls) >= limit:
-                break
-        if not urls:
-            return ()
-        async with httpx.AsyncClient(follow_redirects=True, timeout=60) as client:
-            downloads = await asyncio.gather(*(client.get(url) for url in urls))
-        for download in downloads:
-            download.raise_for_status()
-        return tuple(download.content for download in downloads)
 
 
 def estimate_usage_tokens(user_input: str | list[TResponseInputItem], output_text: str) -> int:

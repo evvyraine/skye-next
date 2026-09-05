@@ -1316,6 +1316,8 @@ class TelegramApp:
             if event.kind == "tool" and event.tool_name in {
                 "image_generation",
                 "image_generation_call",
+                "generate_image",
+                "edit_image",
             }:
                 action: TelegramChatAction = "upload_photo"
             elif event.kind == "activity" and event.tool_name == "send_voice":

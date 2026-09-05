@@ -28,6 +28,7 @@ from .conversations import ConversationService
 from .custom_agents import CustomAgentService
 from .db import Database
 from .group_context import GroupContextService
+from .images import ImageService
 from .media_groups import MediaGroupService
 from .memory import MemoryService
 from .projects import ProjectService
@@ -146,6 +147,7 @@ async def run() -> None:
         max_chars=config.skye_youtube_transcript_max_chars,
         proxy_url=config.skye_youtube_proxy_url,
     )
+    images = ImageService(client, config.skye_image_model, config.skye_max_attachment_bytes)
     runtime = AgentRuntime(
         config,
         conversations,
@@ -157,6 +159,7 @@ async def run() -> None:
         skills,
         automations,
         youtube,
+        images,
     )
     projects = ProjectService(
         database,

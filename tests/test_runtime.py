@@ -11,7 +11,6 @@ import pytest
 from agents import (
     FunctionTool,
     HostedMCPTool,
-    ImageGenerationTool,
     ModelSettings,
     ShellTool,
     WebSearchTool,
@@ -30,6 +29,7 @@ from skye.artifacts import GeneratedFile
 from skye.config import SANDBOX_DOMAINS, Settings
 from skye.connectors import ConnectorTools
 from skye.custom_agents import AgentComposition
+from skye.images import ImageService, TurnImages, sniff_mime, turn_sources
 from skye.memory import MemoryService
 from skye.models import (
     AgentProfile,
@@ -112,7 +112,6 @@ def test_agent_uses_only_hosted_capabilities() -> None:
 
     assert [type(tool) for tool in agent.tools] == [
         WebSearchTool,
-        ImageGenerationTool,
         ShellTool,
         FunctionTool,
         FunctionTool,
@@ -120,14 +119,14 @@ def test_agent_uses_only_hosted_capabilities() -> None:
         FunctionTool,
         FunctionTool,
     ]
-    assert [cast(FunctionTool, tool).name for tool in agent.tools[3:]] == [
+    assert [cast(FunctionTool, tool).name for tool in agent.tools[2:]] == [
         "send_message",
         "send_voice",
         "remember",
         "recall",
         "forget",
     ]
-    shell = cast(ShellTool, agent.tools[2])
+    shell = cast(ShellTool, agent.tools[1])
     assert shell.executor is None
     assert shell.environment == {
         "type": "container_auto",
@@ -163,7 +162,7 @@ def test_attached_files_are_mounted_in_the_hosted_sandbox() -> None:
         input_file_ids=("file_1", "file_2"),
     )
 
-    shell = cast(ShellTool, agent.tools[2])
+    shell = cast(ShellTool, agent.tools[1])
     assert shell.environment == {
         "type": "container_auto",
         "network_policy": sandbox_network_policy(),
@@ -187,16 +186,14 @@ def test_openrouter_uses_only_openrouter_server_tools() -> None:
 
     tools = runtime._hosted_tools(("web", "image", "shell"), input_file_ids=("or_file_1",))
 
-    assert all(isinstance(tool, HostedMCPTool) for tool in tools[:3])
-    assert isinstance(tools[3], ShellTool)
-    configs = [cast(HostedMCPTool, tool).tool_config for tool in tools[:3]]
+    assert all(isinstance(tool, HostedMCPTool) for tool in tools[:2])
+    assert isinstance(tools[2], ShellTool)
+    configs = [cast(HostedMCPTool, tool).tool_config for tool in tools[:2]]
     assert [item["type"] for item in configs] == [
         "openrouter:web_search",
         "openrouter:web_fetch",
-        "openrouter:image_generation",
     ]
-    assert configs[2]["parameters"] == {"model": "openai/gpt-5-image"}
-    assert cast(ShellTool, tools[3]).environment == {
+    assert cast(ShellTool, tools[2]).environment == {
         "type": "container_auto",
         "network_policy": sandbox_network_policy(),
         "file_ids": ["or_file_1"],
@@ -292,7 +289,7 @@ def test_disabled_memory_is_not_injected_or_exposed() -> None:
         "secret memory",
     )
 
-    assert len(agent.tools) == 5
+    assert len(agent.tools) == 4
     assert "secret memory" not in cast(str, agent.instructions)
     names = {
         cast(FunctionTool, tool).name for tool in agent.tools if isinstance(tool, FunctionTool)
@@ -359,54 +356,10 @@ def test_connector_labels_are_private_context_only() -> None:
     assert "free-standing bubble" in cast(str, group.instructions)
 
 
-def test_generated_images_are_extracted() -> None:
-    encoded = base64.b64encode(b"png").decode()
-    result = cast(
-        Any,
-        type(
-            "Result",
-            (),
-            {
-                "raw_responses": [
-                    type(
-                        "Response",
-                        (),
-                        {
-                            "output": [
-                                type(
-                                    "Image",
-                                    (),
-                                    {"type": "image_generation_call", "result": encoded},
-                                )()
-                            ]
-                        },
-                    )()
-                ]
-            },
-        )(),
-    )
+def test_turn_images_collect_finished_pictures_within_limit() -> None:
+    turn = TurnImages(cast(Any, None), 1, [], [b"first", b"second"])
 
-    assert AgentRuntime._images(result) == (b"png",)
-
-
-def test_extra_generated_images_are_limited_for_singular_request() -> None:
-    first = base64.b64encode(b"first").decode()
-    second = base64.b64encode(b"second").decode()
-    result = cast(
-        Any,
-        SimpleNamespace(
-            raw_responses=[
-                SimpleNamespace(
-                    output=[
-                        SimpleNamespace(type="image_generation_call", result=first),
-                        SimpleNamespace(type="image_generation_call", result=second),
-                    ]
-                )
-            ]
-        ),
-    )
-
-    assert AgentRuntime._images(result, limit=1) == (b"first",)
+    assert tuple(turn.images[: requested_image_limit("draw a cat")]) == (b"first",)
 
 
 @pytest.mark.parametrize(
@@ -471,25 +424,76 @@ def test_image_request_caps_native_tool_calls_in_model_settings() -> None:
     assert request["parallel_tool_calls"] is False
 
 
-def test_openrouter_data_url_images_are_extracted() -> None:
-    encoded = base64.b64encode(b"png").decode()
-    result = cast(
-        Any,
-        SimpleNamespace(
-            raw_responses=[
-                SimpleNamespace(
-                    output=[
-                        SimpleNamespace(
-                            type="openrouter:image_generation",
-                            result=f"data:image/png;base64,{encoded}",
-                        )
-                    ]
-                )
-            ]
-        ),
-    )
+async def test_turn_sources_reads_inline_data_url_images() -> None:
+    user_input: list[Any] = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "input_text", "text": "edit this"},
+                {
+                    "type": "input_image",
+                    "image_url": f"data:image/png;base64,{base64.b64encode(b'png').decode()}",
+                },
+            ],
+        }
+    ]
 
-    assert AgentRuntime._images(result) == (b"png",)
+    assert await turn_sources(user_input, cast(Any, AsyncMock()), 1024) == [
+        ("attached-0", b"png")
+    ]
+
+
+async def test_generate_image_tool_delivers_through_the_turn_budget() -> None:
+    service = ImageService(cast(Any, AsyncMock()), "img-model", 1024)
+    service.generate = AsyncMock(return_value=b"png-bytes")  # type: ignore[method-assign]
+    turn = TurnImages(service, 1)
+    generate, _edit = turn.tools()
+
+    assert await generate.on_invoke_tool(
+        _tool_context("generate_image", '{"prompt":"a cat"}'), '{"prompt":"a cat"}'
+    ) == ("Picture 1 of 1 is ready.")
+    assert turn.images == [b"png-bytes"]
+    assert await generate.on_invoke_tool(
+        _tool_context("generate_image", '{"prompt":"a dog"}'), '{"prompt":"a dog"}'
+    ) == ("Image limit reached for this turn (1).")
+    cast(AsyncMock, service.generate).assert_awaited_once()
+
+
+async def test_edit_image_tool_needs_an_attached_photo() -> None:
+    images = AsyncMock()
+    service = ImageService(cast(Any, images), "img-model", 1024)
+    turn = TurnImages(service, 2)
+    _generate, edit = turn.tools()
+
+    assert await edit.on_invoke_tool(
+        _tool_context("edit_image", '{"prompt":"sharpen"}'), '{"prompt":"sharpen"}'
+    ) == ("No photo is attached to this message. Ask for one first.")
+    images.edit.assert_not_awaited()
+
+
+def test_sniff_mime_detects_common_formats() -> None:
+    assert sniff_mime(b"\x89PNG\r\n\x1a\nrest") == "image/png"
+    assert sniff_mime(b"\xff\xd8\xffrest") == "image/jpeg"
+    assert sniff_mime(b"nope") == "image/png"
+
+
+async def test_image_service_decodes_provider_payload() -> None:
+    payload = SimpleNamespace(
+        data=[
+            SimpleNamespace(b64_json=base64.b64encode(b"pic").decode(), url=None),
+        ]
+    )
+    client = SimpleNamespace(
+        images=SimpleNamespace(
+            generate=AsyncMock(return_value=payload),
+            edit=AsyncMock(return_value=payload),
+        )
+    )
+    service = ImageService(cast(Any, client), "img-model", 1024)
+
+    assert await service.generate("a cat") == b"pic"
+    assert await service.edit("sharper", [("attached-0", b"src")]) == b"pic"
+    client.images.generate.assert_awaited_once_with(model="img-model", prompt="a cat")
 
 
 def test_counting_tools_remove_streaming_only_image_options() -> None:
@@ -566,11 +570,12 @@ def test_image_delivery_note_follows_capabilities() -> None:
         composition=AgentComposition(installed_agent("a2", "Illustrator", ("image",)), ()),
     )
 
-    note = "Generated images are delivered to the user automatically."
+    note = "Finished pictures are delivered to the user automatically."
     assert note in cast(str, with_image.instructions)
-    assert "For a singular request, make exactly one image-generation call." in cast(
+    assert "For a singular request, make exactly one call." in cast(
         str, with_image.instructions
     )
+    assert "Call generate_image for new pictures" in cast(str, with_image.instructions)
     assert note not in cast(str, without_image.instructions)
     assert note in cast(str, image_only.instructions)
 
@@ -653,7 +658,7 @@ def test_skills_are_exposed_through_read_skill_not_hosted_refs() -> None:
         skills=(skill,),
     )
 
-    shell = cast(ShellTool, agent.tools[2])
+    shell = cast(ShellTool, agent.tools[1])
     assert shell.environment == {
         "type": "container_auto",
         "network_policy": sandbox_network_policy(),
