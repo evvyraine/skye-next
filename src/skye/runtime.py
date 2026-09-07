@@ -433,11 +433,13 @@ class GuardedChatModel(OpenAIChatCompletionsModel):
         model: str,
         client: AsyncOpenAI,
         limiter: TokenRateLimiter,
+        compaction_threshold_tokens: int,
         max_context_tokens: int,
         output_reserve: int,
     ) -> None:
         super().__init__(model, client)
         self._limiter = limiter
+        self._compaction_threshold_tokens = compaction_threshold_tokens
         self._max_context_tokens = max_context_tokens
         self._output_reserve = output_reserve
 
@@ -449,12 +451,13 @@ class GuardedChatModel(OpenAIChatCompletionsModel):
     ) -> None:
         specs = _tool_specs(tools)
         estimated = _estimate_chat_tokens(system_instructions, input, specs)
-        if estimated > self._max_context_tokens and isinstance(input, list):
+        if estimated > self._compaction_threshold_tokens and isinstance(input, list):
             estimated = self._trim_history_to_fit(
                 system_instructions,
                 input,
                 specs,
                 estimated,
+                self._compaction_threshold_tokens,
             )
         if estimated > self._max_context_tokens:
             log.info(
@@ -473,6 +476,7 @@ class GuardedChatModel(OpenAIChatCompletionsModel):
         input_items: list[TResponseInputItem],
         specs: list[Any],
         original_tokens: int,
+        target_tokens: int,
     ) -> int:
         """Drop complete old turns until the whole chat request fits."""
         latest_user = _latest_user_item(input_items)
@@ -484,6 +488,11 @@ class GuardedChatModel(OpenAIChatCompletionsModel):
         if current_tokens > self._max_context_tokens:
             return original_tokens
 
+        # A large current turn cannot be shortened without silently losing user
+        # input. Let it use the hard-limit headroom, while still discarding as
+        # much old history as necessary.
+        target_tokens = max(target_tokens, current_tokens)
+
         selected = current_turn
         selected_tokens = current_tokens
         user_boundaries = [
@@ -494,7 +503,7 @@ class GuardedChatModel(OpenAIChatCompletionsModel):
         for index in reversed(user_boundaries):
             candidate = input_items[index:]
             candidate_tokens = _estimate_chat_tokens(instructions, candidate, specs)
-            if candidate_tokens > self._max_context_tokens:
+            if candidate_tokens > target_tokens:
                 break
             selected = candidate
             selected_tokens = candidate_tokens
@@ -553,6 +562,7 @@ class GuardedModelProvider(ModelProvider):
                 name,
                 self.client,
                 self.limiter,
+                self.config.skye_compaction_threshold_tokens,
                 self.config.skye_max_context_tokens,
                 self.config.skye_max_output_tokens,
             )

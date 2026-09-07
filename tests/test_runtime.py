@@ -970,7 +970,7 @@ async def test_token_rate_limiter_waits_for_the_rolling_budget() -> None:
 
 async def test_chat_model_rejects_a_request_above_the_context_budget() -> None:
     limiter = AsyncMock()
-    model = GuardedChatModel("test-model", AsyncMock(), limiter, 50_000, 4_000)
+    model = GuardedChatModel("test-model", AsyncMock(), limiter, 40_000, 50_000, 4_000)
 
     with pytest.raises(ContextLimitError):
         await model._admit("instructions", "x" * 200_000, [])
@@ -980,7 +980,7 @@ async def test_chat_model_rejects_a_request_above_the_context_budget() -> None:
 
 async def test_chat_model_admits_a_small_request_through_the_limiter() -> None:
     limiter = AsyncMock()
-    model = GuardedChatModel("test-model", AsyncMock(), limiter, 50_000, 4_000)
+    model = GuardedChatModel("test-model", AsyncMock(), limiter, 40_000, 50_000, 4_000)
 
     await model._admit("instructions", "hello", [])
 
@@ -989,7 +989,7 @@ async def test_chat_model_admits_a_small_request_through_the_limiter() -> None:
 
 async def test_chat_model_admits_a_large_inline_image() -> None:
     limiter = AsyncMock()
-    model = GuardedChatModel("test-model", AsyncMock(), limiter, 50_000, 4_000)
+    model = GuardedChatModel("test-model", AsyncMock(), limiter, 40_000, 50_000, 4_000)
     image = "data:image/jpeg;base64," + ("A" * 400_000)
     user_input: list[Any] = [
         {
@@ -1009,7 +1009,7 @@ async def test_chat_model_admits_a_large_inline_image() -> None:
 
 async def test_chat_model_trims_complete_old_turns_to_fit_request() -> None:
     limiter = AsyncMock()
-    model = GuardedChatModel("test-model", AsyncMock(), limiter, 220, 40)
+    model = GuardedChatModel("test-model", AsyncMock(), limiter, 180, 220, 40)
     user_input: list[Any] = [
         {"role": "user", "content": "old question " + ("x" * 180)},
         {"role": "assistant", "content": "old answer " + ("y" * 180)},
@@ -1033,7 +1033,7 @@ async def test_chat_model_trimming_accounts_for_tool_schema_size() -> None:
         return payload + ("z" * 120)
 
     limiter = AsyncMock()
-    model = GuardedChatModel("test-model", AsyncMock(), limiter, 260, 40)
+    model = GuardedChatModel("test-model", AsyncMock(), limiter, 220, 260, 40)
     user_input: list[Any] = [
         {"role": "user", "content": "old " + ("x" * 180)},
         {"role": "assistant", "content": "answer " + ("y" * 120)},
@@ -1048,7 +1048,7 @@ async def test_chat_model_trimming_accounts_for_tool_schema_size() -> None:
 
 async def test_chat_model_rejects_current_turn_that_cannot_fit_after_trimming() -> None:
     limiter = AsyncMock()
-    model = GuardedChatModel("test-model", AsyncMock(), limiter, 200, 40)
+    model = GuardedChatModel("test-model", AsyncMock(), limiter, 160, 200, 40)
     user_input: list[Any] = [
         {"role": "user", "content": "old"},
         {"role": "assistant", "content": "answer"},
@@ -1060,6 +1060,21 @@ async def test_chat_model_rejects_current_turn_that_cannot_fit_after_trimming() 
 
     assert len(user_input) == 3
     limiter.acquire.assert_not_awaited()
+
+
+async def test_chat_model_keeps_large_current_turn_and_drops_old_history() -> None:
+    limiter = AsyncMock()
+    model = GuardedChatModel("test-model", AsyncMock(), limiter, 160, 300, 40)
+    user_input: list[Any] = [
+        {"role": "user", "content": "old " + ("x" * 300)},
+        {"role": "assistant", "content": "answer " + ("y" * 200)},
+        {"role": "user", "content": "current " + ("z" * 360)},
+    ]
+
+    await model._admit("short", user_input, [])
+
+    assert user_input == [{"role": "user", "content": "current " + ("z" * 360)}]
+    limiter.acquire.assert_awaited_once()
 
 
 def test_chat_model_provider_caches_models_by_name() -> None:

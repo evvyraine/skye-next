@@ -92,8 +92,8 @@ class Settings(BaseSettings):
     skye_default_reasoning: Reasoning = "medium"
     skye_max_turns: int = Field(default=20, ge=2, le=100)
     skye_run_timeout_seconds: int = Field(default=300, ge=10, le=1800)
-    skye_compaction_threshold_tokens: int = Field(default=40_000, ge=1)
-    skye_max_context_tokens: int = Field(default=50_000, ge=1)
+    skye_compaction_threshold_tokens: int = Field(default=80_000, ge=1)
+    skye_max_context_tokens: int = Field(default=120_000, ge=1)
     skye_max_output_tokens: int = Field(default=4_000, ge=1)
     skye_tpm_budget: int = Field(default=1_800_000, ge=1)
     skye_max_concurrent_runs: int = Field(default=8, ge=1, le=64)
@@ -133,7 +133,7 @@ class Settings(BaseSettings):
     @field_validator("skye_max_context_tokens")
     @classmethod
     def _context_above_compaction(cls, value: int, info: ValidationInfo) -> int:
-        threshold = info.data.get("skye_compaction_threshold_tokens", 40_000)
+        threshold = info.data.get("skye_compaction_threshold_tokens", 80_000)
         if value <= threshold:
             raise ValueError("must be greater than skye_compaction_threshold_tokens")
         return value
@@ -141,7 +141,7 @@ class Settings(BaseSettings):
     @field_validator("skye_tpm_budget")
     @classmethod
     def _tpm_covers_one_request(cls, value: int, info: ValidationInfo) -> int:
-        context = info.data.get("skye_max_context_tokens", 50_000)
+        context = info.data.get("skye_max_context_tokens", 120_000)
         output = info.data.get("skye_max_output_tokens", 4_000)
         if value < context + output:
             raise ValueError("must cover one maximum-size request")

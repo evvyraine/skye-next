@@ -168,8 +168,8 @@ def test_group_context_defaults_to_twenty_new_messages() -> None:
 def test_token_safety_defaults_leave_headroom() -> None:
     loaded = settings()
 
-    assert loaded.skye_compaction_threshold_tokens == 40_000
-    assert loaded.skye_max_context_tokens == 50_000
+    assert loaded.skye_compaction_threshold_tokens == 80_000
+    assert loaded.skye_max_context_tokens == 120_000
     assert loaded.skye_max_output_tokens == 4_000
     assert loaded.skye_tpm_budget == 1_800_000
     assert loaded.skye_max_concurrent_runs == 8
