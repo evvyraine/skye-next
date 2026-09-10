@@ -444,7 +444,7 @@ async def test_image_service_polls_task_answers_until_completed() -> None:
     get.assert_awaited_with("/media/task-1", cast_to=dict[str, Any])
 
 
-async def test_image_service_falls_back_to_media_edit_without_edits_route() -> None:
+async def test_image_service_falls_back_to_images_edit_without_edits_route() -> None:
     from openai import NotFoundError
 
     done = {
@@ -466,11 +466,11 @@ async def test_image_service_falls_back_to_media_edit_without_edits_route() -> N
 
     assert await service.edit("add gull", [("attached-0", b"src")]) == b"pic"
     assert post.await_count == 2
-    assert post.await_args.args == ("/media",)
+    assert post.await_args.args == ("/images",)
     body = post.await_args.kwargs["body"]
     assert body["model"] == "img-model"
-    assert body["input"]["prompt"] == "add gull"
-    assert body["input"]["images"][0]["type"] == "base64"
+    assert body["prompt"] == "add gull"
+    assert body["input_references"][0]["image_url"]["url"].startswith("data:image/")
 
 
 async def test_image_service_falls_back_on_unparseable_edits_body() -> None:
@@ -495,7 +495,30 @@ async def test_image_service_falls_back_on_unparseable_edits_body() -> None:
 
     assert await service.edit("add gull", [("attached-0", b"src")]) == b"pic"
     assert post.await_count == 2
+    assert post.await_args.args == ("/images",)
+
+
+async def test_image_service_falls_back_to_media_when_images_route_is_missing() -> None:
+    from openai import NotFoundError
+
+    done = {
+        "status": "completed",
+        "data": [{"b64_json": base64.b64encode(b"pic").decode()}],
+    }
+    missing = NotFoundError(
+        "unknown route",
+        response=httpx.Response(404, request=_request()),
+        body=None,
+    )
+    post = AsyncMock(side_effect=[missing, missing, done])
+    client = SimpleNamespace(post=post)
+    service = ImageService(cast(Any, client), "img-model", 1024)
+
+    assert await service.edit("add gull", [("attached-0", b"src")]) == b"pic"
+    assert post.await_count == 3
     assert post.await_args.args == ("/media",)
+    body = post.await_args.kwargs["body"]
+    assert body["input"]["images"][0]["type"] == "base64"
 
 
 async def test_image_service_raises_real_edit_failures() -> None:

@@ -112,6 +112,23 @@ def test_explicit_base_url_wins_over_legacy_openrouter_key() -> None:
     assert loaded.provider_base_url == "https://llm.example.com/v1"
 
 
+@pytest.mark.parametrize(
+    ("raw", "cleaned"),
+    [
+        ("https://openrouter.ai/api/v1/chat/completions", "https://openrouter.ai/api/v1"),
+        ("https://openrouter.ai/api/v1/chat/completions/", "https://openrouter.ai/api/v1"),
+        ("https://openrouter.ai/api/v1/responses", "https://openrouter.ai/api/v1"),
+        ("https://llm.example.com/v1", "https://llm.example.com/v1"),
+    ],
+)
+def test_base_url_keeps_only_the_api_root(raw: str, cleaned: str) -> None:
+    loaded = settings(skye_provider_base_url=raw)
+
+    assert loaded.provider_base_url == cleaned
+    assert loaded.image_base_url == cleaned
+    assert loaded.audio_base_url == cleaned
+
+
 def test_media_endpoints_fall_back_to_chat_provider() -> None:
     loaded = settings(
         skye_provider_api_key="sk-unified",
@@ -139,6 +156,11 @@ def test_media_endpoints_accept_separate_keys_and_urls() -> None:
     assert loaded.audio_base_url == "https://audio.example.com/v1"
     assert loaded.image_endpoint_overridden is True
     assert loaded.audio_endpoint_overridden is True
+
+
+def test_native_media_is_off_by_default() -> None:
+    assert settings().skye_native_media is False
+    assert settings(skye_native_media=True).skye_native_media is True
 
 
 def test_sandbox_and_exa_defaults() -> None:

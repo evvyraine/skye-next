@@ -33,8 +33,21 @@ def test_documents_are_always_inline_file_data() -> None:
     }
 
 
-def test_audio_uploads_include_transcript_and_native_audio() -> None:
+def test_audio_uploads_keep_transcript_only_by_default() -> None:
     parts = openai_file_parts("voice.ogg", "audio/ogg", b"audio", transcript="Transcript")
+
+    assert parts == [
+        {
+            "type": "input_text",
+            "text": "Attached audio transcript (voice.ogg):\nTranscript",
+        }
+    ]
+
+
+def test_audio_uploads_include_native_audio_when_enabled() -> None:
+    parts = openai_file_parts(
+        "voice.ogg", "audio/ogg", b"audio", transcript="Transcript", native_media=True
+    )
 
     assert parts[0] == {
         "type": "input_text",
@@ -44,6 +57,49 @@ def test_audio_uploads_include_transcript_and_native_audio() -> None:
         "type": "input_audio",
         "input_audio": {"data": "YXVkaW8=", "format": "ogg"},
     }
+
+
+def test_text_documents_are_extracted_inline() -> None:
+    parts = openai_file_parts("notes.md", "text/markdown", b"# Title\nhello")
+
+    assert parts == [
+        {"type": "input_text", "text": "Attached document (notes.md):\n# Title\nhello"}
+    ]
+
+
+def test_docx_documents_are_extracted_inline() -> None:
+    import io
+    import zipfile
+
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr(
+            "word/document.xml",
+            "<w:document><w:body><w:p><w:r><w:t>Hello doc</w:t></w:r></w:p></w:body></w:document>",
+        )
+
+    parts = openai_file_parts(
+        "note.docx",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        buffer.getvalue(),
+    )
+
+    assert parts[0]["type"] == "input_text"
+    assert parts[0]["text"] == "Attached document (note.docx):\nHello doc"
+
+
+def test_unknown_binary_documents_are_placeholders_by_default() -> None:
+    parts = openai_file_parts("sheet.xlsx", "application/octet-stream", b"PK\x03\x04binary")
+
+    assert parts == [
+        {
+            "type": "input_text",
+            "text": (
+                "Attached document (sheet.xlsx) is attached, but this file type "
+                "cannot be read inline."
+            ),
+        }
+    ]
 
 
 def test_audio_uploads_are_detected() -> None:

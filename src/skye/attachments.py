@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import base64
+import html
 import mimetypes
+import re
+import zipfile
 from collections.abc import Awaitable, Sequence
 from io import BytesIO
 from pathlib import Path
@@ -44,6 +47,62 @@ AUDIO_MIMES = {
     "audio/x-aiff": "aiff",
     "audio/x-wav": "wav",
 }
+PDF_MIMES = {"application/pdf"}
+TEXT_MIMES = {
+    "application/csv",
+    "application/javascript",
+    "application/json",
+    "application/ld+json",
+    "application/sql",
+    "application/toml",
+    "application/x-httpd-php",
+    "application/x-sh",
+    "application/x-yaml",
+    "application/xml",
+    "application/yaml",
+}
+TEXT_EXTENSIONS = {
+    ".bat",
+    ".c",
+    ".cfg",
+    ".conf",
+    ".cpp",
+    ".cs",
+    ".css",
+    ".csv",
+    ".env",
+    ".go",
+    ".h",
+    ".hpp",
+    ".html",
+    ".ini",
+    ".java",
+    ".js",
+    ".json",
+    ".jsx",
+    ".kt",
+    ".log",
+    ".lua",
+    ".md",
+    ".php",
+    ".pl",
+    ".py",
+    ".rb",
+    ".rs",
+    ".sh",
+    ".sql",
+    ".svg",
+    ".swift",
+    ".toml",
+    ".ts",
+    ".tsx",
+    ".txt",
+    ".xml",
+    ".yaml",
+    ".yml",
+    ".zsh",
+}
+MAX_DOCUMENT_CHARS = 100_000
 
 
 class AttachmentService:
@@ -161,7 +220,17 @@ class AttachmentService:
         transcript = await transcribe_audio(
             self.client, self.config.skye_transcription_model, filename, data
         )
-        content.extend(audio_model_parts(label, kind, filename, mime, data, transcript))
+        content.extend(
+            audio_model_parts(
+                label,
+                kind,
+                filename,
+                mime,
+                data,
+                transcript,
+                native_media=self.config.skye_native_media,
+            )
+        )
         return None
 
     async def _document(
@@ -185,7 +254,17 @@ class AttachmentService:
             transcript = await transcribe_audio(
                 self.client, self.config.skye_transcription_model, filename, data
             )
-            content.extend(audio_model_parts(label, "audio", filename, mime, data, transcript))
+            content.extend(
+                audio_model_parts(
+                    label,
+                    "audio",
+                    filename,
+                    mime,
+                    data,
+                    transcript,
+                    native_media=self.config.skye_native_media,
+                )
+            )
             return None
         if mime.startswith("image/") or mime in IMAGE_MIMES:
             content.extend(
@@ -196,10 +275,13 @@ class AttachmentService:
             )
             return None
         content.extend(
-            [
-                {"type": "input_text", "text": f"{label} document ({filename}):"},
-                file_input_part(filename, mime, data),
-            ]
+            document_model_parts(
+                label,
+                filename,
+                mime,
+                data,
+                native_media=self.config.skye_native_media,
+            )
         )
         return None
 
@@ -271,6 +353,8 @@ def openai_file_parts(
     mime: str,
     data: bytes,
     transcript: str | None = None,
+    *,
+    native_media: bool = False,
 ) -> list[dict[str, Any]]:
     if mime.startswith("image/") or mime in IMAGE_MIMES:
         return [
@@ -278,11 +362,135 @@ def openai_file_parts(
             image_input_part(mime, data),
         ]
     if transcript is not None:
-        return audio_model_parts("Attached", "audio", filename, mime, data, transcript)
-    return [
-        {"type": "input_text", "text": f"Attached document ({filename}):"},
+        return audio_model_parts(
+            "Attached",
+            "audio",
+            filename,
+            mime,
+            data,
+            transcript,
+            native_media=native_media,
+        )
+    return document_model_parts(
+        "Attached", filename, mime, data, native_media=native_media
+    )
+
+
+def document_model_parts(
+    label: str,
+    filename: str,
+    mime: str,
+    data: bytes,
+    *,
+    native_media: bool = False,
+) -> list[dict[str, Any]]:
+    """Turn a document into model input that works on text-first providers.
+
+    PDFs stay native file parts (OpenRouter and OpenAI parse them). Text-like
+    files, and Office Open XML documents, are extracted locally and sent as
+    text. Other binaries fall back to a native file part only when the operator
+    opts in; otherwise the model gets a placeholder instead of a rejected part.
+    """
+    text = extract_document_text(filename, mime, data)
+    if text is not None:
+        return [{"type": "input_text", "text": f"{label} document ({filename}):\n{text}"}]
+    native = [
+        {"type": "input_text", "text": f"{label} document ({filename}):"},
         file_input_part(filename, mime, data),
     ]
+    if _is_pdf(filename, mime) or native_media:
+        return native
+    return [
+        {
+            "type": "input_text",
+            "text": (
+                f"{label} document ({filename}) is attached, but this file type "
+                "cannot be read inline."
+            ),
+        }
+    ]
+
+
+def extract_document_text(filename: str, mime: str, data: bytes) -> str | None:
+    """Return readable text for text-like and Office Open XML documents."""
+    extension = Path(filename).suffix.lower()
+    if _is_pdf(filename, mime):
+        return None
+    if mime.startswith("text/") or mime in TEXT_MIMES or extension in TEXT_EXTENSIONS:
+        return _decode_text(data)
+    if extension == ".docx":
+        return _office_text(data, "word/document.xml", r"</w:p>")
+    if extension == ".pptx":
+        return _office_text(data, ("ppt/slides/",), None)
+    if extension == ".xlsx":
+        return _spreadsheet_text(data)
+    if b"\x00" not in data[:4096]:
+        return _decode_text(data)
+    return None
+
+
+def _is_pdf(filename: str, mime: str) -> bool:
+    return mime in PDF_MIMES or Path(filename).suffix.lower() == ".pdf"
+
+
+def _decode_text(data: bytes) -> str | None:
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    if "\x00" in text:
+        return None
+    text = text.strip()
+    if not text:
+        return None
+    return text[:MAX_DOCUMENT_CHARS]
+
+
+def _office_text(
+    data: bytes,
+    member: str | tuple[str, ...],
+    paragraph_tag: str | None,
+) -> str | None:
+    try:
+        with zipfile.ZipFile(BytesIO(data)) as archive:
+            names = archive.namelist()
+            if isinstance(member, str):
+                selected = [name for name in names if name == member]
+            else:
+                selected = [
+                    name
+                    for name in names
+                    if name.endswith(".xml")
+                    and any(name.startswith(prefix) for prefix in member)
+                ]
+            chunks: list[str] = []
+            for name in selected:
+                xml = archive.read(name).decode("utf-8", "replace")
+                if paragraph_tag:
+                    xml = xml.replace(paragraph_tag, "\n")
+                chunks.append(_strip_markup(xml))
+    except (KeyError, ValueError, zipfile.BadZipFile):
+        return None
+    text = "\n".join(chunk for chunk in chunks if chunk).strip()
+    return text[:MAX_DOCUMENT_CHARS] or None
+
+
+def _spreadsheet_text(data: bytes) -> str | None:
+    try:
+        with zipfile.ZipFile(BytesIO(data)) as archive:
+            values: list[str] = []
+            for name in archive.namelist():
+                if name == "xl/sharedStrings.xml":
+                    xml = archive.read(name).decode("utf-8", "replace")
+                    values.extend(re.findall(r"<t[^>]*>(.*?)</t>", xml, re.S))
+    except (KeyError, ValueError, zipfile.BadZipFile):
+        return None
+    text = "\n".join(html.unescape(value).strip() for value in values if value.strip())
+    return text[:MAX_DOCUMENT_CHARS] or None
+
+
+def _strip_markup(xml: str) -> str:
+    return html.unescape(re.sub(r"<[^>]+>", "", xml)).strip()
 
 
 def image_input_part(mime: str, data: bytes) -> dict[str, Any]:
@@ -310,6 +518,8 @@ def audio_model_parts(
     mime: str,
     data: bytes,
     transcript: str,
+    *,
+    native_media: bool = False,
 ) -> list[dict[str, Any]]:
     parts: list[dict[str, Any]] = [
         {
@@ -317,7 +527,7 @@ def audio_model_parts(
             "text": f"{label} {kind} transcript ({filename}):\n{transcript}",
         }
     ]
-    if kind == "audio":
+    if kind == "audio" and native_media:
         audio = audio_input_part(filename, mime, data)
         if audio is not None:
             parts.append(audio)

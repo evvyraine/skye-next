@@ -102,6 +102,10 @@ class Settings(BaseSettings):
     skye_speech_model: str = "gpt-4o-mini-tts"
     skye_speech_voice: str = "nova"
     skye_image_model: str = "gpt-image-2"
+    # Send raw audio and non-PDF documents as native model inputs. Off by
+    # default: transcription and local text extraction work with text+image
+    # models (for example DeepSeek V4) whose providers reject audio/files.
+    skye_native_media: bool = False
     skye_image_api_key: str | None = None
     skye_image_base_url: str | None = None
     skye_audio_api_key: str | None = None
@@ -146,6 +150,23 @@ class Settings(BaseSettings):
         if value < context + output:
             raise ValueError("must cover one maximum-size request")
         return value
+
+    @field_validator("skye_provider_base_url", "skye_image_base_url", "skye_audio_base_url")
+    @classmethod
+    def _base_url_has_no_route(cls, value: str | None) -> str | None:
+        """Accept a full endpoint and keep only the API root.
+
+        Operators often paste ``.../v1/chat/completions``; the OpenAI client
+        appends its own routes, so the trailing route must be dropped.
+        """
+        if value is None:
+            return None
+        trimmed = value.rstrip("/")
+        for suffix in ("/chat/completions", "/responses"):
+            if trimmed.endswith(suffix):
+                trimmed = trimmed[: -len(suffix)].rstrip("/")
+                break
+        return trimmed or None
 
     @field_validator("composio_api_key", mode="before")
     @classmethod

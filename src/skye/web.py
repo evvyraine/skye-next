@@ -349,6 +349,7 @@ class WebApp:
                     mime,
                     data,
                     transcript,
+                    native_media=self.config.skye_native_media,
                 )
             )
             preview_bits.append(filename)

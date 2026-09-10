@@ -91,21 +91,51 @@ class ImageService:
             if not _edits_unsupported(error):
                 raise
             log.info("image_edit_route_missing", status=getattr(error, "status_code", None))
-            payload = await self.client.post(
-                "/media",
+            payload = await self._edit_fallback(prompt, sources)
+        return await self._resolve(payload)
+
+    async def _edit_fallback(
+        self, prompt: str, sources: list[tuple[str, bytes]]
+    ) -> dict[str, Any]:
+        """Edit through a gateway's media route when ``/images/edits`` is absent.
+
+        OpenRouter exposes image editing on ``POST /images`` with
+        ``input_references``. Older gateways use a task-style ``/media`` route.
+        """
+        try:
+            return await self.client.post(
+                "/images",
                 body={
                     "model": self.model,
-                    "input": {
-                        "prompt": prompt,
-                        "images": [
-                            {"type": "base64", "data": _data_url(data)}
-                            for _, data in sources
-                        ],
-                    },
+                    "prompt": prompt,
+                    "input_references": [
+                        {"type": "image_url", "image_url": {"url": _data_url(data)}}
+                        for _, data in sources
+                    ],
                 },
                 cast_to=dict[str, Any],
             )
-        return await self._resolve(payload)
+        except APIError as error:
+            if not _edits_unsupported(error):
+                raise
+            log.info(
+                "image_route_missing",
+                route="/images",
+                status=getattr(error, "status_code", None),
+            )
+        return await self.client.post(
+            "/media",
+            body={
+                "model": self.model,
+                "input": {
+                    "prompt": prompt,
+                    "images": [
+                        {"type": "base64", "data": _data_url(data)} for _, data in sources
+                    ],
+                },
+            },
+            cast_to=dict[str, Any],
+        )
 
     async def _resolve(self, payload: dict[str, Any]) -> bytes:
         """Turn a generation answer into picture bytes.

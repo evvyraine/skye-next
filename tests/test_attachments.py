@@ -47,10 +47,11 @@ class Transcriptions:
         return SimpleNamespace(text="Hello from the voice note.")
 
 
-def settings(limit: int = 1024) -> Settings:
+def settings(limit: int = 1024, *, native: bool = False) -> Settings:
     return Settings.model_construct(
         skye_max_attachment_bytes=limit,
         skye_transcription_model="gpt-transcribe",
+        skye_native_media=native,
         openai_api_key="sk-test",
     )
 
@@ -93,19 +94,18 @@ async def test_transcribes_direct_voice() -> None:
             "type": "input_text",
             "text": "Attached audio transcript (voice.ogg):\nHello from the voice note.",
         },
-        {"type": "input_audio", "input_audio": {"data": "YXVkaW8=", "format": "ogg"}},
     ]
     assert transcriptions.calls[0]["model"] == "gpt-transcribe"
     assert transcriptions.calls[0]["file"] == ("voice.ogg", b"audio")
 
 
 @pytest.mark.asyncio
-async def test_replied_voice_is_transcript_plus_native_audio() -> None:
+async def test_replied_voice_can_include_native_audio() -> None:
     voice = Voice(file_id="voice", file_unique_id="unique-voice", duration=3, file_size=5)
     transcriptions = Transcriptions()
     client = SimpleNamespace(audio=SimpleNamespace(transcriptions=transcriptions))
     service = AttachmentService(
-        settings(), cast(Any, FakeBot({"voice": b"audio"})), cast(AsyncOpenAI, client)
+        settings(native=True), cast(Any, FakeBot({"voice": b"audio"})), cast(AsyncOpenAI, client)
     )
     content: list[dict[str, Any]] = []
 
@@ -345,7 +345,7 @@ async def test_pdf_uses_file_data(reply: bool) -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("reply", [False, True])
-async def test_text_document_uses_file_data(reply: bool) -> None:
+async def test_text_document_is_extracted_as_text(reply: bool) -> None:
     document = Document(
         file_id="notes",
         file_unique_id="unique-notes",
@@ -365,18 +365,65 @@ async def test_text_document_uses_file_data(reply: bool) -> None:
     label = "Replied-to" if reply else "Attached"
     assert file_ids == ()
     assert content == [
-        {"type": "input_text", "text": f"{label} document (notes.md):"},
-        {
-            "type": "input_file",
-            "filename": "notes.md",
-            "file_data": data_url("text/markdown", b"hello"),
-        },
+        {"type": "input_text", "text": f"{label} document (notes.md):\nhello"},
     ]
 
 
 @pytest.mark.asyncio
+async def test_binary_document_is_a_placeholder_by_default() -> None:
+    document = Document(
+        file_id="archive",
+        file_unique_id="unique-archive",
+        file_name="sheet.xlsx",
+        mime_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        file_size=5,
+    )
+    service = AttachmentService(
+        settings(),
+        cast(Any, FakeBot({"archive": b"PK\x03\x04binary"})),
+        cast(AsyncOpenAI, SimpleNamespace()),
+    )
+    content: list[dict[str, Any]] = []
+
+    await service.add(message(document=document), content)
+
+    assert content == [
+        {
+            "type": "input_text",
+            "text": (
+                "Attached document (sheet.xlsx) is attached, but this file type "
+                "cannot be read inline."
+            ),
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_binary_document_can_be_sent_natively() -> None:
+    document = Document(
+        file_id="archive",
+        file_unique_id="unique-archive",
+        file_name="sheet.xlsx",
+        mime_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        file_size=5,
+    )
+    service = AttachmentService(
+        settings(native=True),
+        cast(Any, FakeBot({"archive": b"PK\x03\x04binary"})),
+        cast(AsyncOpenAI, SimpleNamespace()),
+    )
+    content: list[dict[str, Any]] = []
+
+    await service.add(message(document=document), content)
+
+    assert content[0] == {"type": "input_text", "text": "Attached document (sheet.xlsx):"}
+    assert content[1]["type"] == "input_file"
+    assert content[1]["filename"] == "sheet.xlsx"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("reply", [False, True])
-async def test_voice_includes_native_audio(reply: bool) -> None:
+async def test_voice_includes_native_audio_when_enabled(reply: bool) -> None:
     voice = Voice(
         file_id="voice",
         file_unique_id="unique-voice",
@@ -386,7 +433,7 @@ async def test_voice_includes_native_audio(reply: bool) -> None:
     )
     transcriptions = Transcriptions()
     service = AttachmentService(
-        settings(),
+        settings(native=True),
         cast(Any, FakeBot({"voice": b"audio"})),
         cast(
             AsyncOpenAI,

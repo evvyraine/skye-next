@@ -43,9 +43,16 @@ class QuotaService:
         return await self.database.access_effect(context.scope) == "allow"
 
     async def limits(
-        self, context: RequestContext, *, billed_user_id: int | None = None
+        self,
+        context: RequestContext,
+        *,
+        billed_user_id: int | None = None,
+        now: datetime | None = None,
     ) -> tuple[int, int]:
-        entitlement = await self.billing.entitlement(self._billed_user_id(context, billed_user_id))
+        entitlement = await self.billing.entitlement(
+            self._billed_user_id(context, billed_user_id),
+            now=int(now.timestamp()) if now is not None else None,
+        )
         if entitlement is not None and entitlement.plan in {"trial", "plus"}:
             return PLUS_DAILY, PLUS_MONTHLY
         return FREE_DAILY, FREE_MONTHLY
@@ -60,7 +67,9 @@ class QuotaService:
         user_id = self._billed_user_id(context, billed_user_id)
         if await self.complimentary(context, billed_user_id=user_id):
             return
-        daily_limit, monthly_limit = await self.limits(context, billed_user_id=user_id)
+        daily_limit, monthly_limit = await self.limits(
+            context, billed_user_id=user_id, now=now
+        )
         daily, monthly = await self.database.usage_totals(user_id, now=now)
         if monthly >= monthly_limit:
             raise AllowanceError(MONTHLY_LIMIT_COPY)
