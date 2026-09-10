@@ -225,7 +225,7 @@ class TurnDelivery:
 
             Args:
                 text: Exact words to speak, up to 4096 characters.
-                instructions: How Nova should deliver the speech, such as tone, pace,
+                instructions: How the voice should deliver the speech, such as tone, pace,
                     emotion, emphasis, pauses, pronunciation, or speaking style.
                 reply_to: Telegram message_id to quote-reply. Omit for a free-standing voice.
             """
