@@ -13,7 +13,11 @@ from agents import set_default_openai_client, set_tracing_disabled
 from aiogram import Bot, Dispatcher
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.exceptions import TelegramAPIError
-from aiogram.types import BotCommandScopeAllPrivateChats
+from aiogram.types import (
+    BotCommandScopeAllChatAdministrators,
+    BotCommandScopeAllGroupChats,
+    BotCommandScopeAllPrivateChats,
+)
 from openai import AsyncOpenAI
 from pydantic import ValidationError
 
@@ -247,6 +251,8 @@ async def run() -> None:
                 hint="Disable Group Privacy in BotFather or make the bot a group administrator.",
             )
         await bot.set_my_commands(COMMANDS)
+        await bot.set_my_commands(COMMANDS, scope=BotCommandScopeAllGroupChats())
+        await bot.set_my_commands(COMMANDS, scope=BotCommandScopeAllChatAdministrators())
         await bot.set_my_commands(PRIVATE_COMMANDS, scope=BotCommandScopeAllPrivateChats())
         dropped = await database.drop_pending_updates()
         if dropped:
