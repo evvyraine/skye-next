@@ -4,19 +4,38 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="color-scheme" content="light dark">
-    <meta name="description" content="Skye — a calm personal assistant inside Telegram.">
+    <meta name="description" content="Спокойный личный ассистент внутри Telegram.">
+    <meta name="theme-color" content="#fbfbfe" media="(prefers-color-scheme: light)">
+    <meta name="theme-color" content="#100f16" media="(prefers-color-scheme: dark)">
+    <link rel="canonical" href="https://skye-bot.com/">
+    <meta property="og:type" content="website">
+    <meta property="og:site_name" content="Skye">
+    <meta property="og:title" content="Skye">
+    <meta property="og:description" content="Спокойный личный ассистент внутри Telegram.">
+    <meta property="og:url" content="https://skye-bot.com/">
+    <meta property="og:locale" content="ru_RU">
+    <meta property="og:locale:alternate" content="en_US">
+    <!-- TODO: add a 1200x630 og:image and twitter:image before launch -->
+    <meta name="twitter:card" content="summary">
+    <meta name="twitter:title" content="Skye">
+    <meta name="twitter:description" content="Спокойный личный ассистент внутри Telegram.">
     <title>Skye</title>
     <link rel="icon" href="./assets/favicon.svg" type="image/svg+xml">
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500&display=swap" rel="stylesheet">
+    <link rel="preload" href="./assets/fonts/geist-cyrillic.woff2" as="font" type="font/woff2" crossorigin>
     <link rel="stylesheet" href="./css/site.css">
     <script>
       (() => {
-        const theme = localStorage.getItem("skye-theme");
+        const storedTheme = localStorage.getItem("skye-theme");
         const lang = localStorage.getItem("skye-lang");
         const sound = localStorage.getItem("skye-sound");
-        document.documentElement.dataset.theme = theme || "light";
+        const systemDark = matchMedia("(prefers-color-scheme: dark)").matches;
+        const theme =
+          storedTheme === "dark" || storedTheme === "light"
+            ? storedTheme
+            : systemDark
+              ? "dark"
+              : "light";
+        document.documentElement.dataset.theme = theme;
         if (lang === "en") document.documentElement.lang = "en";
         document.documentElement.dataset.sound = sound === "off" ? "off" : "on";
       })();
@@ -25,12 +44,12 @@
   <body>
     <a class="skip" href="#content" data-i18n="skip">К содержанию</a>
     <header class="site-header wrap">
-      <div class="nav-cluster">
+      <nav class="nav-cluster" data-i18n-aria="navLabel" aria-label="Основная навигация">
         <a class="logo" href="./index.html" aria-label="Skye" data-cuelume-hover="tick">
           <img class="logo-mark" src="./assets/logo-mark.svg" alt="" width="44" height="44">
           <img class="logo-word" src="./assets/logo-wordmark.svg" alt="skye" width="59" height="25">
         </a>
-        <ul class="nav-links">
+        <ul class="nav-links" id="primary-nav" role="list">
           <li>
             <a href="https://t.me/skye_ai_bot" data-cuelume-hover="tick" data-cuelume-press data-cuelume-release>
               <span data-i18n="bot">бот</span>
@@ -41,9 +60,9 @@
             <a href="https://docs.skye-bot.com/" data-cuelume-hover="tick"><span data-i18n="docs">документация</span></a>
           </li>
         </ul>
-      </div>
+      </nav>
       <div class="header-tools">
-        <button class="lang-btn" type="button" data-action="lang" data-cuelume-toggle data-i18n="lang">en</button>
+        <button class="lang-btn" type="button" data-action="lang" data-cuelume-toggle data-i18n="lang" data-i18n-aria="langAria" aria-label="Сменить язык на en">en</button>
         <button class="tool-btn" type="button" data-action="theme" data-cuelume-toggle data-i18n-aria="theme" aria-label="Тема">
           <span class="icon-swap theme-swap">
             <svg class="main" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M21.752 15.002A9.72 9.72 0 0 1 18 15.75c-5.385 0-9.75-4.365-9.75-9.75 0-1.33.266-2.597.748-3.752A9.753 9.753 0 0 0 3 11.25C3 16.635 7.365 21 12.75 21a9.753 9.753 0 0 0 9.002-5.998Z"/></svg>
@@ -56,7 +75,7 @@
             <svg class="alt" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M17.25 9.75 19.5 12m0 0 2.25 2.25M19.5 12l2.25-2.25M19.5 12l-2.25 2.25m-10.5-6 4.72-4.72a.75.75 0 0 1 1.28.53v15.88a.75.75 0 0 1-1.28.53l-4.72-4.72H4.51c-.88 0-1.704-.507-1.938-1.354A9.009 9.009 0 0 1 2.25 12c0-.83.112-1.633.322-2.396C2.806 8.756 3.63 8.25 4.51 8.25H6.75Z"/></svg>
           </span>
         </button>
-        <button class="tool-btn menu-btn" type="button" data-action="menu" data-i18n-aria="menu" aria-expanded="false" aria-label="Меню">
+        <button class="tool-btn menu-btn" type="button" data-action="menu" data-i18n-aria="menu" aria-expanded="false" aria-controls="primary-nav" aria-label="Меню">
           <span class="icon-swap">
             <svg class="main" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5"/></svg>
           </span>
@@ -87,7 +106,7 @@
         <p class="reveal" data-i18n="introBody">Skye живёт там, где уже проходят ваши разговоры, работа и повседневные дела. Не нужно осваивать ещё один сервис — просто напишите ей так, как написали бы человеку. Коротко, голосом, с фотографией или документом — Skye разберётся в контексте и поможет довести дело до результата.</p>
         <aside class="origin reveal">
           <p class="origin-kicker" data-i18n="originKicker">О проекте</p>
-          <ul class="origin-facts">
+          <ul class="origin-facts" role="list">
             <li>
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
                 <path stroke-linecap="round" stroke-linejoin="round" d="M15 10.5a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z"/>
@@ -174,7 +193,7 @@
                   <span class="plan-amount" data-i18n="freePrice">0 ⭐</span>
                   <span class="plan-period" data-i18n="freePeriod">бесплатно</span>
                 </p>
-                <ul class="plan-list">
+                <ul class="plan-list" role="list">
                   <li data-i18n="free1">Базовый дневной лимит сообщений</li>
                   <li data-i18n="free2">Без создания агентов</li>
                 </ul>
@@ -190,7 +209,7 @@
                   <span class="plan-amount" data-i18n="plusPrice">449 ⭐</span>
                   <span class="plan-period" data-i18n="perMonth">в месяц</span>
                 </p>
-                <ul class="plan-list">
+                <ul class="plan-list" role="list">
                   <li data-i18n="plus1">Расширенный дневной лимит сообщений</li>
                   <li data-i18n="plus2">Свои агенты</li>
                 </ul>

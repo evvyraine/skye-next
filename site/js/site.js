@@ -6,16 +6,38 @@ const LANG_KEY = "skye-lang";
 const SOUND_KEY = "skye-sound";
 
 function storedTheme() {
-  return localStorage.getItem(THEME_KEY);
+  const value = localStorage.getItem(THEME_KEY);
+  return value === "dark" || value === "light" ? value : null;
+}
+
+function systemTheme() {
+  return matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
 }
 
 function preferredTheme() {
-  return storedTheme() ?? "light";
+  return storedTheme() ?? systemTheme();
 }
 
-export function applyTheme(theme) {
-  document.documentElement.dataset.theme = theme;
-  localStorage.setItem(THEME_KEY, theme);
+function withoutTransitions(apply) {
+  if (matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    apply();
+    return;
+  }
+  const style = document.createElement("style");
+  style.textContent = "*,*::before,*::after{transition:none !important}";
+  document.head.append(style);
+  apply();
+  // Read a layout value so the new theme commits while the override is
+  // still active, then drop it on the next frame.
+  void document.body.offsetHeight;
+  requestAnimationFrame(() => requestAnimationFrame(() => style.remove()));
+}
+
+export function applyTheme(theme, persist = true) {
+  withoutTransitions(() => {
+    document.documentElement.dataset.theme = theme;
+  });
+  if (persist) localStorage.setItem(THEME_KEY, theme);
 }
 
 export function applySound(on) {
@@ -25,7 +47,7 @@ export function applySound(on) {
 }
 
 function bootPreferences() {
-  applyTheme(preferredTheme());
+  applyTheme(preferredTheme(), false);
   document.documentElement.lang = currentLang() === "en" ? "en" : "ru";
   const soundOn = localStorage.getItem(SOUND_KEY) !== "off";
   applySound(soundOn);
@@ -38,6 +60,11 @@ function wireHeader() {
   const soundBtn = document.querySelector("[data-action='sound']");
   const menuBtn = document.querySelector("[data-action='menu']");
   const nav = document.querySelector(".nav-links");
+
+  const setMenu = (open) => {
+    nav?.classList.toggle("is-open", open);
+    menuBtn?.setAttribute("aria-expanded", open ? "true" : "false");
+  };
 
   langBtn?.addEventListener("click", () => {
     const next = currentLang() === "ru" ? "en" : "ru";
@@ -58,16 +85,38 @@ function wireHeader() {
   });
 
   menuBtn?.addEventListener("click", () => {
-    const open = nav?.classList.toggle("is-open");
-    menuBtn.setAttribute("aria-expanded", open ? "true" : "false");
+    const open = !nav?.classList.contains("is-open");
+    setMenu(open);
     play(open ? "bloom" : "droplet");
+  });
+
+  nav?.addEventListener("click", (event) => {
+    if (event.target instanceof Element && event.target.closest("a")) setMenu(false);
+  });
+
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape" || !nav?.classList.contains("is-open")) return;
+    setMenu(false);
+    menuBtn?.focus();
+  });
+
+  document.addEventListener("click", (event) => {
+    if (!nav?.classList.contains("is-open")) return;
+    const target = event.target;
+    const insideNav = target instanceof Node && nav.contains(target);
+    const insideButton = menuBtn?.contains(target);
+    if (insideNav || insideButton) return;
+    setMenu(false);
   });
 }
 
 function revealOnScroll() {
   const nodes = document.querySelectorAll(".reveal");
   if (!nodes.length) return;
-  if (matchMedia("(prefers-reduced-motion: reduce)").matches) {
+  if (
+    matchMedia("(prefers-reduced-motion: reduce)").matches ||
+    !("IntersectionObserver" in window)
+  ) {
     nodes.forEach((el) => el.classList.add("is-in"));
     return;
   }

@@ -1,10 +1,48 @@
+@font-face {
+  font-family: "Geist";
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("../assets/fonts/geist-cyrillic.woff2") format("woff2");
+  unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;
+}
+
+@font-face {
+  font-family: "Geist";
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("../assets/fonts/geist-cyrillic-ext.woff2") format("woff2");
+  unicode-range: U+0460-052F, U+1C80-1C8A, U+20B4, U+2DE0-2DFF, U+A640-A69F, U+FE2E-FE2F;
+}
+
+@font-face {
+  font-family: "Geist";
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("../assets/fonts/geist-latin.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304,
+    U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: "Geist";
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("../assets/fonts/geist-latin-ext.woff2") format("woff2");
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308,
+    U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113,
+    U+2C60-2C7F, U+A720-A7FF;
+}
+
 :root {
   color-scheme: light;
-  --bg: #ffffff;
-  --fg: #000000;
-  --fg-soft: #202020;
+  --bg: #fbfbfe;
+  --fg: #121016;
   --muted: #5c5c5c;
-  --link: #5390d9;
+  --link: #356fb5;
   --accent: #5e60ce;
   --accent-hover: #6b6dd6;
   --on-accent: #ffffff;
@@ -17,7 +55,7 @@
     #6930c3 31.142%,
     #5e60ce 50%,
     #5390d9 68.858%,
-    #4ea8de 87.717%
+    #4a86c4 87.717%
   );
   --pricing-gradient: linear-gradient(
     -10.12deg,
@@ -39,7 +77,6 @@
   color-scheme: dark;
   --bg: #100f16;
   --fg: #f5f3fa;
-  --fg-soft: #eceaf3;
   --muted: #b9b4c7;
   --link: #7eb6ea;
   --accent: #6d6fe0;
@@ -80,6 +117,23 @@ body {
   line-height: 1.35;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+h1,
+h2,
+h3 {
+  text-wrap: balance;
+}
+
+p,
+li {
+  text-wrap: pretty;
+}
+
+a,
+button {
+  touch-action: manipulation;
 }
 
 img,
@@ -102,11 +156,13 @@ a {
     text-decoration-thickness 150ms var(--ease);
 }
 
-a:hover {
-  color: var(--accent);
-  text-underline-offset: 0.38em;
-  text-decoration-thickness: 6%;
-  text-decoration-color: currentColor;
+@media (hover: hover) {
+  a:hover {
+    color: var(--accent);
+    text-underline-offset: 0.38em;
+    text-decoration-thickness: 6%;
+    text-decoration-color: currentColor;
+  }
 }
 
 a:active {
@@ -121,20 +177,28 @@ a.logo,
   text-decoration: none;
 }
 
-a.btn:hover,
-a.btn:active,
-a.logo:hover,
 a.logo:active,
-.skip:hover,
 .skip:active {
   color: inherit;
   text-underline-offset: 0.18em;
   text-decoration-thickness: 1.5%;
 }
 
-a.btn:hover,
 a.btn:active {
   color: var(--on-accent);
+}
+
+@media (hover: hover) {
+  a.logo:hover,
+  .skip:hover {
+    color: inherit;
+    text-underline-offset: 0.18em;
+    text-decoration-thickness: 1.5%;
+  }
+
+  a.btn:hover {
+    color: var(--on-accent);
+  }
 }
 
 button {
@@ -180,7 +244,7 @@ button {
   align-items: center;
   justify-content: space-between;
   gap: 1.5rem;
-  padding-block: 3rem 1.5rem;
+  padding-block: 2rem 1.25rem;
 }
 
 .nav-cluster {
@@ -232,11 +296,17 @@ button {
   white-space: nowrap;
 }
 
-.nav-links a:hover,
 .nav-links a:active,
 .nav-links a[aria-current="page"] {
   color: var(--accent);
   text-decoration-color: currentColor;
+}
+
+@media (hover: hover) {
+  .nav-links a:hover {
+    color: var(--accent);
+    text-decoration-color: currentColor;
+  }
 }
 
 .ext-icon {
@@ -267,9 +337,11 @@ button {
     color 150ms var(--ease);
 }
 
-.tool-btn:hover,
-.lang-btn:hover {
-  background: var(--surface);
+@media (hover: hover) {
+  .tool-btn:hover,
+  .lang-btn:hover {
+    background: var(--surface);
+  }
 }
 
 .lang-btn {
@@ -385,10 +457,12 @@ button {
     scale 150ms ease-out;
 }
 
-.btn:hover {
-  background: var(--accent-hover);
-  transform: translateY(-1px);
-  box-shadow: var(--shadow);
+@media (hover: hover) {
+  .btn:hover {
+    background: var(--accent-hover);
+    transform: translateY(-1px);
+    box-shadow: var(--shadow);
+  }
 }
 
 .btn:active {
@@ -418,7 +492,7 @@ button {
 
 .intro {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 0.7fr) minmax(0, 1.8fr) minmax(13rem, 0.8fr);
   gap: 4rem;
   padding-block: 7.5rem 5rem;
 }
@@ -435,6 +509,7 @@ button {
   margin: 0;
   font-size: 1.5rem;
   letter-spacing: -0.03em;
+  line-height: 1.45;
 }
 
 .intro a {
@@ -450,7 +525,7 @@ button {
   padding: 1.35rem 1.4rem 1.2rem;
   border: 1.5px solid var(--hairline);
   border-radius: 1.5rem;
-  background: transparent;
+  background: var(--surface);
 }
 
 .origin-kicker {
@@ -542,13 +617,16 @@ button {
   margin: 0;
   font-size: 1.5rem;
   letter-spacing: -0.03em;
+  line-height: 1.45;
 }
 
 /* Pricing */
 
 .pricing {
   padding-block: 3rem;
-  background: var(--pricing-gradient);
+  background:
+    linear-gradient(rgb(0 0 0 / 0.4), rgb(0 0 0 / 0.4)),
+    var(--pricing-gradient);
   color: #fff;
 }
 
@@ -605,24 +683,12 @@ button {
   border: 1.5px solid rgb(255 255 255 / 0.55);
   border-radius: 1.35rem;
   background: transparent;
-  transition:
-    border-color 150ms var(--ease),
-    background-color 150ms var(--ease),
-    transform 150ms ease-out;
-}
-
-.plan:hover {
-  border-color: #fff;
-  transform: translateY(-2px);
-}
-
-.plan:active {
-  scale: 0.96;
 }
 
 .plan-featured {
   border-color: #fff;
   background: rgb(255 255 255 / 0.12);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.28);
 }
 
 .plan-name {
@@ -665,6 +731,7 @@ button {
   margin: 0 0 1rem;
   letter-spacing: -0.04em;
   line-height: 0.95;
+  font-variant-numeric: tabular-nums;
 }
 
 .plan-amount {
@@ -833,16 +900,21 @@ button {
   .float-slow,
   .mascot.float img,
   .btn,
-  .plan,
   .icon-swap svg {
     animation: none;
     transition: none;
   }
 
-  .plan:active,
-  .plan:hover {
+  .reveal.is-in {
+    animation: none;
+  }
+}
+
+@media (scripting: none) {
+  .reveal {
+    opacity: 1;
     transform: none;
-    scale: 1;
+    filter: none;
   }
 }
 
@@ -854,6 +926,9 @@ button {
   .pricing-grid,
   .features {
     gap: 2rem;
+  }
+  .intro {
+    grid-template-columns: minmax(0, 0.6fr) minmax(0, 1.6fr) minmax(12rem, 0.8fr);
   }
   .pricing-grid {
     grid-template-columns: 1fr;
