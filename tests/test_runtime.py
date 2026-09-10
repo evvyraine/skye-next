@@ -129,30 +129,26 @@ async def test_sandbox_tools_execute_commands_and_offer_delivery(tmp_path: objec
         "python:3.14-slim", 10, 1024, volume="test-sandbox-work", work_dir=work
     )
     service.execute = AsyncMock(  # type: ignore[method-assign]
-        return_value=SandboxResult("hi", "", False, (("out.txt", b"data"),))
+        return_value=SandboxResult("hi", "", False)
     )
-    turn = service.new_turn()
-    try:
-        memory = MemoryService(cast(Any, None))
-        runtime = AgentRuntime(config(), cast(Any, None), memory, "You are Skye.")
-        agent = runtime._agent(
-            RequestContext(1, "private", 1),
-            ChatSettings("gpt-5.6-luna", "medium", memory_enabled=False),
-            turn_sandbox=turn,
-        )
-        names = [cast(FunctionTool, tool).name for tool in agent.tools]
+    turn = service.new_workspace(Scope("user", 1))
+    memory = MemoryService(cast(Any, None))
+    runtime = AgentRuntime(config(), cast(Any, None), memory, "You are Skye.")
+    agent = runtime._agent(
+        RequestContext(1, "private", 1),
+        ChatSettings("gpt-5.6-luna", "medium", memory_enabled=False),
+        turn_sandbox=turn,
+    )
+    names = [cast(FunctionTool, tool).name for tool in agent.tools]
 
-        assert "shell_exec" in names
-        assert "deliver_file" in names
-        shell = next(cast(FunctionTool, tool) for tool in agent.tools if tool.name == "shell_exec")
-        output = await shell.on_invoke_tool(
-            _tool_context("shell_exec", '{"command":"echo hi"}'), '{"command":"echo hi"}'
-        )
+    assert {"shell_exec", "python", "read_file", "write_file"} <= set(names)
+    assert "deliver_file" in names
+    shell = next(cast(FunctionTool, tool) for tool in agent.tools if tool.name == "shell_exec")
+    output = await shell.on_invoke_tool(
+        _tool_context("shell_exec", '{"command":"echo hi"}'), '{"command":"echo hi"}'
+    )
 
-        assert "hi" in output
-        assert "out.txt" in output
-    finally:
-        turn.close()
+    assert "hi" in output
 
 
 def test_shell_tools_are_absent_without_a_sandbox_service() -> None:
@@ -807,7 +803,9 @@ class DeliveryThenFailure(FakeStream):
             raise rate_limit_error("Please try again in 0.001s.")
 
 
-def runtime_for_run(**config_overrides: object) -> AgentRuntime:
+def runtime_for_run(
+    *, sandbox: SandboxService | None = None, **config_overrides: object
+) -> AgentRuntime:
     conversations = AsyncMock()
     conversations.get_or_create.return_value = "conv_1"
     return AgentRuntime(
@@ -815,6 +813,7 @@ def runtime_for_run(**config_overrides: object) -> AgentRuntime:
         conversations,
         MemoryService(cast(Any, None)),
         "You are Skye.",
+        sandbox=sandbox,
     )
 
 
@@ -1123,6 +1122,34 @@ async def test_run_strips_sandbox_links_from_final_text() -> None:
 
     assert output.text == "Done: download notes.md"
     assert output.files == ()
+
+
+async def test_run_delivers_new_workspace_files(tmp_path: object) -> None:
+    from pathlib import Path
+
+    work = Path(str(tmp_path)) / "work"
+    sandbox = SandboxService(
+        "python:3.14-slim", 10, 1024, volume="test-sandbox-work", work_dir=work
+    )
+    runtime = runtime_for_run(sandbox=sandbox)
+    workspace = sandbox.workspace_path(Scope("user", 1))
+
+    class WritingStream(FakeStream):
+        async def stream_events(self) -> Any:
+            (workspace / "report.txt").write_bytes(b"report")
+            if False:
+                yield
+
+    with patch("skye.runtime.Runner.run_streamed", return_value=WritingStream()):
+        output = await runtime.run(
+            RequestContext(1, "private", 1),
+            ChatSettings("gpt-5.6-luna", "medium", memory_enabled=False),
+            "hello",
+            AsyncMock(),
+        )
+
+    assert [item.filename for item in output.files] == ["report.txt"]
+    assert output.files[0].data == b"report"
 
 
 async def test_run_recovers_delivered_turn_when_followup_fails_transiently() -> None:

@@ -59,7 +59,7 @@ from .exa import ExaService
 from .images import ImageService, TurnImages, turn_sources
 from .memory import MemoryService
 from .models import AgentCapability, ChatSettings, InstalledAgent, RequestContext, Skill
-from .sandbox import SandboxService, TurnSandbox, turn_files
+from .sandbox import SandboxService, ScopeSandbox, turn_files
 from .sessions import DatabaseSession, without_inline_payloads
 from .skills import SkillService
 from .youtube import YoutubeTranscriptService
@@ -801,7 +801,7 @@ class AgentRuntime:
         async with self._locks[key]:
             active = _ActiveRun()
             self._active[key] = active
-            turn_sandbox: TurnSandbox | None = None
+            turn_sandbox: ScopeSandbox | None = None
             try:
                 if active.cancel.is_set():
                     raise asyncio.CancelledError
@@ -846,7 +846,7 @@ class AgentRuntime:
                         sources,
                     )
                 if self.sandbox is not None:
-                    turn_sandbox = self.sandbox.new_turn()
+                    turn_sandbox = self.sandbox.new_workspace(context.scope)
                     turn_sandbox.seed(
                         await turn_files(
                             user_input,
@@ -854,6 +854,7 @@ class AgentRuntime:
                             self.config.skye_max_attachment_bytes,
                         )
                     )
+                    turn_sandbox.mark()
                 agent = self._agent(
                     context,
                     settings,
@@ -882,17 +883,22 @@ class AgentRuntime:
                             on_event,
                             turn_images,
                         )
+                        auto_files, auto_images = (
+                            turn_sandbox.deliverable(delivery.files)
+                            if turn_sandbox is not None
+                            else ((), ())
+                        )
                         return RunOutput(
                             output.text,
-                            output.images,
-                            (*output.files, *delivery.files),
+                            (*output.images, *auto_images),
+                            (*output.files, *auto_files, *delivery.files),
                             output.usage_tokens,
                             delivery.sent,
                         )
             finally:
                 self._active.pop(key, None)
                 if turn_sandbox is not None:
-                    turn_sandbox.close()
+                    turn_sandbox.mark_used()
 
     def busy(self, chat_id: int, thread_id: int) -> bool:
         return telegram_run_key(chat_id, thread_id) in self._active
@@ -1196,7 +1202,7 @@ class AgentRuntime:
         awaiting_reply: bool = True,
         image_tool_calls: int | None = None,
         turn_images: TurnImages | None = None,
-        turn_sandbox: TurnSandbox | None = None,
+        turn_sandbox: ScopeSandbox | None = None,
     ) -> Agent[None]:
         composition = composition or AgentComposition(None, ())
         delivery = delivery or TurnDelivery()
@@ -1317,19 +1323,18 @@ class AgentRuntime:
             )
         if "shell" in capabilities and self.sandbox is not None:
             instructions += (
-                "\n\nCall shell_exec to run commands in a fresh Linux sandbox. "
-                "Files attached to the current turn are available there by their original "
-                "names, and the work directory persists across your calls within this turn."
+                "\n\nYou have a persistent Linux workspace, mounted at /work and kept "
+                "between messages. Use shell_exec for commands, python for Python code, "
+                "read_file to read a text file, and write_file to save text. Files "
+                "attached to the current message are placed there under their original "
+                "names. New and changed files are sent to the user automatically at the "
+                "end of the turn; call deliver_file only for a file you want sent even "
+                "if it did not change. Never paste base64 into a message."
             )
             if self.sandbox.allow_network:
                 instructions += " The sandbox can reach the public internet."
             else:
                 instructions += " The sandbox has no internet access."
-            instructions += (
-                " To deliver a sandbox-created file, read it back, base64 encode its complete "
-                "bytes and call deliver_file with a plain filename. Never paste base64 into "
-                "a message. Zip multiple files before delivery."
-            )
         if skills:
             listed = ", ".join(item.name for item in skills)
             instructions += (
@@ -1390,7 +1395,7 @@ class AgentRuntime:
         *,
         image_tool_calls: int | None = None,
         turn_images: TurnImages | None = None,
-        turn_sandbox: TurnSandbox | None = None,
+        turn_sandbox: ScopeSandbox | None = None,
     ) -> Agent[None]:
         instructions = self._instructions(
             context,

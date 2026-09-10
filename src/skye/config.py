@@ -84,6 +84,10 @@ class Settings(BaseSettings):
     skye_sandbox_allow_network: bool = False
     skye_sandbox_volume: str = "skye-sandbox-work"
     skye_sandbox_work_dir: Path = Path("/sandbox-work")
+    skye_sandbox_ttl_seconds: int = Field(default=7 * 86_400, ge=0)
+    skye_sandbox_scope_bytes: int = Field(default=1_073_741_824, ge=1)
+    skye_sandbox_total_bytes: int = Field(default=21_474_836_480, ge=1)
+    skye_sandbox_max_concurrent: int = Field(default=4, ge=1, le=32)
     composio_api_key: str | None = None
     skye_owner_ids: OwnerIds = Field(min_length=1)
     skye_database_path: Path = Path("data/skye.db")

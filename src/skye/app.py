@@ -177,6 +177,10 @@ async def run() -> None:
             allow_network=config.skye_sandbox_allow_network,
             volume=config.skye_sandbox_volume,
             work_dir=config.skye_sandbox_work_dir,
+            ttl_seconds=config.skye_sandbox_ttl_seconds,
+            scope_bytes=config.skye_sandbox_scope_bytes,
+            total_bytes=config.skye_sandbox_total_bytes,
+            max_concurrent=config.skye_sandbox_max_concurrent,
         )
         if config.skye_sandbox_enabled
         else None
@@ -252,6 +256,9 @@ async def run() -> None:
         scheduler = asyncio.create_task(
             automations.run_loop(telegram.fire_automation, runtime.busy)
         )
+        janitor = (
+            asyncio.create_task(sandbox.run_janitor()) if sandbox is not None else None
+        )
         stop = asyncio.Event()
         loop = asyncio.get_running_loop()
         for sig in (signal.SIGINT, signal.SIGTERM):
@@ -271,10 +278,15 @@ async def run() -> None:
         finally:
             polling.cancel()
             scheduler.cancel()
+            if janitor is not None:
+                janitor.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await polling
             with contextlib.suppress(asyncio.CancelledError):
                 await scheduler
+            if janitor is not None:
+                with contextlib.suppress(asyncio.CancelledError):
+                    await janitor
             await runner.cleanup()
     finally:
         await connectors.aclose()
