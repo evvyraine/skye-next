@@ -1,8 +1,10 @@
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock
 
 import pytest
+from aiohttp import FormData
 from aiohttp.test_utils import TestClient, TestServer
 
 from skye.access import AccessService
@@ -70,7 +72,11 @@ class FakeRuntime(AgentRuntime):
 
 
 async def app_client(
-    database: Database, tmp_path: Path, *, owner_ids: frozenset[int] = frozenset({1})
+    database: Database,
+    tmp_path: Path,
+    *,
+    owner_ids: frozenset[int] = frozenset({1}),
+    client: Any | None = None,
 ) -> tuple[TestClient, ProjectService, FakeRuntime]:
     config = settings()
     projects = ProjectService(database, tmp_path / "web-files")
@@ -83,7 +89,7 @@ async def app_client(
         runtime,  # type: ignore[arg-type]
         projects,
         auth,
-        cast(Any, AsyncMock()),
+        client if client is not None else cast(Any, AsyncMock()),
     )
     client = TestClient(TestServer(web_app.app))
     await client.start_server()
@@ -173,6 +179,42 @@ async def test_owner_can_create_pin_and_cannot_delete_skye(
         assert denied.status == 403
         deleted = await client.delete(f"/api/projects/{project['id']}")
         assert deleted.status == 200
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_transcribe_upload_reaches_the_audio_client(
+    database: Database, tmp_path: Path
+) -> None:
+    class Transcriptions:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, Any]] = []
+
+        async def create(self, **kwargs: Any) -> Any:
+            self.calls.append(kwargs)
+            return SimpleNamespace(text="Hello from voice.")
+
+    transcriptions = Transcriptions()
+    audio_client = cast(
+        Any, SimpleNamespace(audio=SimpleNamespace(transcriptions=transcriptions))
+    )
+    client, projects, _runtime = await app_client(database, tmp_path, client=audio_client)
+    try:
+        await signed_in(client, projects)
+        form = FormData()
+        form.add_field(
+            "file",
+            b"audio-bytes",
+            filename="dictation.webm",
+            content_type="audio/webm",
+        )
+        response = await client.post("/api/transcribe", data=form)
+        assert response.status == 200
+        assert (await response.json())["text"] == "Hello from voice."
+        uploaded = transcriptions.calls[0]["file"]
+        assert uploaded == ("dictation.webm", b"audio-bytes")
+        assert type(uploaded[1]) is bytes
     finally:
         await client.close()
 

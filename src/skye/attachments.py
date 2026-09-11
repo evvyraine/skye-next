@@ -336,9 +336,14 @@ IMAGE_MIMES = {"image/jpeg", "image/jpg", "image/png", "image/gif", "image/webp"
 
 
 async def transcribe_audio(client: AsyncOpenAI, model: str, filename: str, data: bytes) -> str:
+    # aiohttp hands multipart bodies back as ``bytearray``; httpx only treats
+    # ``bytes`` (or a file object) as an in-memory upload, so coerce first.
+    # Without this the request body fails to serialize and never reaches the
+    # provider.
+    payload = bytes(data)
     result = await client.audio.transcriptions.create(
         model=model,
-        file=(filename, data),
+        file=(filename, payload),
         response_format="json",
     )
     return str(result.text).strip()

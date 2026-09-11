@@ -655,7 +655,7 @@ class WebApp:
                 if name == "files":
                     filename = part.filename or "file"
                     mime = part.headers.get("Content-Type", "application/octet-stream")
-                    data = await part.read(decode=False)
+                    data = bytes(await part.read(decode=False))
                     uploads.append((filename, mime, data))
             return text, uploads
         body = await self._json(request)
@@ -670,7 +670,7 @@ class WebApp:
             raise web.HTTPBadRequest(text="Send an audio file.")
         filename = part.filename or "audio.webm"
         mime = part.headers.get("Content-Type", "audio/webm")
-        data = await part.read(decode=False)
+        data = bytes(await part.read(decode=False))
         return data, filename, mime
 
     @staticmethod

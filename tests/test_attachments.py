@@ -9,7 +9,7 @@ import pytest
 from aiogram.types import Chat, Document, Message, PhotoSize, Video, VideoNote, Voice
 from openai import AsyncOpenAI
 
-from skye.attachments import AttachmentService, data_url
+from skye.attachments import AttachmentService, data_url, transcribe_audio
 from skye.config import Settings
 
 
@@ -97,6 +97,27 @@ async def test_transcribes_direct_voice() -> None:
     ]
     assert transcriptions.calls[0]["model"] == "gpt-transcribe"
     assert transcriptions.calls[0]["file"] == ("voice.ogg", b"audio")
+
+
+@pytest.mark.asyncio
+async def test_transcribe_audio_normalizes_bytearray_for_upload() -> None:
+    # aiohttp returns multipart bodies as ``bytearray``; httpx can only stream
+    # ``bytes`` or a file object. Passing the raw body through used to abort the
+    # request during multipart serialization.
+    transcriptions = Transcriptions()
+    client = SimpleNamespace(audio=SimpleNamespace(transcriptions=transcriptions))
+
+    text = await transcribe_audio(
+        cast(AsyncOpenAI, client),
+        "gpt-transcribe",
+        "dictation.webm",
+        bytearray(b"audio"),
+    )
+
+    assert text == "Hello from the voice note."
+    uploaded = transcriptions.calls[0]["file"]
+    assert uploaded == ("dictation.webm", b"audio")
+    assert type(uploaded[1]) is bytes
 
 
 @pytest.mark.asyncio
