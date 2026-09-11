@@ -45,6 +45,14 @@
     height: 100%;
   }
 
+  /* Heroicons ship without an intrinsic size. Give them a sensible default in
+     the base layer so `size-*` utilities and inline sizes still win. */
+  [data-slot="icon"] {
+    width: 1.25rem;
+    height: 1.25rem;
+    flex-shrink: 0;
+  }
+
   body {
     margin: 0;
     overflow: hidden;

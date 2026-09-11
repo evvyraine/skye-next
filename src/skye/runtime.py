@@ -366,6 +366,8 @@ class RunEvent:
     tool_name: str = ""
     tool_label: str = ""
     tool_status: str = ""
+    tool_args: str = ""
+    tool_output: str = ""
     image: bytes = b""
 
 
@@ -1568,13 +1570,62 @@ def describe_tool_event(event: object) -> RunEvent | None:
     status = "running" if event_name == "tool_called" else "done"
     if name.startswith("agent_"):
         label = "Asked a specialist"
+    tool_args = _tool_arguments(raw, item) if event_name == "tool_called" else ""
+    tool_output = _tool_output(item, raw) if event_name == "tool_output" else ""
     return RunEvent(
         kind="tool",
         tool_id=tool_id,
         tool_name=name,
         tool_label=label,
         tool_status=status,
+        tool_args=tool_args,
+        tool_output=tool_output,
     )
+
+
+_TOOL_DETAIL_LIMIT = 8000
+
+
+def _field(source: object, key: str) -> Any:
+    if isinstance(source, dict):
+        return source.get(key)
+    return getattr(source, key, None)
+
+
+def _as_text(value: Any) -> str:
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, list):
+        parts = [item for item in value if isinstance(item, str) and item.strip()]
+        return "\n".join(parts).strip()
+    if isinstance(value, dict):
+        try:
+            return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+        except (TypeError, ValueError):
+            return ""
+    return ""
+
+
+def _truncate_detail(text: str) -> str:
+    if len(text) <= _TOOL_DETAIL_LIMIT:
+        return text
+    return text[:_TOOL_DETAIL_LIMIT] + "\n…"
+
+
+def _tool_arguments(raw: Any, item: Any) -> str:
+    for source in (raw, item):
+        text = _as_text(_field(source, "arguments"))
+        if text:
+            return _truncate_detail(text)
+    return ""
+
+
+def _tool_output(item: Any, raw: Any) -> str:
+    for source in (item, raw):
+        text = _as_text(_field(source, "output"))
+        if text:
+            return _truncate_detail(text)
+    return ""
 
 
 def describe_activity_event(event: object) -> RunEvent | None:

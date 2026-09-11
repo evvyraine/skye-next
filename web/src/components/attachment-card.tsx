@@ -1,5 +1,10 @@
 import { useState } from "react"
-import { AudioLines, ExternalLink, FileText, X } from "lucide-react"
+import {
+  ArrowTopRightOnSquareIcon,
+  DocumentTextIcon,
+  SpeakerWaveIcon,
+  XMarkIcon,
+} from "@heroicons/react/24/outline"
 import { AnimatePresence, motion, useReducedMotion } from "motion/react"
 import { Button, Dialog, Spinner } from "sunkit-ui"
 import { cn } from "@/lib/utils"
@@ -95,12 +100,12 @@ function AttachmentCard({
         ) : (
           <div className="flex aspect-[4/3] items-center justify-center bg-[var(--sk-surface-filled)]">
             {audio ? (
-              <AudioLines
+              <SpeakerWaveIcon
                 className="size-8 text-[var(--sk-text-muted)] sm:size-9"
                 aria-hidden="true"
               />
             ) : (
-              <FileText
+              <DocumentTextIcon
                 className="size-8 text-[var(--sk-text-muted)] sm:size-9"
                 aria-hidden="true"
               />
@@ -116,7 +121,7 @@ function AttachmentCard({
               {formatBytes(item.size)}
             </span>
           </span>
-          <ExternalLink
+          <ArrowTopRightOnSquareIcon
             className="size-3.5 shrink-0 text-[var(--sk-text-muted)]"
             aria-hidden="true"
           />
@@ -134,7 +139,7 @@ function AttachmentCard({
           color="neutral"
           size="icon-only"
           icon="only"
-          iconOnly={<X />}
+          iconOnly={<XMarkIcon />}
           radius={999}
           className="absolute top-1.5 right-1.5 size-8 min-h-0 bg-[var(--sk-bg-solid)]/90 p-0 backdrop-blur-md"
           onClick={onRemove}
@@ -182,7 +187,7 @@ function LoadedImage({
       </AnimatePresence>
       {failed ? (
         <div className="flex flex-col items-center gap-2 text-sm text-[var(--sk-text-muted)]">
-          <FileText className="size-8" aria-hidden="true" />
+          <DocumentTextIcon className="size-8" aria-hidden="true" />
           Preview unavailable
         </div>
       ) : (
@@ -236,7 +241,7 @@ export function AttachmentPreview({
           <Button
             color="lavender"
             icon="left"
-            iconLeft={<ExternalLink />}
+            iconLeft={<ArrowTopRightOnSquareIcon />}
             radius={999}
             onClick={() =>
               window.open(item.url, "_blank", "noopener,noreferrer")
@@ -272,7 +277,7 @@ export function AttachmentPreview({
         ) : null}
         {item && !image && !pdf && !audio ? (
           <div className="flex min-h-48 flex-col items-center justify-center gap-3 rounded-2xl bg-[var(--sk-surface-filled)] p-6 text-center">
-            <FileText
+            <DocumentTextIcon
               className="size-10 text-[var(--sk-text-muted)]"
               aria-hidden="true"
             />

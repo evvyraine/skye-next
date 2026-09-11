@@ -206,6 +206,8 @@ class ProjectService:
         text: str = "",
         tool_name: str | None = None,
         tool_status: str | None = None,
+        tool_args: str | None = None,
+        tool_output: str | None = None,
         file_ids: tuple[str, ...] = (),
     ) -> WebMessage:
         status = tool_status if tool_status in {"running", "done"} else None
@@ -220,6 +222,8 @@ class ProjectService:
                 tool_status=cast(ToolStatus | None, status),
                 file_ids=file_ids,
                 created_at="",
+                tool_args=tool_args,
+                tool_output=tool_output,
             )
         )
         if role in {"user", "assistant"} and text:
@@ -372,6 +376,8 @@ def message_payload(message: WebMessage) -> dict[str, object]:
         "text": message.text,
         "tool_name": message.tool_name,
         "tool_status": message.tool_status,
+        "tool_args": message.tool_args,
+        "tool_output": message.tool_output,
         "file_ids": list(message.file_ids),
         "created_at": message.created_at,
     }

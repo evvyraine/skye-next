@@ -20,6 +20,8 @@ export type ChatMessage = {
   text: string
   tool_name: string | null
   tool_status: "running" | "done" | null
+  tool_args?: string | null
+  tool_output?: string | null
   file_ids: string[]
   created_at: string
 }

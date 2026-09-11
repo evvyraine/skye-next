@@ -1,5 +1,5 @@
 import { useState } from "react"
-import { Sparkles } from "lucide-react"
+import { SparklesIcon } from "@heroicons/react/24/solid"
 import { Button, Dialog, Input, Sheet, toast } from "sunkit-ui"
 import { ProjectIcon } from "@/components/project-icon"
 import { useIsMobile } from "@/hooks/use-mobile"
@@ -137,7 +137,7 @@ export function CreateProjectDialog({
         radius={999}
         className="h-12 w-full text-[15px]"
         icon="left"
-        iconLeft={<Sparkles />}
+        iconLeft={<SparklesIcon />}
         disabled={!name.trim() || pending}
         onClick={() => void submit()}
       >

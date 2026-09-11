@@ -84,7 +84,7 @@ const messages = new Map([
 ])
 const uploadedFiles = new Map()
 
-function message(projectId, role, text) {
+function message(projectId, role, text, extra = {}) {
   return {
     id: randomUUID(),
     project_id: projectId,
@@ -92,8 +92,11 @@ function message(projectId, role, text) {
     text,
     tool_name: null,
     tool_status: null,
+    tool_args: null,
+    tool_output: null,
     file_ids: [],
     created_at: now(),
+    ...extra,
   }
 }
 
@@ -353,8 +356,34 @@ const server = createServer(async (request, response) => {
           "assistant",
           `This is a **mocked response** to:\n\n> ${prompt}`
         )
+        const toolCalls = [
+          {
+            id: randomUUID(),
+            name: "web_search",
+            label: "Searched the web",
+            args: JSON.stringify({ query: prompt.slice(0, 60) }),
+            output:
+              "1. Example result\n   https://example.com — a short description\n2. Another result\n   https://example.org — more detail",
+          },
+          {
+            id: randomUUID(),
+            name: "shell_exec",
+            label: "Ran a command",
+            args: JSON.stringify({ command: "ls -la /work" }),
+            output:
+              "total 8\ndrwxr-xr-x  2 skye skye 4096 Jan  1 00:00 .\n-rw-r--r--  1 skye skye   12 Jan  1 00:00 notes.txt",
+          },
+        ]
+        const toolMessages = toolCalls.map((tool) =>
+          message(projectId, "tool", tool.label, {
+            tool_name: tool.name,
+            tool_status: "done",
+            tool_args: tool.args,
+            tool_output: tool.output,
+          })
+        )
         const items = messages.get(projectId) ?? []
-        items.push(userMessage, assistantMessage)
+        items.push(userMessage, ...toolMessages, assistantMessage)
         messages.set(projectId, items)
         touchProject(project, prompt)
 
@@ -367,6 +396,15 @@ const server = createServer(async (request, response) => {
           response.write(`event: file\ndata: ${JSON.stringify(file)}\n\n`)
         }
         response.write(`event: user\ndata: ${JSON.stringify(userMessage)}\n\n`)
+        for (const tool of toolCalls) {
+          response.write(
+            `event: tool\ndata: ${JSON.stringify({ id: tool.id, name: tool.name, label: tool.label, status: "running", args: tool.args, output: "" })}\n\n`
+          )
+          await new Promise((resolve) => setTimeout(resolve, 250))
+          response.write(
+            `event: tool\ndata: ${JSON.stringify({ id: tool.id, name: tool.name, label: tool.label, status: "done", args: tool.args, output: tool.output })}\n\n`
+          )
+        }
         response.write(
           `event: delta\ndata: ${JSON.stringify({ text: assistantMessage.text })}\n\n`
         )

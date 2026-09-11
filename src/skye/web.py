@@ -375,6 +375,7 @@ class WebApp:
         await self._sse(response, "user", message_payload(user_message))
         assistant_file_ids: list[str] = []
         seen_tools: set[str] = set()
+        pending_tool_args: dict[str, str] = {}
         sent = 0
         last_assistant: dict[str, Any] | None = None
 
@@ -415,11 +416,16 @@ class WebApp:
 
         async def on_event(event: RunEvent) -> None:
             if event.kind == "tool":
+                if event.tool_args:
+                    pending_tool_args[event.tool_id] = event.tool_args
+                tool_args = pending_tool_args.get(event.tool_id, "")
                 payload = {
                     "id": event.tool_id,
                     "name": event.tool_name,
                     "label": event.tool_label,
                     "status": event.tool_status,
+                    "args": tool_args,
+                    "output": event.tool_output,
                 }
                 await self._sse(response, "tool", payload)
                 if event.tool_id not in seen_tools and event.tool_status == "done":
@@ -431,6 +437,8 @@ class WebApp:
                         text=event.tool_label,
                         tool_name=event.tool_name,
                         tool_status="done",
+                        tool_args=tool_args or None,
+                        tool_output=event.tool_output or None,
                     )
             elif event.kind == "image" and event.image:
                 saved = await self.projects.save_file(

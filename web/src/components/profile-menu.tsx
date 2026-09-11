@@ -1,4 +1,9 @@
-import { CircleHelp, LogOut, MoreHorizontal, Settings } from "lucide-react"
+import {
+  ArrowRightOnRectangleIcon,
+  Cog6ToothIcon,
+  EllipsisHorizontalIcon,
+  QuestionMarkCircleIcon,
+} from "@heroicons/react/24/outline"
 import type { ReactNode } from "react"
 import {
   Avatar,
@@ -56,7 +61,7 @@ export function ProfileMenu({
               </span>
             ) : null}
           </span>
-          <MoreHorizontal
+          <EllipsisHorizontalIcon
             className="size-4 shrink-0 text-[var(--sk-text-muted)]"
             aria-hidden="true"
           />
@@ -83,13 +88,13 @@ export function ProfileMenu({
       </div>
       <Separator className="my-1" />
       <DropdownMenu.Item
-        icon={<Settings className="size-4" aria-hidden="true" />}
+        icon={<Cog6ToothIcon className="size-4" aria-hidden="true" />}
         onSelect={comingSoon}
       >
         Settings
       </DropdownMenu.Item>
       <DropdownMenu.Item
-        icon={<CircleHelp className="size-4" aria-hidden="true" />}
+        icon={<QuestionMarkCircleIcon className="size-4" aria-hidden="true" />}
         onSelect={openHelp}
       >
         Help Center
@@ -97,7 +102,7 @@ export function ProfileMenu({
       <Separator className="my-1" />
       <DropdownMenu.Item
         destructive
-        icon={<LogOut className="size-4" aria-hidden="true" />}
+        icon={<ArrowRightOnRectangleIcon className="size-4" aria-hidden="true" />}
         onSelect={onLogout}
       >
         Log out
@@ -141,10 +146,14 @@ export function ProfileTrigger({
       }
     >
       <div className="flex flex-col gap-1.5">
-        <SheetAction icon={<Settings />} label="Settings" onClick={comingSoon} />
-        <SheetAction icon={<CircleHelp />} label="Help Center" onClick={openHelp} />
+        <SheetAction icon={<Cog6ToothIcon />} label="Settings" onClick={comingSoon} />
         <SheetAction
-          icon={<LogOut />}
+          icon={<QuestionMarkCircleIcon />}
+          label="Help Center"
+          onClick={openHelp}
+        />
+        <SheetAction
+          icon={<ArrowRightOnRectangleIcon />}
           label="Log out"
           onClick={onLogout}
           tone="rose"

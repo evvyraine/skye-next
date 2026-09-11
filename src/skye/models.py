@@ -255,6 +255,8 @@ class WebMessage:
     tool_status: ToolStatus | None
     file_ids: tuple[str, ...]
     created_at: str
+    tool_args: str | None = None
+    tool_output: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

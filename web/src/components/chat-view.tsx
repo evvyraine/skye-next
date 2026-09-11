@@ -1,22 +1,19 @@
 import { useEffect, useRef, useState, type ReactNode } from "react"
 import {
-  ArrowDown,
-  ArrowLeft,
-  Mic,
-  Paperclip,
-  Send,
-  Settings2,
-  Square,
-  Wrench,
-} from "lucide-react"
+  AdjustmentsHorizontalIcon,
+  ArrowDownIcon,
+  ArrowLeftIcon,
+  MicrophoneIcon,
+  PaperAirplaneIcon,
+  PaperClipIcon,
+} from "@heroicons/react/24/outline"
+import { StopIcon } from "@heroicons/react/24/solid"
 import { AnimatePresence, motion } from "motion/react"
 import {
-  Badge,
   Button,
   Message,
   MessageBubble,
   MessageList,
-  Spinner,
   TypingIndicator,
   toast,
 } from "sunkit-ui"
@@ -27,15 +24,18 @@ import {
 } from "@/components/attachment-card"
 import { MessageMarkdown } from "@/components/markdown"
 import { ProjectIcon } from "@/components/project-icon"
+import { ToolCall } from "@/components/tool-call"
 import { useStickToBottom } from "@/hooks/use-stick-to-bottom"
 import { formatWhen, listMessages, sendMessage, stopProject, transcribe } from "@/lib/api"
 import type { ChatFile, ChatMessage, Project } from "@/lib/types"
-import { cn } from "@/lib/utils"
 
 type ToolRow = {
   id: string
+  name: string
   label: string
   status: string
+  args: string
+  output: string
 }
 
 type PendingAttachment = AttachmentItem & {
@@ -164,9 +164,16 @@ export function ChatView({
         onDelta: setPendingText,
         onTool: (tool) => {
           setTools((current) => {
-            const next = current.filter((item) => item.id !== tool.id)
-            next.push({ id: tool.id, label: tool.label, status: tool.status })
-            return next
+            const existing = current.find((item) => item.id === tool.id)
+            const merged: ToolRow = {
+              id: tool.id,
+              name: tool.name || existing?.name || "",
+              label: tool.label || existing?.label || "",
+              status: tool.status,
+              args: tool.args || existing?.args || "",
+              output: tool.output || existing?.output || "",
+            }
+            return [...current.filter((item) => item.id !== tool.id), merged]
           })
         },
         onImage: (file) => {
@@ -254,7 +261,7 @@ export function ChatView({
           color="neutral"
           size="icon-only"
           icon="only"
-          iconOnly={<ArrowLeft />}
+          iconOnly={<ArrowLeftIcon />}
           radius={999}
           className="h-10 w-10 bg-[var(--sk-bg-solid)]/75 shadow-sm ring-1 ring-[var(--sk-border)] backdrop-blur-xl md:hidden"
           onClick={onBack}
@@ -274,7 +281,7 @@ export function ChatView({
               {streaming ? "Thinking…" : "Tap for settings"}
             </span>
           </span>
-          <Settings2
+          <AdjustmentsHorizontalIcon
             className="size-4 shrink-0 text-[var(--sk-text-muted)]"
             aria-hidden="true"
           />
@@ -300,7 +307,16 @@ export function ChatView({
               if (message.role === "tool") {
                 return (
                   <MessageScrollerRow key={message.id}>
-                    <ToolPill label={message.text} />
+                    <ToolCall
+                      data={{
+                        id: message.id,
+                        name: message.tool_name,
+                        label: message.text,
+                        status: "done",
+                        args: message.tool_args,
+                        output: message.tool_output,
+                      }}
+                    />
                   </MessageScrollerRow>
                 )
               }
@@ -312,8 +328,8 @@ export function ChatView({
                   >
                     {message.text ? (
                       <MessageBubble
-                        variant={isUser ? "solid" : "soft"}
-                        tone={isUser ? "lilac" : "lavender"}
+                        variant={isUser ? "solid" : "ghost"}
+                        tone={isUser ? "lilac" : "neutral"}
                         tail={isUser ? "end" : "start"}
                       >
                         <MessageMarkdown>{message.text}</MessageMarkdown>
@@ -339,16 +355,13 @@ export function ChatView({
               animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
               exit={{ opacity: 0, y: -6, filter: "blur(4px)" }}
             >
-              <ToolPill
-                label={tool.label}
-                running={tool.status === "running"}
-              />
+              <ToolCall data={tool} />
             </motion.div>
           ))}
 
           {pendingText ? (
             <Message align="start">
-              <MessageBubble variant="soft" tone="lavender" tail="start" streaming>
+              <MessageBubble variant="ghost" tone="neutral" tail="start" streaming>
                 <MessageMarkdown>{pendingText}</MessageMarkdown>
               </MessageBubble>
             </Message>
@@ -357,7 +370,7 @@ export function ChatView({
               initial={{ opacity: 0, y: 6 }}
               animate={{ opacity: 1, y: 0 }}
             >
-              <TypingIndicator label={`${project.name} is typing`} />
+              <TypingIndicator tone="neutral" label={`${project.name} is typing`} />
             </motion.div>
           ) : null}
         </MessageList>
@@ -376,7 +389,7 @@ export function ChatView({
               color="lavender"
               size="icon-only"
               icon="only"
-              iconOnly={<ArrowDown />}
+              iconOnly={<ArrowDownIcon />}
               radius={999}
               className="pointer-events-auto h-10 w-10 shadow-lg"
               onClick={() => scrollToBottom()}
@@ -423,7 +436,7 @@ export function ChatView({
               color="lavender"
               size="icon-only"
               icon="only"
-              iconOnly={<Paperclip />}
+              iconOnly={<PaperClipIcon />}
               radius={999}
               className="h-10 w-10 shrink-0"
               aria-label="Attach a file"
@@ -458,7 +471,7 @@ export function ChatView({
                   color="rose"
                   size="icon-only"
                   icon="only"
-                  iconOnly={<Square />}
+                  iconOnly={<StopIcon />}
                   radius={999}
                   className="h-10 w-10"
                   aria-label="Stop generating"
@@ -476,7 +489,7 @@ export function ChatView({
                     color="lavender"
                     size="icon-only"
                     icon="only"
-                    iconOnly={<Send />}
+                    iconOnly={<PaperAirplaneIcon />}
                     radius={999}
                     className="h-10 w-10"
                     aria-label="Send message"
@@ -489,7 +502,7 @@ export function ChatView({
                   color="lavender"
                   size="icon-only"
                   icon="only"
-                  iconOnly={listening ? <Square /> : <Mic />}
+                  iconOnly={listening ? <StopIcon /> : <MicrophoneIcon />}
                   radius={999}
                   className="h-10 w-10"
                   aria-pressed={listening}
@@ -531,21 +544,6 @@ function MessageScrollerRow({ children }: { children: ReactNode }) {
     >
       {children}
     </motion.div>
-  )
-}
-
-function ToolPill({ label, running = false }: { label: string; running?: boolean }) {
-  return (
-    <Badge
-      tone={running ? "lavender" : "mint"}
-      variant="soft"
-      size="lg"
-      className="gap-2 px-3 py-1.5"
-      role="status"
-    >
-      {running ? <Spinner size="xs" /> : <Wrench className="size-3.5" aria-hidden="true" />}
-      <span className={cn("font-medium", running && "animate-pulse")}>{label}</span>
-    </Badge>
   )
 }
 

@@ -1,13 +1,12 @@
 import { useState } from "react"
 import {
-  MoreHorizontal,
-  Pencil,
-  Pin,
-  PinOff,
-  Plus,
-  Search,
-  Trash2,
-} from "lucide-react"
+  EllipsisHorizontalIcon,
+  MagnifyingGlassIcon,
+  MapPinIcon,
+  PencilIcon,
+  PlusIcon,
+  TrashIcon,
+} from "@heroicons/react/24/outline"
 import { AnimatePresence, motion } from "motion/react"
 import {
   Button,
@@ -77,7 +76,7 @@ export function ProjectList({
             color="lavender"
             size="icon-only"
             icon="only"
-            iconOnly={<Plus />}
+            iconOnly={<PlusIcon />}
             radius={999}
             className="h-11 w-11"
             onClick={onCreate}
@@ -95,7 +94,7 @@ export function ProjectList({
             variant="filled"
             radius={999}
             leftAdornment={
-              <Search
+              <MagnifyingGlassIcon
                 className="size-4 text-[var(--sk-text-muted)]"
                 aria-hidden="true"
               />
@@ -137,7 +136,7 @@ export function ProjectList({
             <EmptyState
               size="sm"
               tone="lavender"
-              icon={<Search className="size-6" aria-hidden="true" />}
+              icon={<MagnifyingGlassIcon className="size-6" aria-hidden="true" />}
               title="Nothing here yet"
               description={
                 query.trim()
@@ -202,7 +201,7 @@ function ProjectRow({
             </span>
             {project.pinned ? (
               <span className="inline-flex shrink-0 items-center gap-1 text-[10px] font-medium text-[var(--sk-accent)]">
-                <Pin className="size-3" aria-hidden="true" />
+                <MapPinIcon className="size-3" aria-hidden="true" />
                 <span className="sr-only">Pinned</span>
               </span>
             ) : null}
@@ -228,7 +227,7 @@ function ProjectRow({
             color="neutral"
             size="icon-only"
             icon="only"
-            iconOnly={<MoreHorizontal />}
+            iconOnly={<EllipsisHorizontalIcon />}
             radius={999}
             className="mr-1.5 h-9 w-9 opacity-100 outline-none md:opacity-0 md:transition-opacity md:group-hover/project:opacity-100 focus-visible:opacity-100"
             aria-label={`Project actions for ${project.name}`}
@@ -236,13 +235,13 @@ function ProjectRow({
         }
       >
         <DropdownMenu.Item
-          icon={project.pinned ? <PinOff className="size-4" /> : <Pin className="size-4" />}
+          icon={<MapPinIcon className="size-4" aria-hidden="true" />}
           onSelect={onPin}
         >
           {project.pinned ? "Unpin" : "Pin"}
         </DropdownMenu.Item>
         <DropdownMenu.Item
-          icon={<Pencil className="size-4" />}
+          icon={<PencilIcon className="size-4" />}
           onSelect={onEdit}
         >
           Edit project
@@ -252,7 +251,7 @@ function ProjectRow({
             <DropdownMenu.Separator />
             <DropdownMenu.Item
               destructive
-              icon={<Trash2 className="size-4" />}
+              icon={<TrashIcon className="size-4" />}
               onSelect={onDelete}
             >
               Delete project

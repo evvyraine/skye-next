@@ -348,6 +348,8 @@ CREATE TABLE IF NOT EXISTS web_messages (
     text TEXT NOT NULL DEFAULT '',
     tool_name TEXT,
     tool_status TEXT,
+    tool_args TEXT,
+    tool_output TEXT,
     file_ids TEXT NOT NULL DEFAULT '[]',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -520,6 +522,8 @@ class Database:
         )
         await self._ensure_column("user_settings", "active_telegram_project_id", "TEXT")
         await self._ensure_column("automations", "once", "INTEGER NOT NULL DEFAULT 0")
+        await self._ensure_column("web_messages", "tool_args", "TEXT")
+        await self._ensure_column("web_messages", "tool_output", "TEXT")
         await self._normalize_group_message_threads()
         await self._migrate_composio_sessions()
         await self.connection.commit()
@@ -2457,8 +2461,9 @@ class Database:
     async def add_web_message(self, message: WebMessage) -> WebMessage:
         await self._write(
             """INSERT INTO web_messages (
-                   id, project_id, user_id, role, text, tool_name, tool_status, file_ids
-               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                   id, project_id, user_id, role, text, tool_name, tool_status,
+                   file_ids, tool_args, tool_output
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 message.id,
                 message.project_id,
@@ -2468,6 +2473,8 @@ class Database:
                 message.tool_name,
                 message.tool_status,
                 json.dumps(list(message.file_ids), separators=(",", ":")),
+                message.tool_args,
+                message.tool_output,
             ),
         )
         saved = await self.web_message(message.user_id, message.id)
@@ -2572,6 +2579,8 @@ class Database:
             tool_status=cast(ToolStatus | None, status if status in {"running", "done"} else None),
             file_ids=file_ids,
             created_at=cast(str, row["created_at"]),
+            tool_args=cast(str | None, row["tool_args"]),
+            tool_output=cast(str | None, row["tool_output"]),
         )
 
     async def add_web_file(self, file: WebFile) -> WebFile:

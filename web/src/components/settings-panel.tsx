@@ -1,4 +1,4 @@
-import { RotateCcw, Trash2 } from "lucide-react"
+import { ArrowPathIcon, TrashIcon } from "@heroicons/react/24/outline"
 import { Button, Input, Separator, Textarea } from "sunkit-ui"
 import { ProjectIcon } from "@/components/project-icon"
 import type { Project } from "@/lib/types"
@@ -113,7 +113,7 @@ export function SettingsPanel({
           color="lavender"
           radius={999}
           icon="left"
-          iconLeft={<RotateCcw />}
+          iconLeft={<ArrowPathIcon />}
           className="h-11 w-full"
           onClick={onReset}
         >
@@ -125,7 +125,7 @@ export function SettingsPanel({
             color="rose"
             radius={999}
             icon="left"
-            iconLeft={<Trash2 />}
+            iconLeft={<TrashIcon />}
             className="h-11 w-full"
             onClick={onDelete}
           >

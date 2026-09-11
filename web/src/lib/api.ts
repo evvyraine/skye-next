@@ -115,7 +115,14 @@ export type StreamHandlers = {
   onUser?: (message: ChatMessage) => void
   onAssistant?: (message: ChatMessage) => void
   onDelta?: (text: string) => void
-  onTool?: (tool: { id: string; name: string; label: string; status: string }) => void
+  onTool?: (tool: {
+    id: string
+    name: string
+    label: string
+    status: string
+    args?: string
+    output?: string
+  }) => void
   onImage?: (file: ChatFile) => void
   onFile?: (file: ChatFile) => void
   onNotice?: (message: string) => void

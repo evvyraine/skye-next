@@ -1,16 +1,20 @@
-import { Monitor, Moon, Sun } from "lucide-react"
+import {
+  ComputerDesktopIcon,
+  MoonIcon,
+  SunIcon,
+} from "@heroicons/react/24/outline"
 import { Button, DropdownMenu } from "sunkit-ui"
 import { useTheme, type Theme } from "@/components/theme-provider"
 
-const OPTIONS: { value: Theme; label: string; Icon: typeof Sun }[] = [
-  { value: "light", label: "Light", Icon: Sun },
-  { value: "dark", label: "Dark", Icon: Moon },
-  { value: "system", label: "System", Icon: Monitor },
+const OPTIONS: { value: Theme; label: string; Icon: typeof SunIcon }[] = [
+  { value: "light", label: "Light", Icon: SunIcon },
+  { value: "dark", label: "Dark", Icon: MoonIcon },
+  { value: "system", label: "System", Icon: ComputerDesktopIcon },
 ]
 
 export function ThemeToggle() {
   const { theme, resolvedTheme, setTheme } = useTheme()
-  const Icon = resolvedTheme === "dark" ? Moon : Sun
+  const Icon = resolvedTheme === "dark" ? MoonIcon : SunIcon
 
   return (
     <DropdownMenu
