@@ -108,6 +108,38 @@ const messages = new Map([
 ])
 const uploadedFiles = new Map()
 
+function seedFile(projectId, filename, mime, data) {
+  const id = randomUUID()
+  const file = {
+    id,
+    project_id: projectId,
+    filename,
+    mime,
+    size: data.length,
+    kind: mime.startsWith("image/") ? "image" : "upload",
+    url: `/api/mock-files/${id}`,
+    thumbnail_url: mime.startsWith("image/") ? `/api/mock-files/${id}/thumbnail` : null,
+    created_at: now(),
+    data,
+  }
+  uploadedFiles.set(id, file)
+  return file
+}
+
+seedFile("general", "brief.md", "text/markdown", Buffer.from("# Brief\n\nProject notes."))
+seedFile("general", "budget.csv", "text/csv", Buffer.from("item,amount\ncoffee,3\n"))
+seedFile(
+  "general",
+  "sky-mark.svg",
+  "image/svg+xml",
+  Buffer.from(
+    '<svg xmlns="http://www.w3.org/2000/svg" width="96" height="96"><rect width="96" height="96" rx="24" fill="#7c6cdc"/><circle cx="48" cy="40" r="16" fill="#fff"/></svg>'
+  )
+)
+seedFile("general", "voice-note.ogg", "audio/ogg", Buffer.from("OggS-voice"))
+seedFile("general", "script.py", "text/x-python", Buffer.from("print('hi')"))
+
+
 let memories = [
   {
     id: 1,

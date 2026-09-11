@@ -227,6 +227,22 @@ export function App() {
     }
   }
 
+  function togglePin(id: string) {
+    void pinProject(id)
+      .then((updated) => {
+        setProjects((current) =>
+          current.map((item) => (item.id === updated.id ? updated : item))
+        )
+      })
+      .catch((error: unknown) =>
+        toast.error({
+          title: "Couldn't update that pin",
+          description:
+            (error instanceof Error && error.message) || "Try again in a moment.",
+        })
+      )
+  }
+
   if (denied) {
     return (
       <Gate
@@ -276,22 +292,7 @@ export function App() {
         onQuery={setQuery}
         onSelect={selectProject}
         onCreate={() => setCreating(true)}
-        onPin={(id) => {
-          void pinProject(id)
-            .then((updated) => {
-              setProjects((current) =>
-                current.map((item) => (item.id === updated.id ? updated : item))
-              )
-            })
-            .catch((error: unknown) =>
-              toast.error({
-                title: "Couldn't update that pin",
-                description:
-                  (error instanceof Error && error.message) ||
-                  "Try again in a moment.",
-              })
-            )
-        }}
+        onPin={togglePin}
         onEdit={(id) => {
           selectProject(id)
           setSettingsOpen(true)
@@ -341,7 +342,10 @@ export function App() {
   const settings = selected ? (
     <SettingsPanel
       project={selected}
+      messages={messages}
+      files={files}
       onChange={(patch) => persist(patch)}
+      onPin={() => togglePin(selected.id)}
       onReset={() => setResetConfirm(true)}
       onDelete={() => setDeleteTarget(selected)}
     />

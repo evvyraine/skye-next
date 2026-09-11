@@ -2640,7 +2640,8 @@ class Database:
 
     async def list_web_files(self, user_id: int, project_id: str) -> list[WebFile]:
         cursor = await self.conn.execute(
-            "SELECT * FROM web_files WHERE user_id = ? AND project_id = ? ORDER BY created_at",
+            """SELECT * FROM web_files WHERE user_id = ? AND project_id = ?
+               ORDER BY rowid""",
             (user_id, project_id),
         )
         return [self._web_file(row) for row in await cursor.fetchall()]

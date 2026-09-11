@@ -65,6 +65,28 @@ async def test_web_messages_keep_insertion_order_within_a_second(
     assert [item.text for item in listed] == ["one", "two", "three", "four"]
 
 
+async def test_web_files_keep_insertion_order(database: Database, tmp_path: Path) -> None:
+    projects = service(database, tmp_path)
+    project = await projects.create(1, name="Files")
+    for index in range(3):
+        await projects.save_file(
+            1,
+            project.id,
+            filename=f"file-{index}.txt",
+            mime="text/plain",
+            data=b"x",
+            kind="upload",
+        )
+
+    files = await database.list_web_files(1, project.id)
+
+    assert [item.filename for item in files] == [
+        "file-0.txt",
+        "file-1.txt",
+        "file-2.txt",
+    ]
+
+
 async def test_open_drops_legacy_delivery_tool_rows(
     database: Database, tmp_path: Path
 ) -> None:

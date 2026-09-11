@@ -253,3 +253,19 @@ export function formatWhen(value: string | null): string {
   }
   return date.toLocaleDateString([], { weekday: "long" })
 }
+
+export function formatDateTime(value: string | null): string {
+  if (!value) {
+    return ""
+  }
+  const date = new Date(value.includes("T") ? value : `${value.replace(" ", "T")}Z`)
+  if (Number.isNaN(date.getTime())) {
+    return ""
+  }
+  return date.toLocaleString([], {
+    day: "numeric",
+    month: "short",
+    hour: "numeric",
+    minute: "2-digit",
+  })
+}

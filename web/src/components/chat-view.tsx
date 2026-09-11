@@ -254,6 +254,8 @@ export function ChatView({
 
   const fileMap = Object.fromEntries(files.map((item) => [item.id, item]))
   const canSend = Boolean(draft.trim()) || attachments.length > 0
+  const hasActivity =
+    messages.length > 0 || tools.length > 0 || streaming || Boolean(pendingText)
 
   return (
     <div className="relative flex h-full min-h-0 flex-col font-sans">
@@ -304,10 +306,11 @@ export function ChatView({
         onScroll={onScroll}
         className="sk-scrollbar min-h-0 flex-1 overflow-y-auto px-4 pt-20 pb-4 md:pt-5"
       >
-        <MessageList
-          label={`Conversation with ${project.name}`}
-          className="mx-auto max-w-3xl"
-        >
+        {hasActivity ? (
+          <MessageList
+            label={`Conversation with ${project.name}`}
+            className="mx-auto max-w-3xl"
+          >
           <AnimatePresence initial={false}>
             {messages.map((message) => {
               const messageFiles = message.file_ids
@@ -384,7 +387,12 @@ export function ChatView({
               <TypingIndicator tone="neutral" label={`${project.name} is typing`} />
             </motion.div>
           ) : null}
-        </MessageList>
+          </MessageList>
+        ) : (
+          <div className="flex h-full items-center justify-center">
+            <ChatEmpty project={project} />
+          </div>
+        )}
       </div>
 
       <AnimatePresence>
@@ -540,6 +548,23 @@ export function ChatView({
         item={preview}
         onOpenChange={(open) => !open && setPreview(null)}
       />
+    </div>
+  )
+}
+
+function ChatEmpty({ project }: { project: Project }) {
+  return (
+    <div className="mx-auto flex max-w-sm flex-col items-center gap-3 px-4 text-center">
+      <span className="flex size-16 items-center justify-center rounded-3xl bg-[var(--sk-surface-filled)] ring-1 ring-[var(--sk-border-subtle)]">
+        <ProjectIcon icon={project.icon} color={project.color} size="lg" />
+      </span>
+      <h2 className="text-[18px] font-semibold tracking-tight">
+        {project.kind === "skye" ? "Hi, I'm Skye" : `Start with ${project.name}`}
+      </h2>
+      <p className="text-[13.5px] leading-relaxed text-[var(--sk-text-desc)]">
+        Type a message below. Skye can search the web, work with files, run
+        commands, and remember what matters.
+      </p>
     </div>
   )
 }
