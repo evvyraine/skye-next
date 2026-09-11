@@ -10,36 +10,14 @@ export function MessageMarkdown({
   className?: string
 }) {
   return (
-    <div
-      className={cn(
-        "message-markdown min-w-0 text-[0.9375rem] leading-relaxed",
-        className
-      )}
-    >
+    <div className={cn("message-markdown min-w-0", className)}>
       <Markdown
         remarkPlugins={[remarkGfm]}
         components={{
           a: ({ children: linkChildren, ...props }) => (
-            <a
-              {...props}
-              target="_blank"
-              rel="noreferrer"
-              className="font-medium underline decoration-current/40 underline-offset-3 hover:decoration-current"
-            >
+            <a {...props} target="_blank" rel="noreferrer">
               {linkChildren}
             </a>
-          ),
-          code: ({
-            children: codeChildren,
-            className: codeClassName,
-            ...props
-          }) => (
-            <code
-              {...props}
-              className={cn("font-mono text-[0.9em]", codeClassName)}
-            >
-              {codeChildren}
-            </code>
           ),
         }}
       >

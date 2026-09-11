@@ -1,10 +1,8 @@
-import { Field, FieldGroup, FieldLabel } from "@/components/ui/field"
-import { Input } from "@/components/ui/input"
-import { Textarea } from "@/components/ui/textarea"
-import { Button } from "@/components/ui/button"
+import { RotateCcw, Trash2 } from "lucide-react"
+import { Button, Input, Separator, Textarea } from "sunkit-ui"
 import { ProjectIcon } from "@/components/project-icon"
 import type { Project } from "@/lib/types"
-import { COLOR_ORDER, ICON_ORDER, PROJECT_COLORS } from "@/lib/icons"
+import { COLOR_ORDER, ICON_ORDER, PROJECT_PASTELS } from "@/lib/icons"
 import { cn } from "@/lib/utils"
 
 export function SettingsPanel({
@@ -19,68 +17,118 @@ export function SettingsPanel({
   onDelete: () => void
 }) {
   return (
-    <div className="flex h-full flex-col gap-6 overflow-y-auto p-4">
-      <div className="flex justify-center pt-4">
+    <div className="sk-scrollbar flex h-full flex-col gap-5 overflow-y-auto p-4">
+      <div className="flex flex-col items-center gap-2 pt-2 text-center">
         <ProjectIcon icon={project.icon} color={project.color} size="lg" />
+        <p className="text-[13px] text-[var(--sk-text-desc)]">
+          {project.kind === "skye"
+            ? "Your main Skye conversation"
+            : "Project settings"}
+        </p>
       </div>
-      <FieldGroup>
-        <Field>
-          <FieldLabel htmlFor="settings-name">Name</FieldLabel>
-          <Input
-            id="settings-name"
-            value={project.name}
-            disabled={project.kind === "skye"}
-            onChange={(event) => onChange({ name: event.target.value })}
-          />
-        </Field>
-        <Field>
-          <FieldLabel htmlFor="settings-instructions">Instructions</FieldLabel>
-          <Textarea
-            id="settings-instructions"
-            value={project.instructions}
-            placeholder="Describe what this project should do."
-            className="min-h-40"
-            onChange={(event) => onChange({ instructions: event.target.value })}
-          />
-        </Field>
-      </FieldGroup>
-      <div className="flex flex-col gap-3">
-        <p className="text-sm font-medium">Icon</p>
-        <div className="flex flex-wrap gap-2">
-          {ICON_ORDER.map((item) => (
-            <button
-              key={item}
-              type="button"
-              aria-label={item}
-              className={cn("rounded-xl", project.icon === item && "ring-2 ring-foreground")}
-              onClick={() => onChange({ icon: item })}
-            >
-              <ProjectIcon icon={item} color={project.color} size="sm" className="rounded-xl" />
-            </button>
-          ))}
+
+      <Input
+        id="settings-name"
+        value={project.name}
+        label="Name"
+        tone="lavender"
+        radius={14}
+        disabled={project.kind === "skye"}
+        onChange={(event) => onChange({ name: event.target.value })}
+      />
+
+      <Textarea
+        id="settings-instructions"
+        value={project.instructions}
+        label="Instructions"
+        description="Describe what this project should do."
+        placeholder="e.g. You are a concise product coach."
+        tone="lavender"
+        radius={14}
+        rows={5}
+        autoResize
+        maxLength={12000}
+        showCount
+        onChange={(event) => onChange({ instructions: event.target.value })}
+      />
+
+      <Separator label="Appearance" tone="lavender" />
+
+      <div className="flex flex-col gap-4">
+        <div
+          className="flex flex-wrap gap-2"
+          role="group"
+          aria-label="Project color"
+        >
+          {COLOR_ORDER.map((item) => {
+            const active = project.color === item
+            return (
+              <button
+                key={item}
+                type="button"
+                aria-label={item}
+                aria-pressed={active}
+                className={cn(
+                  "size-7 cursor-pointer rounded-full border border-black/10 outline-none transition-transform hover:scale-110 focus-visible:ring-2 focus-visible:ring-[var(--sk-accent)]/60",
+                  active &&
+                    "ring-2 ring-[var(--sk-accent)] ring-offset-2 ring-offset-[var(--sk-bg-solid)]"
+                )}
+                style={{ background: PROJECT_PASTELS[item] }}
+                onClick={() => onChange({ color: item })}
+              />
+            )
+          })}
         </div>
-        <div className="flex flex-wrap gap-2">
-          {COLOR_ORDER.map((item) => (
-            <button
-              key={item}
-              type="button"
-              aria-label={item}
-              className={cn(
-                "size-7 rounded-full",
-                PROJECT_COLORS[item],
-                project.color === item && "ring-2 ring-foreground ring-offset-2",
-              )}
-              onClick={() => onChange({ color: item })}
-            />
-          ))}
+
+        <div
+          className="flex flex-wrap gap-1.5"
+          role="group"
+          aria-label="Project icon"
+        >
+          {ICON_ORDER.map((item) => {
+            const active = project.icon === item
+            return (
+              <button
+                key={item}
+                type="button"
+                aria-label={item}
+                aria-pressed={active}
+                className={cn(
+                  "cursor-pointer rounded-2xl p-0.5 outline-none transition-transform hover:scale-105 focus-visible:ring-2 focus-visible:ring-[var(--sk-accent)]/60",
+                  active &&
+                    "bg-[var(--sk-bg-solid)] shadow-sm ring-2 ring-[var(--sk-accent)]"
+                )}
+                onClick={() => onChange({ icon: item })}
+              >
+                <ProjectIcon icon={item} color={project.color} size="sm" />
+              </button>
+            )
+          })}
         </div>
       </div>
-      <div className="mt-auto flex flex-col gap-2">
-        <Button variant="outline" onClick={onReset}>
+
+      <div className="mt-auto flex flex-col gap-2 pt-4">
+        <Button
+          variant="outline"
+          color="lavender"
+          radius={999}
+          icon="left"
+          iconLeft={<RotateCcw />}
+          className="h-11 w-full"
+          onClick={onReset}
+        >
           Reset this chat
         </Button>
         {project.deletable ? (
-          <Button variant="destructive" onClick={onDelete}>
+          <Button
+            variant="outline"
+            color="rose"
+            radius={999}
+            icon="left"
+            iconLeft={<Trash2 />}
+            className="h-11 w-full"
+            onClick={onDelete}
+          >
             Delete project
           </Button>
         ) : null}

@@ -1,33 +1,34 @@
-import { useEffect, useRef, useState } from "react"
-import { ArrowLeft, Mic, Paperclip, Send, Square, Wrench } from "lucide-react"
+import { useEffect, useRef, useState, type ReactNode } from "react"
+import {
+  ArrowDown,
+  ArrowLeft,
+  Mic,
+  Paperclip,
+  Send,
+  Settings2,
+  Square,
+  Wrench,
+} from "lucide-react"
 import { AnimatePresence, motion } from "motion/react"
-import { toast } from "sonner"
+import {
+  Badge,
+  Button,
+  Message,
+  MessageBubble,
+  MessageList,
+  Spinner,
+  TypingIndicator,
+  toast,
+} from "sunkit-ui"
 import {
   AttachmentDeck,
   AttachmentPreview,
   type AttachmentItem,
 } from "@/components/attachment-card"
-import { Bubble, BubbleContent } from "@/components/ui/bubble"
-import { Button } from "@/components/ui/button"
-import {
-  InputGroup,
-  InputGroupAddon,
-  InputGroupButton,
-  InputGroupInput,
-} from "@/components/ui/input-group"
-import { Marker, MarkerContent, MarkerIcon } from "@/components/ui/marker"
-import {
-  MessageScroller,
-  MessageScrollerButton,
-  MessageScrollerContent,
-  MessageScrollerItem,
-  MessageScrollerProvider,
-  MessageScrollerViewport,
-} from "@/components/ui/message-scroller"
-import { Spinner } from "@/components/ui/spinner"
 import { MessageMarkdown } from "@/components/markdown"
 import { ProjectIcon } from "@/components/project-icon"
-import { sendMessage, listMessages, stopProject, transcribe } from "@/lib/api"
+import { useStickToBottom } from "@/hooks/use-stick-to-bottom"
+import { formatWhen, listMessages, sendMessage, stopProject, transcribe } from "@/lib/api"
 import type { ChatFile, ChatMessage, Project } from "@/lib/types"
 import { cn } from "@/lib/utils"
 
@@ -48,7 +49,6 @@ export function ChatView({
   onMessages,
   onBack,
   onOpenSettings,
-  onStop,
 }: {
   project: Project
   messages: ChatMessage[]
@@ -56,21 +56,22 @@ export function ChatView({
   onMessages: (messages: ChatMessage[], files: ChatFile[]) => void
   onBack: () => void
   onOpenSettings: () => void
-  onStop?: () => void
 }) {
   const [draft, setDraft] = useState("")
   const [attachments, setAttachments] = useState<PendingAttachment[]>([])
-  const [sendingAttachments, setSendingAttachments] = useState<
-    PendingAttachment[]
-  >([])
+  const [sendingAttachments, setSendingAttachments] = useState<PendingAttachment[]>([])
   const [preview, setPreview] = useState<AttachmentItem | null>(null)
   const [streaming, setStreaming] = useState(false)
   const [pendingText, setPendingText] = useState("")
   const [tools, setTools] = useState<ToolRow[]>([])
   const [listening, setListening] = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
+  const textRef = useRef<HTMLTextAreaElement>(null)
   const recorder = useRef<MediaRecorder | null>(null)
   const objectUrls = useRef<Set<string>>(new Set())
+
+  const { ref: scrollRef, atBottom, onScroll, scrollToBottom } =
+    useStickToBottom<HTMLDivElement>([messages.length, pendingText, tools.length])
 
   useEffect(() => {
     const urls = objectUrls.current
@@ -79,6 +80,14 @@ export function ChatView({
       urls.clear()
     }
   }, [])
+
+  // Auto-grow the composer.
+  useEffect(() => {
+    const el = textRef.current
+    if (!el) return
+    el.style.height = "auto"
+    el.style.height = `${Math.min(el.scrollHeight, 160)}px`
+  }, [draft])
 
   function release(items: PendingAttachment[]) {
     for (const item of items) {
@@ -174,17 +183,24 @@ export function ChatView({
           setPendingText("")
           setTools([])
         },
-        onError: (message) => toast.error(message),
-        onNotice: (message) => toast.success(message),
+        onError: (message) =>
+          toast.error({
+            title: "Skye couldn't finish that reply",
+            description: message || "Try again in a moment.",
+          }),
+        onNotice: (message) => toast.success({ title: message }),
       })
     } catch (error) {
       if (!accepted) {
         setAttachments(localAttachments)
         setSendingAttachments([])
       }
-      toast.error(
-        error instanceof Error ? error.message : "Could not send that."
-      )
+      toast.error({
+        title: "Couldn't send that message",
+        description:
+          (error instanceof Error && error.message) ||
+          "Check your connection and try again.",
+      })
     } finally {
       setStreaming(false)
     }
@@ -212,255 +228,278 @@ export function ChatView({
           .then((text) =>
             setDraft((current) => [current, text].filter(Boolean).join(" "))
           )
-          .catch((error: unknown) => {
-            toast.error(
-              error instanceof Error
-                ? error.message
-                : "Could not transcribe that."
-            )
+          .catch(() => {
+            toast.error({
+              title: "Couldn't transcribe that",
+              description: "Try again, or type your message instead.",
+            })
           })
       }
       recorder.current = media
       media.start()
       setListening(true)
     } catch {
-      toast.error("Microphone access is needed for dictation.")
+      toast.error({ title: "Microphone access is needed for dictation." })
     }
   }
 
   const fileMap = Object.fromEntries(files.map((item) => [item.id, item]))
+  const canSend = Boolean(draft.trim()) || attachments.length > 0
 
   return (
-    <div className="flex h-full min-h-0 flex-col bg-background">
-      <header className="absolute inset-x-0 top-0 isolate z-20 flex items-center gap-2 px-3 pt-[max(0.5rem,env(safe-area-inset-top))] pb-4 before:pointer-events-none before:absolute before:inset-0 before:-z-10 before:bg-transparent before:[mask-image:linear-gradient(to_bottom,black_0%,black_55%,transparent_100%)] before:backdrop-blur-xl md:relative md:border-b md:pb-2 md:before:hidden">
+    <div className="relative flex h-full min-h-0 flex-col font-sans">
+      <header className="absolute inset-x-0 top-0 isolate z-20 flex items-center gap-2 px-4 pt-[max(0.5rem,env(safe-area-inset-top))] pb-4 before:pointer-events-none before:absolute before:inset-0 before:-z-10 before:bg-transparent before:[mask-image:linear-gradient(to_bottom,black_0%,black_55%,transparent_100%)] before:backdrop-blur-xl md:relative md:border-b md:border-[var(--sk-border-subtle)] md:pb-2.5 md:before:hidden">
         <Button
           variant="ghost"
-          size="icon"
-          className="rounded-full bg-background/75 shadow-sm ring-1 ring-foreground/10 backdrop-blur-xl active:scale-[0.96] md:hidden"
+          color="neutral"
+          size="icon-only"
+          icon="only"
+          iconOnly={<ArrowLeft />}
+          radius={999}
+          className="h-10 w-10 bg-[var(--sk-bg-solid)]/75 shadow-sm ring-1 ring-[var(--sk-border)] backdrop-blur-xl md:hidden"
           onClick={onBack}
-          aria-label="Back"
-        >
-          <ArrowLeft />
-        </Button>
-        <Button
-          variant="ghost"
-          className="min-w-0 rounded-full bg-background/75 shadow-sm ring-1 ring-foreground/10 backdrop-blur-xl active:scale-[0.96] md:bg-background md:ring-border"
+          aria-label="Back to projects"
+        />
+        <button
+          type="button"
+          className="flex min-w-0 cursor-pointer items-center gap-2.5 rounded-full px-1.5 py-1.5 text-start outline-none transition-colors hover:bg-[var(--sk-surface-filled)] focus-visible:ring-2 focus-visible:ring-[var(--sk-accent)]/50"
           onClick={onOpenSettings}
         >
-          <ProjectIcon
-            icon={project.icon}
-            color={project.color}
-            size="sm"
-            className="size-6 rounded-lg"
+          <ProjectIcon icon={project.icon} color={project.color} size="sm" />
+          <span className="min-w-0">
+            <span className="block truncate text-[14px] font-semibold">
+              {project.name}
+            </span>
+            <span className="block truncate text-[11px] text-[var(--sk-text-desc)]">
+              {streaming ? "Thinking…" : "Tap for settings"}
+            </span>
+          </span>
+          <Settings2
+            className="size-4 shrink-0 text-[var(--sk-text-muted)]"
+            aria-hidden="true"
           />
-          <span className="truncate font-medium">{project.name}</span>
-        </Button>
+        </button>
       </header>
-      <MessageScrollerProvider>
-        <MessageScroller className="min-h-0 flex-1">
-          <MessageScrollerViewport>
-            <MessageScrollerContent className="mx-auto w-full max-w-3xl gap-4 px-4 pt-20 pb-6 md:py-6">
-              <AnimatePresence initial={false}>
-                {messages.map((message) => {
-                  const messageFiles = message.file_ids
-                    .map((id) => fileMap[id])
-                    .filter((file): file is ChatFile => Boolean(file))
-                    .map(fileItem)
-                  const user = message.role === "user"
-                  return (
-                    <MessageScrollerItem key={message.id}>
-                      <motion.div
-                        layout
-                        className={cn(
-                          "flex w-full",
-                          user ? "justify-end" : "justify-start"
-                        )}
-                        initial={{ opacity: 0, y: 10, filter: "blur(5px)" }}
-                        animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
-                        exit={{ opacity: 0, y: -8, filter: "blur(4px)" }}
-                        transition={{ duration: 0.22, ease: "easeOut" }}
+
+      <div
+        ref={scrollRef}
+        onScroll={onScroll}
+        className="sk-scrollbar min-h-0 flex-1 overflow-y-auto px-4 pt-20 pb-4 md:pt-5"
+      >
+        <MessageList
+          label={`Conversation with ${project.name}`}
+          className="mx-auto max-w-3xl"
+        >
+          <AnimatePresence initial={false}>
+            {messages.map((message) => {
+              const messageFiles = message.file_ids
+                .map((id) => fileMap[id])
+                .filter((file): file is ChatFile => Boolean(file))
+                .map(fileItem)
+              const isUser = message.role === "user"
+              if (message.role === "tool") {
+                return (
+                  <MessageScrollerRow key={message.id}>
+                    <ToolPill label={message.text} />
+                  </MessageScrollerRow>
+                )
+              }
+              return (
+                <MessageScrollerRow key={message.id}>
+                  <Message
+                    align={isUser ? "end" : "start"}
+                    time={formatWhen(message.created_at)}
+                  >
+                    {message.text ? (
+                      <MessageBubble
+                        variant={isUser ? "solid" : "soft"}
+                        tone={isUser ? "lilac" : "lavender"}
+                        tail={isUser ? "end" : "start"}
                       >
-                        {message.role === "tool" ? (
-                          <Marker>
-                            <MarkerIcon>
-                              <Wrench />
-                            </MarkerIcon>
-                            <MarkerContent>
-                              <MessageMarkdown>{message.text}</MessageMarkdown>
-                            </MarkerContent>
-                          </Marker>
-                        ) : (
-                          <div
-                            className={cn(
-                              "flex max-w-full min-w-0 flex-col",
-                              user ? "items-end" : "items-start"
-                            )}
-                          >
-                            {message.text ? (
-                              <Bubble
-                                variant={user ? "default" : "muted"}
-                                align={user ? "end" : "start"}
-                              >
-                                <BubbleContent className="rounded-3xl px-4 py-2.5">
-                                  <MessageMarkdown>
-                                    {message.text}
-                                  </MessageMarkdown>
-                                </BubbleContent>
-                              </Bubble>
-                            ) : null}
-                            {messageFiles.length ? (
-                              <AttachmentDeck
-                                items={messageFiles}
-                                align={user ? "end" : "start"}
-                                onOpen={setPreview}
-                              />
-                            ) : null}
-                          </div>
-                        )}
-                      </motion.div>
-                    </MessageScrollerItem>
-                  )
-                })}
-                {tools.map((tool) => (
-                  <MessageScrollerItem key={tool.id}>
-                    <motion.div
-                      initial={{ opacity: 0, y: 8, filter: "blur(4px)" }}
-                      animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
-                      exit={{ opacity: 0, y: -6, filter: "blur(4px)" }}
-                    >
-                      <Marker role="status">
-                        <MarkerIcon>
-                          {tool.status === "running" ? <Spinner /> : <Wrench />}
-                        </MarkerIcon>
-                        <MarkerContent
-                          className={cn(tool.status === "running" && "shimmer")}
-                        >
-                          {tool.label}
-                        </MarkerContent>
-                      </Marker>
-                    </motion.div>
-                  </MessageScrollerItem>
-                ))}
-                {pendingText ? (
-                  <MessageScrollerItem key="pending-response">
-                    <motion.div
-                      initial={{ opacity: 0, y: 8, filter: "blur(4px)" }}
-                      animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
-                      exit={{ opacity: 0, y: -6, filter: "blur(4px)" }}
-                      role="status"
-                      aria-live="polite"
-                    >
-                      <Bubble variant="muted" align="start">
-                        <BubbleContent className="rounded-3xl px-4 py-2.5">
-                          <MessageMarkdown>{pendingText}</MessageMarkdown>
-                        </BubbleContent>
-                      </Bubble>
-                    </motion.div>
-                  </MessageScrollerItem>
-                ) : null}
-              </AnimatePresence>
-            </MessageScrollerContent>
-          </MessageScrollerViewport>
-          <MessageScrollerButton />
-        </MessageScroller>
-      </MessageScrollerProvider>
+                        <MessageMarkdown>{message.text}</MessageMarkdown>
+                      </MessageBubble>
+                    ) : null}
+                    {messageFiles.length ? (
+                      <AttachmentDeck
+                        items={messageFiles}
+                        align={isUser ? "end" : "start"}
+                        onOpen={setPreview}
+                      />
+                    ) : null}
+                  </Message>
+                </MessageScrollerRow>
+              )
+            })}
+          </AnimatePresence>
+
+          {tools.map((tool) => (
+            <motion.div
+              key={tool.id}
+              initial={{ opacity: 0, y: 8, filter: "blur(4px)" }}
+              animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
+              exit={{ opacity: 0, y: -6, filter: "blur(4px)" }}
+            >
+              <ToolPill
+                label={tool.label}
+                running={tool.status === "running"}
+              />
+            </motion.div>
+          ))}
+
+          {pendingText ? (
+            <Message align="start">
+              <MessageBubble variant="soft" tone="lavender" tail="start" streaming>
+                <MessageMarkdown>{pendingText}</MessageMarkdown>
+              </MessageBubble>
+            </Message>
+          ) : streaming && tools.length === 0 ? (
+            <motion.div
+              initial={{ opacity: 0, y: 6 }}
+              animate={{ opacity: 1, y: 0 }}
+            >
+              <TypingIndicator label={`${project.name} is typing`} />
+            </motion.div>
+          ) : null}
+        </MessageList>
+      </div>
+
+      <AnimatePresence>
+        {!atBottom && messages.length > 2 ? (
+          <motion.div
+            initial={{ opacity: 0, y: 8, scale: 0.9 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: 8, scale: 0.9 }}
+            className="pointer-events-none absolute inset-x-0 bottom-28 z-20 flex justify-center md:bottom-32"
+          >
+            <Button
+              variant="solid"
+              color="lavender"
+              size="icon-only"
+              icon="only"
+              iconOnly={<ArrowDown />}
+              radius={999}
+              className="pointer-events-auto h-10 w-10 shadow-lg"
+              onClick={() => scrollToBottom()}
+              aria-label="Scroll to latest"
+            />
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
+
       <form
-        className="px-3 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]"
+        className="shrink-0 px-3 pt-2 pb-[max(0.75rem,env(safe-area-inset-bottom))]"
         onSubmit={(event) => {
           event.preventDefault()
           void send()
         }}
       >
-        <AnimatePresence initial={false}>
-          {attachments.length || sendingAttachments.length ? (
-            <motion.div
-              initial={{ opacity: 0, y: 6 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: 4 }}
-              className="relative z-10 mx-auto mb-2 max-w-3xl px-2"
-            >
-              {sendingAttachments.length ? (
-                <AttachmentDeck
-                  items={sendingAttachments}
-                  onOpen={setPreview}
-                />
-              ) : null}
-              {attachments.length ? (
-                <AttachmentDeck
-                  items={attachments}
-                  onOpen={setPreview}
-                  onRemove={removeAttachment}
-                />
-              ) : null}
-            </motion.div>
-          ) : null}
-        </AnimatePresence>
-        <InputGroup className="mx-auto h-14 max-w-3xl rounded-full border-border/80 bg-background shadow-[0_8px_30px_oklch(0_0_0/0.08)]">
-          <InputGroupInput
-            value={draft}
-            onChange={(event) => setDraft(event.target.value)}
-            placeholder={`Message ${project.name}`}
-            aria-label={`Message ${project.name}`}
-            className="h-full text-base sm:text-base"
-            disabled={streaming}
-          />
-          <InputGroupAddon
-            align="inline-start"
-            className="pl-2 has-[>button]:ml-0"
-          >
-            <InputGroupButton
+        <div className="relative mx-auto max-w-3xl">
+          <AnimatePresence initial={false}>
+            {attachments.length || sendingAttachments.length ? (
+              <motion.div
+                initial={{ opacity: 0, y: 6 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: 4 }}
+                className="relative z-10 mb-1 px-2"
+              >
+                {sendingAttachments.length ? (
+                  <AttachmentDeck items={sendingAttachments} onOpen={setPreview} />
+                ) : null}
+                {attachments.length ? (
+                  <AttachmentDeck
+                    items={attachments}
+                    onOpen={setPreview}
+                    onRemove={removeAttachment}
+                  />
+                ) : null}
+              </motion.div>
+            ) : null}
+          </AnimatePresence>
+
+          <div className="flex items-end gap-1.5 rounded-[26px] border border-[var(--sk-border)] bg-[var(--sk-bg)]/85 p-1.5 shadow-[0_12px_34px_-14px_var(--sk-shadow-a),0_4px_12px_-6px_var(--sk-shadow-b)] backdrop-blur-xl transition-shadow focus-within:shadow-[0_16px_40px_-14px_var(--sk-shadow-a)] focus-within:ring-1 focus-within:ring-[var(--sk-accent)]/30">
+            <Button
               type="button"
-              size="icon-sm"
-              variant="secondary"
-              className="size-10 rounded-full shadow-sm active:scale-[0.96]"
+              variant="ghost"
+              color="lavender"
+              size="icon-only"
+              icon="only"
+              iconOnly={<Paperclip />}
+              radius={999}
+              className="h-10 w-10 shrink-0"
               aria-label="Attach a file"
               onClick={() => fileRef.current?.click()}
-            >
-              <Paperclip />
-            </InputGroupButton>
-          </InputGroupAddon>
-          <InputGroupAddon
-            align="inline-end"
-            className="pr-2 has-[>button]:mr-0"
-          >
-            {streaming ? (
-              <InputGroupButton
-                type="button"
-                size="icon-sm"
-                variant="default"
-                className="size-10 rounded-full shadow-sm active:scale-[0.96]"
-                aria-label="Stop generating"
-                onClick={() => {
-                  void stopProject(project.id)
-                  onStop?.()
-                }}
-              >
-                <Square />
-              </InputGroupButton>
-            ) : draft.trim() || attachments.length ? (
-              <InputGroupButton
-                type="submit"
-                size="icon-sm"
-                variant="default"
-                className="size-10 rounded-full shadow-sm active:scale-[0.96]"
-                aria-label="Send message"
-              >
-                <Send />
-              </InputGroupButton>
-            ) : (
-              <InputGroupButton
-                type="button"
-                size="icon-sm"
-                variant="default"
-                className="size-10 rounded-full shadow-sm active:scale-[0.96]"
-                aria-label={listening ? "Stop dictation" : "Start dictation"}
-                onClick={() => void dictation()}
-              >
-                {listening ? <Square /> : <Mic />}
-              </InputGroupButton>
-            )}
-          </InputGroupAddon>
-        </InputGroup>
+              disabled={streaming}
+            />
+            <textarea
+              ref={textRef}
+              value={draft}
+              onChange={(event) => setDraft(event.target.value)}
+              onKeyDown={(event) => {
+                if (
+                  event.key === "Enter" &&
+                  !event.shiftKey &&
+                  !event.nativeEvent.isComposing
+                ) {
+                  event.preventDefault()
+                  void send()
+                }
+              }}
+              rows={1}
+              placeholder={`Message ${project.name}`}
+              aria-label={`Message ${project.name}`}
+              disabled={streaming}
+              className="max-h-40 min-h-10 flex-1 resize-none bg-transparent px-1.5 py-[9px] text-base leading-[22px] text-[var(--sk-text)] outline-none placeholder:text-[var(--sk-text-placeholder)] disabled:opacity-60 sm:text-[15px]"
+            />
+            <div className="shrink-0 pb-0.5">
+              {streaming ? (
+                <Button
+                  type="button"
+                  variant="solid"
+                  color="rose"
+                  size="icon-only"
+                  icon="only"
+                  iconOnly={<Square />}
+                  radius={999}
+                  className="h-10 w-10"
+                  aria-label="Stop generating"
+                  onClick={() => void stopProject(project.id)}
+                />
+              ) : canSend ? (
+                <motion.div
+                  initial={{ scale: 0.7, opacity: 0 }}
+                  animate={{ scale: 1, opacity: 1 }}
+                  transition={{ type: "spring", stiffness: 500, damping: 26 }}
+                >
+                  <Button
+                    type="submit"
+                    variant="solid"
+                    color="lavender"
+                    size="icon-only"
+                    icon="only"
+                    iconOnly={<Send />}
+                    radius={999}
+                    className="h-10 w-10"
+                    aria-label="Send message"
+                  />
+                </motion.div>
+              ) : (
+                <Button
+                  type="button"
+                  variant="solid"
+                  color="lavender"
+                  size="icon-only"
+                  icon="only"
+                  iconOnly={listening ? <Square /> : <Mic />}
+                  radius={999}
+                  className="h-10 w-10"
+                  aria-pressed={listening}
+                  aria-label={listening ? "Stop dictation" : "Start dictation"}
+                  onClick={() => void dictation()}
+                />
+              )}
+            </div>
+          </div>
+        </div>
         <input
           ref={fileRef}
           type="file"
@@ -472,11 +511,41 @@ export function ChatView({
           }}
         />
       </form>
+
       <AttachmentPreview
         item={preview}
         onOpenChange={(open) => !open && setPreview(null)}
       />
     </div>
+  )
+}
+
+function MessageScrollerRow({ children }: { children: ReactNode }) {
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 10, filter: "blur(5px)" }}
+      animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
+      exit={{ opacity: 0, y: -8, filter: "blur(4px)" }}
+      transition={{ duration: 0.22, ease: "easeOut" }}
+      layout
+    >
+      {children}
+    </motion.div>
+  )
+}
+
+function ToolPill({ label, running = false }: { label: string; running?: boolean }) {
+  return (
+    <Badge
+      tone={running ? "lavender" : "mint"}
+      variant="soft"
+      size="lg"
+      className="gap-2 px-3 py-1.5"
+      role="status"
+    >
+      {running ? <Spinner size="xs" /> : <Wrench className="size-3.5" aria-hidden="true" />}
+      <span className={cn("font-medium", running && "animate-pulse")}>{label}</span>
+    </Badge>
   )
 }
 

@@ -1,145 +1,83 @@
+@import "sunkit-ui/sunkit.css";
 @import "tailwindcss";
-@import "tw-animate-css";
-@import "shadcn/tailwind.css";
 @import "@fontsource-variable/geist";
 @import "@fontsource-variable/geist-mono";
 
-@custom-variant dark (&:is(.dark *));
+/* The app toggles `.dark` on <html> (never a media-only theme), so the `dark:`
+   utilities we author here must follow that class rather than the OS setting.
+   Sunkit ships both branches in its compiled CSS. */
+@custom-variant dark (&:where(.dark, .dark *));
 
-@theme inline {
-  --font-heading: var(--font-sans);
-  --font-sans: "Geist Variable", sans-serif;
-  --font-mono: "Geist Mono Variable", monospace;
-  --color-sidebar-ring: var(--sidebar-ring);
-  --color-sidebar-border: var(--sidebar-border);
-  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
-  --color-sidebar-accent: var(--sidebar-accent);
-  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
-  --color-sidebar-primary: var(--sidebar-primary);
-  --color-sidebar-foreground: var(--sidebar-foreground);
-  --color-sidebar: var(--sidebar);
-  --color-chart-5: var(--chart-5);
-  --color-chart-4: var(--chart-4);
-  --color-chart-3: var(--chart-3);
-  --color-chart-2: var(--chart-2);
-  --color-chart-1: var(--chart-1);
-  --color-ring: var(--ring);
-  --color-input: var(--input);
-  --color-border: var(--border);
-  --color-destructive: var(--destructive);
-  --color-accent-foreground: var(--accent-foreground);
-  --color-accent: var(--accent);
-  --color-muted-foreground: var(--muted-foreground);
-  --color-muted: var(--muted);
-  --color-secondary-foreground: var(--secondary-foreground);
-  --color-secondary: var(--secondary);
-  --color-primary-foreground: var(--primary-foreground);
-  --color-primary: var(--primary);
-  --color-popover-foreground: var(--popover-foreground);
-  --color-popover: var(--popover);
-  --color-card-foreground: var(--card-foreground);
-  --color-card: var(--card);
-  --color-foreground: var(--foreground);
-  --color-background: var(--background);
-  --radius-sm: calc(var(--radius) * 0.6);
-  --radius-md: calc(var(--radius) * 0.8);
-  --radius-lg: var(--radius);
-  --radius-xl: calc(var(--radius) * 1.4);
-  --radius-2xl: calc(var(--radius) * 1.8);
-  --radius-3xl: calc(var(--radius) * 2.2);
-  --radius-4xl: calc(var(--radius) * 2.6);
+@theme {
+  --font-sans: "Geist Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "Geist Mono Variable", ui-monospace, SFMono-Regular, monospace;
+  --font-heading: "Geist Variable", ui-sans-serif, system-ui, sans-serif;
+
+  --color-lavender: #d4c5f9;
+  --color-violet: #7c6cdc;
 }
 
+/* Sunkit registers the pastel scale and a `.dark` / `[data-theme]` custom
+   variant. We only need to pin the font and the app accent on the root. */
 :root {
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.145 0 0);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.145 0 0);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.145 0 0);
-  --primary: oklch(0.205 0 0);
-  --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.97 0 0);
-  --secondary-foreground: oklch(0.205 0 0);
-  --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.556 0 0);
-  --accent: oklch(0.97 0 0);
-  --accent-foreground: oklch(0.205 0 0);
-  --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.922 0 0);
-  --input: oklch(0.922 0 0);
-  --ring: oklch(0.708 0 0);
-  --chart-1: oklch(0.87 0 0);
-  --chart-2: oklch(0.556 0 0);
-  --chart-3: oklch(0.439 0 0);
-  --chart-4: oklch(0.371 0 0);
-  --chart-5: oklch(0.269 0 0);
-  --radius: 0.625rem;
-  --sidebar: oklch(0.985 0 0);
-  --sidebar-foreground: oklch(0.145 0 0);
-  --sidebar-primary: oklch(0.205 0 0);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.97 0 0);
-  --sidebar-accent-foreground: oklch(0.205 0 0);
-  --sidebar-border: oklch(0.922 0 0);
-  --sidebar-ring: oklch(0.708 0 0);
+  --font-sans: "Geist Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "Geist Mono Variable", ui-monospace, SFMono-Regular, monospace;
+  --sk-accent: #7c6cdc;
+  --app-bg: #f5f3fb;
 }
 
-.dark {
-  --background: oklch(0.145 0 0);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.205 0 0);
-  --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.922 0 0);
-  --primary-foreground: oklch(0.205 0 0);
-  --secondary: oklch(0.269 0 0);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
-  --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.269 0 0);
-  --accent-foreground: oklch(0.985 0 0);
-  --destructive: oklch(0.704 0.191 22.216);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.556 0 0);
-  --chart-1: oklch(0.87 0 0);
-  --chart-2: oklch(0.556 0 0);
-  --chart-3: oklch(0.439 0 0);
-  --chart-4: oklch(0.371 0 0);
-  --chart-5: oklch(0.269 0 0);
-  --sidebar: oklch(0.205 0 0);
-  --sidebar-foreground: oklch(0.985 0 0);
-  --sidebar-primary: oklch(0.488 0.243 264.376);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.269 0 0);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
-  --sidebar-border: oklch(1 0 0 / 10%);
-  --sidebar-ring: oklch(0.556 0 0);
+.dark,
+[data-theme="dark"] {
+  --app-bg: #14121b;
 }
 
 @layer base {
-  * {
-    @apply border-border outline-ring/50;
-  }
   html {
-    @apply font-sans;
+    font-family: var(--font-sans);
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
   }
+
   html,
   body,
   #root {
     height: 100%;
   }
+
   body {
-    @apply bg-background text-base text-foreground;
+    margin: 0;
     overflow: hidden;
+    color: var(--sk-text);
+    background-color: var(--app-bg);
+    background-image:
+      radial-gradient(46rem 34rem at 0% 0%, rgba(203, 188, 247, 0.38), transparent 58%),
+      radial-gradient(60rem 42rem at 100% 0%, rgba(255, 255, 255, 0.7), transparent 62%);
+    background-attachment: fixed;
+    background-repeat: no-repeat;
+  }
+
+  .dark body,
+  [data-theme="dark"] body {
+    background-image:
+      radial-gradient(46rem 34rem at 0% 0%, rgba(124, 108, 220, 0.16), transparent 58%),
+      radial-gradient(60rem 42rem at 100% 0%, rgba(52, 52, 60, 0.6), transparent 62%);
+  }
+
+  ::selection {
+    background: rgba(212, 197, 249, 0.6);
+    color: inherit;
   }
 }
 
 @layer components {
+  /* ── Markdown rendered inside assistant / user bubbles ──────────────────── */
+  .message-markdown {
+    font-size: 0.9375rem;
+    line-height: 1.65;
+    overflow-wrap: anywhere;
+  }
+
   .message-markdown > :first-child {
     margin-block-start: 0;
   }
@@ -177,18 +115,18 @@
   .message-markdown h1,
   .message-markdown h2,
   .message-markdown h3 {
-    margin-block: 0.875rem 0.375rem;
+    margin-block: 0.9rem 0.4rem;
     font-weight: 600;
-    line-height: 1.2;
+    line-height: 1.25;
     text-wrap: balance;
   }
 
   .message-markdown h1 {
-    font-size: 1.25rem;
+    font-size: 1.2rem;
   }
 
   .message-markdown h2 {
-    font-size: 1.125rem;
+    font-size: 1.1rem;
   }
 
   .message-markdown h3 {
@@ -196,24 +134,37 @@
   }
 
   .message-markdown blockquote {
-    border-inline-start: 2px solid currentColor;
+    border-inline-start: 3px solid rgba(124, 108, 220, 0.5);
+    border-radius: 2px;
     padding-inline-start: 0.75rem;
-    opacity: 0.8;
+    color: var(--sk-text-desc);
   }
 
   .message-markdown :not(pre) > code {
-    border-radius: 0.375rem;
-    background: color-mix(in oklch, currentColor 10%, transparent);
-    padding: 0.125rem 0.3rem;
+    font-family: var(--font-mono);
+    font-size: 0.875em;
+    border-radius: 0.45rem;
+    background: color-mix(in oklab, currentColor 11%, transparent);
+    padding: 0.12rem 0.35rem;
   }
 
   .message-markdown pre {
     max-width: 100%;
     overflow-x: auto;
     border-radius: 1rem;
-    background: oklch(0.145 0 0);
-    padding: 0.875rem;
-    color: oklch(0.985 0 0);
+    border: 1px solid var(--sk-border-subtle);
+    background: color-mix(in oklab, #14121b 92%, transparent);
+    padding: 0.875rem 1rem;
+    color: rgba(255, 255, 255, 0.92);
+    font-size: 0.85rem;
+    line-height: 1.55;
+  }
+
+  .message-markdown pre code {
+    font-family: var(--font-mono);
+    background: none;
+    padding: 0;
+    font-size: inherit;
   }
 
   .message-markdown table {
@@ -221,14 +172,51 @@
     max-width: 100%;
     overflow-x: auto;
     border-collapse: collapse;
+    font-size: 0.9em;
   }
 
   .message-markdown th,
   .message-markdown td {
-    border: 1px solid color-mix(in oklch, currentColor 20%, transparent);
+    border: 1px solid color-mix(in oklab, currentColor 22%, transparent);
     padding: 0.375rem 0.625rem;
     text-align: start;
   }
+
+  .message-markdown a {
+    font-weight: 500;
+    text-decoration: underline;
+    text-decoration-color: color-mix(in oklab, currentColor 45%, transparent);
+    text-underline-offset: 3px;
+  }
+
+  .message-markdown a:hover {
+    text-decoration-color: currentColor;
+  }
+}
+
+@keyframes app-pop {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes app-float {
+  0%,
+  100% {
+    transform: translateY(0) rotate(var(--float-rot, 0deg));
+  }
+  50% {
+    transform: translateY(-7px) rotate(var(--float-rot, 0deg));
+  }
+}
+
+.app-float {
+  animation: app-float 6s ease-in-out infinite;
 }
 
 @media (prefers-reduced-motion: reduce) {

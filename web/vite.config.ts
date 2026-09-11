@@ -18,8 +18,8 @@ export default defineConfig({
         name: "Skye",
         short_name: "Skye",
         description: "The calm side of AI",
-        theme_color: "#000000",
-        background_color: "#ffffff",
+        theme_color: "#7c6cdc",
+        background_color: "#f5f3fb",
         display: "standalone",
         start_url: "/",
         icons: [
@@ -45,8 +45,8 @@ export default defineConfig({
   },
   server: {
     proxy: {
-      "/api": "http://127.0.0.1:8080",
-      "/auth": "http://127.0.0.1:8080",
+      "/api": `http://127.0.0.1:${process.env.SKYE_API_PORT ?? 8080}`,
+      "/auth": `http://127.0.0.1:${process.env.SKYE_API_PORT ?? 8080}`,
     },
   },
 })

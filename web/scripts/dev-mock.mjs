@@ -3,7 +3,7 @@ import { spawn } from "node:child_process"
 import { createServer } from "node:http"
 
 const host = "127.0.0.1"
-const apiPort = 8080
+const apiPort = Number(process.env.SKYE_MOCK_PORT ?? 8080)
 
 const now = () => new Date().toISOString()
 
@@ -403,7 +403,7 @@ const vite = spawn(
     ? "node_modules\\.bin\\vite.cmd"
     : "node_modules/.bin/vite",
   ["--host", host],
-  { stdio: "inherit" }
+  { stdio: "inherit", env: { ...process.env, SKYE_API_PORT: String(apiPort) } }
 )
 
 function shutdown(signal) {

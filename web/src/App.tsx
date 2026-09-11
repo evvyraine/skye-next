@@ -1,28 +1,12 @@
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import { AnimatePresence, motion } from "motion/react"
-import { Group, Panel, Separator as ResizeHandle } from "react-resizable-panels"
-import { toast } from "sonner"
+import { Button, Dialog, Sheet, ThemeProvider, toast } from "sunkit-ui"
 import { ChatView } from "@/components/chat-view"
 import { CreateProjectDialog } from "@/components/create-project"
 import { ProjectList } from "@/components/project-list"
 import { SettingsPanel } from "@/components/settings-panel"
-import { Button } from "@/components/ui/button"
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog"
-import {
-  Sheet,
-  SheetContent,
-  SheetHeader,
-  SheetTitle,
-} from "@/components/ui/sheet"
-import { Toaster } from "@/components/ui/sonner"
-import { TooltipProvider } from "@/components/ui/tooltip"
+import { SkyeSign } from "@/components/skye-logo"
+import { useTheme } from "@/components/theme-provider"
 import {
   createProject,
   deleteProject,
@@ -49,17 +33,22 @@ export function App() {
   const [creating, setCreating] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [deleteTarget, setDeleteTarget] = useState<Project | null>(null)
+  const [resetConfirm, setResetConfirm] = useState(false)
   const isMobile = useIsMobile()
+  const { resolvedTheme } = useTheme()
   const [isWide, setIsWide] = useState(
     () =>
       typeof window !== "undefined" &&
-      window.matchMedia("(min-width: 64rem)").matches
+      window.matchMedia("(min-width: 72rem)").matches
   )
   const denied =
     typeof window !== "undefined" &&
     new URLSearchParams(window.location.search).has("denied")
 
   const selected = projects.find((item) => item.id === selectedId) ?? null
+
+  const persistTimer = useRef<number | null>(null)
+  const pendingPatch = useRef<Partial<Project>>({})
 
   const refresh = useCallback(async () => {
     const next = await listProjects()
@@ -71,14 +60,17 @@ export function App() {
     void getMe()
       .then(setMe)
       .catch((error: unknown) => {
-        toast.error(
-          error instanceof Error ? error.message : "Could not load Skye."
-        )
+        toast.error({
+          title: "Couldn't reach Skye",
+          description:
+            (error instanceof Error && error.message) ||
+            "Check your connection and reload the page.",
+        })
       })
   }, [])
 
   useEffect(() => {
-    const media = window.matchMedia("(min-width: 64rem)")
+    const media = window.matchMedia("(min-width: 72rem)")
     const update = () => setIsWide(media.matches)
     media.addEventListener("change", update)
     return () => media.removeEventListener("change", update)
@@ -91,9 +83,12 @@ export function App() {
     void listProjects()
       .then(setProjects)
       .catch((error: unknown) => {
-        toast.error(
-          error instanceof Error ? error.message : "Could not load projects."
-        )
+        toast.error({
+          title: "Couldn't load projects",
+          description:
+            (error instanceof Error && error.message) ||
+            "Check your connection and try again.",
+        })
       })
   }, [me])
 
@@ -107,9 +102,12 @@ export function App() {
         setFiles(payload.files)
       })
       .catch((error: unknown) => {
-        toast.error(
-          error instanceof Error ? error.message : "Could not load this chat."
-        )
+        toast.error({
+          title: "Couldn't load this chat",
+          description:
+            (error instanceof Error && error.message) ||
+            "Select the project again to retry.",
+        })
       })
   }, [selectedId, me])
 
@@ -132,14 +130,53 @@ export function App() {
     return () => window.clearTimeout(handle)
   }, [query, me])
 
-  async function persist(patch: Partial<Project>) {
+  // Flush any pending settings patch before the selected project changes.
+  useEffect(() => {
+    return () => {
+      if (persistTimer.current) {
+        window.clearTimeout(persistTimer.current)
+      }
+    }
+  }, [selectedId])
+
+  async function flushPatch(id: string) {
+    const patch = pendingPatch.current
+    pendingPatch.current = {}
+    if (Object.keys(patch).length === 0) {
+      return
+    }
+    try {
+      const updated = await updateProject(id, patch)
+      setProjects((current) =>
+        current.map((item) => (item.id === updated.id ? updated : item))
+      )
+    } catch (error) {
+      toast.error({
+        title: "Couldn't save changes",
+        description:
+          (error instanceof Error && error.message) ||
+          "Check your connection and try again.",
+      })
+    }
+  }
+
+  function persist(patch: Partial<Project>) {
     if (!selected) {
       return
     }
-    const updated = await updateProject(selected.id, patch)
+    const id = selected.id
+    pendingPatch.current = { ...pendingPatch.current, ...patch }
     setProjects((current) =>
-      current.map((item) => (item.id === updated.id ? updated : item))
+      current.map((item) =>
+        item.id === id ? { ...item, ...patch } : item
+      )
     )
+    if (persistTimer.current) {
+      window.clearTimeout(persistTimer.current)
+    }
+    persistTimer.current = window.setTimeout(() => {
+      void flushPatch(id)
+    }, 450)
   }
 
   function selectProject(id: string) {
@@ -163,11 +200,28 @@ export function App() {
       setDeleteTarget(null)
       await refresh()
     } catch (error) {
-      toast.error(
-        error instanceof Error
-          ? error.message
-          : "Could not delete that project."
-      )
+      toast.error({
+        title: "Couldn't delete that project",
+        description:
+          (error instanceof Error && error.message) || "Try again in a moment.",
+      })
+    }
+  }
+
+  async function resetChat(project: Project) {
+    try {
+      await resetProject(project.id)
+      setMessages([])
+      setFiles([])
+      setResetConfirm(false)
+      await refresh()
+      toast.success({ title: "Chat reset" })
+    } catch (error) {
+      toast.error({
+        title: "Couldn't reset this chat",
+        description:
+          (error instanceof Error && error.message) || "Try again in a moment.",
+      })
     }
   }
 
@@ -182,7 +236,7 @@ export function App() {
   }
 
   if (!me) {
-    return <Gate title="Skye" />
+    return <Gate title="Skye" loading />
   }
 
   if (!me.user) {
@@ -228,9 +282,12 @@ export function App() {
               )
             })
             .catch((error: unknown) =>
-              toast.error(
-                error instanceof Error ? error.message : "Could not pin that."
-              )
+              toast.error({
+                title: "Couldn't update that pin",
+                description:
+                  (error instanceof Error && error.message) ||
+                  "Try again in a moment.",
+              })
             )
         }}
         onEdit={(id) => {
@@ -253,8 +310,8 @@ export function App() {
   function renderChat() {
     if (!selected) {
       return (
-        <div className="flex h-full items-center justify-center px-6 text-center text-sm text-muted-foreground">
-          Choose a project to start chatting.
+        <div className="flex h-full items-center justify-center">
+          <EmptyChat />
         </div>
       )
     }
@@ -280,68 +337,49 @@ export function App() {
   const settings = selected ? (
     <SettingsPanel
       project={selected}
-      onChange={(patch) => void persist(patch)}
-      onReset={() => {
-        void resetProject(selected.id)
-          .then(() => {
-            setMessages([])
-            setFiles([])
-            return refresh()
-          })
-          .catch((error: unknown) =>
-            toast.error(
-              error instanceof Error ? error.message : "Could not reset."
-            )
-          )
-      }}
+      onChange={(patch) => persist(patch)}
+      onReset={() => setResetConfirm(true)}
       onDelete={() => setDeleteTarget(selected)}
     />
   ) : null
 
   return (
-    <TooltipProvider>
-      <div className="h-dvh min-h-0 overflow-hidden bg-background">
+    <ThemeProvider dark={resolvedTheme === "dark"}>
+      <div className="h-dvh min-h-0 overflow-hidden">
         <div className="hidden h-full min-h-0 md:flex">
-          <Group orientation="horizontal" className="min-w-0 flex-1">
-            <Panel id="projects" defaultSize={320} minSize={260} maxSize={460}>
-              {renderList()}
-            </Panel>
-            <ResizeHandle
-              id="projects-resize"
-              className="group relative w-px bg-border transition-colors outline-none focus-visible:bg-ring"
-            >
-              <span className="absolute inset-y-0 -left-2 w-4 cursor-col-resize group-focus-visible:ring-2 group-focus-visible:ring-ring/50" />
-            </ResizeHandle>
-            <Panel id="chat" minSize={420}>
-              <AnimatePresence mode="wait" initial={false}>
-                <motion.div
-                  key={selected?.id ?? "empty"}
-                  className="h-full min-h-0"
-                  initial={{ opacity: 0, x: 8, filter: "blur(6px)" }}
-                  animate={{ opacity: 1, x: 0, filter: "blur(0px)" }}
-                  exit={{ opacity: 0, x: -8, filter: "blur(6px)" }}
-                  transition={{ duration: 0.22, ease: "easeOut" }}
-                >
-                  {renderChat()}
-                </motion.div>
-              </AnimatePresence>
-            </Panel>
-          </Group>
+          <aside className="h-full min-h-0 w-[300px] shrink-0 border-r border-[var(--sk-border-subtle)] bg-[var(--sk-surface)] backdrop-blur-xl lg:w-[340px]">
+            {renderList()}
+          </aside>
+          <main className="relative h-full min-h-0 min-w-0 flex-1">
+            <AnimatePresence mode="wait" initial={false}>
+              <motion.div
+                key={selected?.id ?? "empty"}
+                className="h-full min-h-0"
+                initial={{ opacity: 0, y: 10, filter: "blur(6px)" }}
+                animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
+                exit={{ opacity: 0, y: -8, filter: "blur(6px)" }}
+                transition={{ duration: 0.22, ease: "easeOut" }}
+              >
+                {renderChat()}
+              </motion.div>
+            </AnimatePresence>
+          </main>
           <AnimatePresence initial={false}>
             {selected && settingsOpen && isWide ? (
               <motion.aside
                 key="project-settings"
                 initial={{ width: 0, opacity: 0, filter: "blur(8px)" }}
-                animate={{ width: 320, opacity: 1, filter: "blur(0px)" }}
+                animate={{ width: 340, opacity: 1, filter: "blur(0px)" }}
                 exit={{ width: 0, opacity: 0, filter: "blur(8px)" }}
-                transition={{ duration: 0.24, ease: [0.2, 0, 0, 1] }}
-                className="hidden shrink-0 overflow-hidden border-l lg:block"
+                transition={{ duration: 0.26, ease: [0.2, 0, 0, 1] }}
+                className="hidden h-full min-h-0 shrink-0 overflow-hidden border-l border-[var(--sk-border-subtle)] bg-[var(--sk-surface)] backdrop-blur-xl lg:block"
               >
-                <div className="h-full w-80">{settings}</div>
+                <div className="h-full w-[340px]">{settings}</div>
               </motion.aside>
             ) : null}
           </AnimatePresence>
         </div>
+
         <div className="h-full md:hidden">
           <AnimatePresence mode="wait" initial={false}>
             <motion.div
@@ -360,20 +398,19 @@ export function App() {
             </motion.div>
           </AnimatePresence>
         </div>
+
         <Sheet
           open={!isWide && settingsOpen && Boolean(selected)}
           onOpenChange={setSettingsOpen}
+          side={isMobile ? "bottom" : "right"}
+          size="lg"
+          title="Project settings"
+          description={selected?.name}
+          tone="lavender"
         >
-          <SheetContent
-            className="data-[side=bottom]:h-[90dvh] data-[side=bottom]:max-h-[90dvh] data-[side=bottom]:overflow-hidden data-[side=bottom]:rounded-t-3xl lg:hidden"
-            side={isMobile ? "bottom" : "right"}
-          >
-            <SheetHeader>
-              <SheetTitle>Settings</SheetTitle>
-            </SheetHeader>
-            {settings}
-          </SheetContent>
+          {settings}
         </Sheet>
+
         <CreateProjectDialog
           open={creating}
           onOpenChange={setCreating}
@@ -384,36 +421,87 @@ export function App() {
             if (!next.some((item) => item.id === project.id)) {
               setProjects((current) => [project, ...current])
             }
+            toast.success({ title: "Project created" })
           }}
         />
+
         <Dialog
           open={Boolean(deleteTarget)}
           onOpenChange={(open) => !open && setDeleteTarget(null)}
-        >
-          <DialogContent className="rounded-3xl">
-            <DialogHeader>
-              <DialogTitle>Delete project?</DialogTitle>
-              <DialogDescription>
-                This permanently deletes “{deleteTarget?.name}” and its chat
-                history.
-              </DialogDescription>
-            </DialogHeader>
-            <DialogFooter className="rounded-b-3xl">
-              <Button variant="outline" onClick={() => setDeleteTarget(null)}>
+          title="Delete project?"
+          description={`This permanently deletes “${deleteTarget?.name}” and its chat history.`}
+          size="default"
+          tone="rose"
+          radius={28}
+          footer={
+            <>
+              <Button
+                variant="ghost"
+                color="neutral"
+                radius={999}
+                onClick={() => setDeleteTarget(null)}
+              >
                 Cancel
               </Button>
               <Button
-                variant="destructive"
+                variant="solid"
+                color="rose"
+                radius={999}
                 onClick={() => deleteTarget && void removeProject(deleteTarget)}
               >
                 Delete project
               </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
-        <Toaster />
+            </>
+          }
+        />
+
+        <Dialog
+          open={resetConfirm}
+          onOpenChange={(open) => !open && setResetConfirm(false)}
+          title="Reset this chat?"
+          description={`This clears the conversation for “${selected?.name}”. The project and its memories stay.`}
+          size="default"
+          tone="rose"
+          radius={28}
+          footer={
+            <>
+              <Button
+                variant="ghost"
+                color="neutral"
+                radius={999}
+                onClick={() => setResetConfirm(false)}
+              >
+                Cancel
+              </Button>
+              <Button
+                variant="solid"
+                color="rose"
+                radius={999}
+                onClick={() => selected && void resetChat(selected)}
+              >
+                Reset chat
+              </Button>
+            </>
+          }
+        />
       </div>
-    </TooltipProvider>
+    </ThemeProvider>
+  )
+}
+
+function EmptyChat() {
+  return (
+    <div className="flex max-w-sm flex-col items-center gap-4 px-6 text-center">
+      <div className="flex items-end gap-2">
+        <SkyeSign className="h-11" />
+      </div>
+      <h2 className="text-[19px] font-semibold tracking-tight text-balance">
+        Pick a project to start chatting
+      </h2>
+      <p className="text-[13.5px] leading-relaxed text-[var(--sk-text-desc)]">
+        Or create a new one and give it a personality.
+      </p>
+    </div>
   )
 }
 
@@ -422,24 +510,47 @@ function Gate({
   body,
   action,
   onAction,
+  loading = false,
 }: {
   title: string
   body?: string
   action?: string
   onAction?: () => void
+  loading?: boolean
 }) {
   return (
     <motion.div
-      initial={{ opacity: 0, scale: 0.985, filter: "blur(10px)" }}
+      initial={{ opacity: 0, scale: 0.97, filter: "blur(10px)" }}
       animate={{ opacity: 1, scale: 1, filter: "blur(0px)" }}
-      exit={{ opacity: 0, scale: 0.985, filter: "blur(10px)" }}
-      transition={{ duration: 0.3, ease: [0.2, 0, 0, 1] }}
+      exit={{ opacity: 0, scale: 0.97, filter: "blur(10px)" }}
+      transition={{ duration: 0.32, ease: [0.2, 0, 0, 1] }}
       className="flex min-h-dvh flex-col items-center justify-center gap-4 px-6 pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)] text-center"
     >
-      <h1 className="text-2xl font-medium">{title}</h1>
-      {body ? <p className="max-w-sm text-muted-foreground">{body}</p> : null}
+      <SkyeSign className="h-14" />
+      <h1 className="text-[26px] font-semibold tracking-tight">{title}</h1>
+      {body ? (
+        <p className="max-w-sm text-[14px] text-[var(--sk-text-desc)]">{body}</p>
+      ) : null}
+      {loading ? (
+        <span className="flex items-center gap-1.5" role="status" aria-label="Loading">
+          {[0, 1, 2].map((index) => (
+            <span
+              key={index}
+              className="app-float inline-block size-2.5 rounded-full bg-pastel-lavender"
+              style={{ animationDelay: `${index * 160}ms` }}
+              aria-hidden="true"
+            />
+          ))}
+        </span>
+      ) : null}
       {action && onAction ? (
-        <Button className="rounded-full" onClick={onAction}>
+        <Button
+          variant="solid"
+          color="lavender"
+          radius={999}
+          className="mt-1 h-11 min-w-40"
+          onClick={onAction}
+        >
           {action}
         </Button>
       ) : null}

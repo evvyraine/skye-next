@@ -1,5 +1,8 @@
+import { Shape, hexToAccentPair } from "sunkit-ui"
+import { PROJECT_ICONS, PROJECT_PASTELS, PROJECT_SHAPES } from "@/lib/icons"
 import { cn } from "@/lib/utils"
-import { PROJECT_COLORS, PROJECT_ICONS } from "@/lib/icons"
+
+const SIZE_PX = { sm: 36, md: 48, lg: 64 } as const
 
 export function ProjectIcon({
   icon,
@@ -13,19 +16,26 @@ export function ProjectIcon({
   size?: "sm" | "md" | "lg"
 }) {
   const Glyph = PROJECT_ICONS[icon] ?? PROJECT_ICONS.sparkles
-  const tone = PROJECT_COLORS[color] ?? PROJECT_COLORS.zinc
+  const pastel = PROJECT_PASTELS[color] ?? PROJECT_PASTELS.neutral
+  const { border } = hexToAccentPair(pastel)
+  const px = SIZE_PX[size]
+  const glyph = Math.round(px * 0.42)
+
   return (
-    <span
+    <Shape
+      shape={PROJECT_SHAPES[icon] ?? "hexagon"}
+      size={px}
+      accentColor={pastel}
+      radius={size === "sm" ? 20 : 26}
       className={cn(
-        "inline-flex shrink-0 items-center justify-center rounded-2xl",
-        size === "sm" && "size-9",
-        size === "md" && "size-12",
-        size === "lg" && "size-16",
-        tone,
-        className,
+        "shrink-0 drop-shadow-[0_6px_10px_rgba(0,0,0,0.12)]",
+        className
       )}
     >
-      <Glyph className={cn(size === "lg" ? "size-8" : "size-5")} />
-    </span>
+      <Glyph
+        aria-hidden="true"
+        style={{ width: glyph, height: glyph, color: border }}
+      />
+    </Shape>
   )
 }
