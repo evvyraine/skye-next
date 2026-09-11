@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react"
 import {
-  AdjustmentsHorizontalIcon,
   ArrowDownIcon,
   ArrowLeftIcon,
   ArrowPathIcon,
@@ -258,7 +257,7 @@ export function ChatView({
 
   return (
     <div className="relative flex h-full min-h-0 flex-col font-sans">
-      <header className="absolute inset-x-0 top-0 isolate z-20 flex items-center gap-2 px-4 pt-[max(0.5rem,env(safe-area-inset-top))] pb-4 before:pointer-events-none before:absolute before:inset-0 before:-z-10 before:bg-transparent before:[mask-image:linear-gradient(to_bottom,black_0%,black_55%,transparent_100%)] before:backdrop-blur-xl md:relative md:border-b md:border-[var(--sk-border-subtle)] md:pb-2.5 md:before:hidden">
+      <header className="absolute inset-x-0 top-0 isolate z-20 flex items-center gap-2 px-4 pt-[max(0.5rem,env(safe-area-inset-top))] pb-4 before:pointer-events-none before:absolute before:inset-0 before:-z-10 before:bg-transparent before:[mask-image:linear-gradient(to_bottom,black_0%,black_55%,transparent_100%)] before:backdrop-blur-xl md:relative md:pb-2.5 md:before:hidden">
         <Button
           variant="ghost"
           color="neutral"
@@ -272,7 +271,7 @@ export function ChatView({
         />
         <button
           type="button"
-          className="flex min-w-0 cursor-pointer items-center gap-2.5 rounded-full px-1.5 py-1.5 text-start outline-none transition-colors hover:bg-[var(--sk-surface-filled)] focus-visible:ring-2 focus-visible:ring-[var(--sk-accent)]/50"
+          className="flex min-w-0 cursor-pointer items-center gap-3 rounded-full bg-[var(--sk-bg-solid)]/75 px-3.5 py-2 text-start shadow-sm ring-1 ring-[var(--sk-border)] outline-none backdrop-blur-xl transition-colors hover:bg-[var(--sk-bg-solid)] focus-visible:ring-2 focus-visible:ring-[var(--sk-accent)]/50"
           onClick={onOpenSettings}
         >
           <ProjectIcon icon={project.icon} color={project.color} size="sm" />
@@ -284,10 +283,6 @@ export function ChatView({
               {streaming ? "Thinking…" : "Tap for settings"}
             </span>
           </span>
-          <AdjustmentsHorizontalIcon
-            className="size-4 shrink-0 text-[var(--sk-text-muted)]"
-            aria-hidden="true"
-          />
         </button>
         {project.kind === "skye" ? (
           <Button
@@ -297,7 +292,7 @@ export function ChatView({
             icon="only"
             iconOnly={<ArrowPathIcon />}
             radius={999}
-            className="ml-auto h-10 w-10"
+            className="ml-auto h-10 w-10 bg-[var(--sk-bg-solid)]/75 shadow-sm ring-1 ring-[var(--sk-border)] backdrop-blur-xl"
             onClick={onReset}
             aria-label="Reset this chat"
           />

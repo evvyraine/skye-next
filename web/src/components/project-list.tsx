@@ -234,7 +234,7 @@ function ProjectRow({
         </span>
       </button>
 
-      <div className="flex shrink-0 flex-col items-end justify-between gap-1 self-stretch py-2.5 pr-1.5">
+      <div className="flex shrink-0 flex-col items-end justify-between gap-1 self-stretch py-2.5 pr-3">
         <span className="pl-2 text-[11px] text-[var(--sk-text-muted)] tabular-nums">
           {formatWhen(project.last_message_at)}
         </span>
