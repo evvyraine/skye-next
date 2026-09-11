@@ -52,6 +52,38 @@ async def test_projects_are_isolated_by_user(database: Database, tmp_path: Path)
     assert [item.name for item in listed] == ["Inbox"]
 
 
+async def test_web_messages_keep_insertion_order_within_a_second(
+    database: Database, tmp_path: Path
+) -> None:
+    projects = service(database, tmp_path)
+    project = await projects.create(1, name="Ordering")
+    for text in ("one", "two", "three", "four"):
+        await projects.add_message(1, project.id, role="assistant", text=text)
+
+    listed = await database.list_web_messages(1, project.id)
+
+    assert [item.text for item in listed] == ["one", "two", "three", "four"]
+
+
+async def test_open_drops_legacy_delivery_tool_rows(
+    database: Database, tmp_path: Path
+) -> None:
+    projects = service(database, tmp_path)
+    project = await projects.create(1, name="Legacy")
+    await projects.add_message(
+        1,
+        project.id,
+        role="tool",
+        text="Function call output",
+        tool_name="function_call_output",
+    )
+
+    await database.close()
+    await database.open()
+
+    assert await database.list_web_messages(1, project.id) == []
+
+
 async def test_concurrent_first_turns_share_one_local_conversation(
     database: Database, tmp_path: Path
 ) -> None:
@@ -202,3 +234,51 @@ def test_describe_tool_event_hides_delivery_tools(tool_name: str) -> None:
         },
     )()
     assert describe_tool_event(event) is None
+
+
+def test_tool_output_resolves_the_call_name_and_hides_delivery_tools() -> None:
+    def event(name: str, raw: object) -> object:
+        item = type("Item", (), {"title": None, "raw_item": raw})()
+        return type("Event", (), {"name": name, "item": item})()
+
+    names: dict[str, str] = {}
+
+    call = event(
+        "tool_called",
+        type("Raw", (), {"name": "send_message", "call_id": "c1", "arguments": "{}"})(),
+    )
+    output = event(
+        "tool_output",
+        type(
+            "Raw",
+            (),
+            {"type": "function_call_output", "call_id": "c1", "output": "Sent."},
+        )(),
+    )
+    assert describe_tool_event(call, names) is None
+    assert describe_tool_event(output, names) is None
+
+    search_call = event(
+        "tool_called",
+        type("Raw", (), {"name": "web_search", "call_id": "c2", "arguments": "{}"})(),
+    )
+    described_call = describe_tool_event(search_call, names)
+    assert described_call is not None
+    assert described_call.tool_name == "web_search"
+    assert described_call.tool_label == "Searched the web"
+    assert described_call.tool_status == "running"
+
+    search_output = event(
+        "tool_output",
+        type(
+            "Raw",
+            (),
+            {"type": "function_call_output", "call_id": "c2", "output": "1 result"},
+        )(),
+    )
+    described_output = describe_tool_event(search_output, names)
+    assert described_output is not None
+    assert described_output.tool_name == "web_search"
+    assert described_output.tool_label == "Searched the web"
+    assert described_output.tool_status == "done"
+    assert described_output.tool_output == "1 result"

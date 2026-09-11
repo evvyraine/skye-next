@@ -527,6 +527,7 @@ class Database:
         await self._normalize_group_message_threads()
         await self._migrate_composio_sessions()
         await self._migrate_web_projects()
+        await self._migrate_web_messages()
         await self.connection.commit()
 
     async def close(self) -> None:
@@ -550,6 +551,15 @@ class Database:
         cursor = await self.conn.execute(f"PRAGMA table_info({table})")
         if column not in {row[1] for row in await cursor.fetchall()}:
             await self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+    async def _migrate_web_messages(self) -> None:
+        """Drop tool rows older builds wrote for the delivery tools. They only
+        echoed ``send_message``/``send_voice`` as opaque "Function call output"
+        cards that duplicated the assistant bubbles."""
+        await self.conn.execute(
+            """DELETE FROM web_messages
+               WHERE role = 'tool' AND tool_name = 'function_call_output'"""
+        )
 
     async def _migrate_web_projects(self) -> None:
         """Bring the main web project in line with the Inbox rename and the
@@ -2516,24 +2526,17 @@ class Database:
         return self._web_message(row) if row else None
 
     async def list_web_messages(
-        self, user_id: int, project_id: str, *, after_id: str | None = None, limit: int = 200
+        self, user_id: int, project_id: str, *, limit: int = 200
     ) -> list[WebMessage]:
-        if after_id:
-            cursor = await self.conn.execute(
-                """SELECT * FROM web_messages
-                   WHERE project_id = ? AND user_id = ? AND created_at >= (
-                       SELECT created_at FROM web_messages WHERE id = ?
-                   ) AND id != ?
-                   ORDER BY created_at, id LIMIT ?""",
-                (project_id, user_id, after_id, after_id, limit),
-            )
-        else:
-            cursor = await self.conn.execute(
-                """SELECT * FROM web_messages
-                   WHERE project_id = ? AND user_id = ?
-                   ORDER BY created_at, id LIMIT ?""",
-                (project_id, user_id, limit),
-            )
+        # Insertion order, not the second-precision timestamp: several messages
+        # (user, tool, assistant) share a timestamp and an id sort would shuffle
+        # them between reloads.
+        cursor = await self.conn.execute(
+            """SELECT * FROM web_messages
+               WHERE project_id = ? AND user_id = ?
+               ORDER BY rowid LIMIT ?""",
+            (project_id, user_id, limit),
+        )
         return [self._web_message(row) for row in await cursor.fetchall()]
 
     async def clear_web_messages(self, user_id: int, project_id: str) -> None:

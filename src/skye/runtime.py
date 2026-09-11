@@ -1125,6 +1125,10 @@ class AgentRuntime:
         active.stream = result
         text = ""
         started_streaming = False
+        # Function-call output events only carry a call id, not the tool name.
+        # Remember names from the matching call events so outputs are labelled
+        # correctly and delivery tools stay hidden.
+        tool_names: dict[str, str] = {}
         try:
             async for event in result.stream_events():
                 if active.cancel.is_set():
@@ -1140,11 +1144,11 @@ class AgentRuntime:
                     started_streaming = True
                 if on_event is None:
                     continue
-                activity = describe_activity_event(event)
+                activity = describe_activity_event(event, tool_names)
                 if activity is not None:
                     await on_event(activity)
                     continue
-                tool = describe_tool_event(event)
+                tool = describe_tool_event(event, tool_names)
                 if tool is not None:
                     await on_event(tool)
         except Exception as error:
@@ -1556,17 +1560,18 @@ def web_run_key(project_id: str) -> str:
     return f"web:{project_id}"
 
 
-def describe_tool_event(event: object) -> RunEvent | None:
+def describe_tool_event(
+    event: object, tool_names: dict[str, str] | None = None
+) -> RunEvent | None:
     event_name = getattr(event, "name", None)
     item = getattr(event, "item", None)
     if event_name not in {"tool_called", "tool_output"} or item is None:
         return None
     raw: Any = getattr(item, "raw_item", item)
-    name = _tool_name(item, raw)
+    name, tool_id = _tool_identity(item, raw, event_name, tool_names)
     if name in {"send_message", "send_voice"}:
         return None
     label = _TOOL_LABELS.get(name, _fallback_tool_label(name))
-    tool_id = _tool_id(raw, name)
     status = "running" if event_name == "tool_called" else "done"
     if name.startswith("agent_"):
         label = "Asked a specialist"
@@ -1628,22 +1633,46 @@ def _tool_output(item: Any, raw: Any) -> str:
     return ""
 
 
-def describe_activity_event(event: object) -> RunEvent | None:
+def describe_activity_event(
+    event: object, tool_names: dict[str, str] | None = None
+) -> RunEvent | None:
     """Expose delivery work to transports without presenting it as a visible tool."""
     event_name = getattr(event, "name", None)
     item = getattr(event, "item", None)
     if event_name not in {"tool_called", "tool_output"} or item is None:
         return None
     raw: Any = getattr(item, "raw_item", item)
-    name = _tool_name(item, raw)
+    name, tool_id = _tool_identity(item, raw, event_name, tool_names)
     if name != "send_voice":
         return None
     return RunEvent(
         kind="activity",
-        tool_id=_tool_id(raw, name),
+        tool_id=tool_id,
         tool_name=name,
         tool_status="running" if event_name == "tool_called" else "done",
     )
+
+
+def _tool_identity(
+    item: object,
+    raw: Any,
+    event_name: object,
+    names: dict[str, str] | None,
+) -> tuple[str, str]:
+    """Resolve a tool's name and call id, remembering call ids as they appear.
+
+    Tool *output* items carry only the call id, so without remembering the
+    matching call the name falls back to the raw item type and delivery tools
+    (``send_message``/``send_voice``) leak into the transcript.
+    """
+    name = _tool_name(item, raw)
+    tool_id = _tool_id(raw, name)
+    if names is not None:
+        if event_name == "tool_called" and name:
+            names[tool_id] = name
+        else:
+            name = names.get(tool_id, name)
+    return name, tool_id
 
 
 def _tool_name(item: object, raw: Any) -> str:
