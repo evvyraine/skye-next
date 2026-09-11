@@ -3,6 +3,7 @@ import { AnimatePresence, motion } from "motion/react"
 import { Button, Dialog, Sheet, ThemeProvider, toast } from "sunkit-ui"
 import { ChatView } from "@/components/chat-view"
 import { CreateProjectDialog } from "@/components/create-project"
+import { MemoriesDialog } from "@/components/memories-dialog"
 import { ProjectList } from "@/components/project-list"
 import { SettingsPanel } from "@/components/settings-panel"
 import { SkyeSign } from "@/components/skye-logo"
@@ -32,6 +33,7 @@ export function App() {
   const [query, setQuery] = useState("")
   const [creating, setCreating] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [memoriesOpen, setMemoriesOpen] = useState(false)
   const [deleteTarget, setDeleteTarget] = useState<Project | null>(null)
   const [resetConfirm, setResetConfirm] = useState(false)
   const isMobile = useIsMobile()
@@ -303,6 +305,7 @@ export function App() {
         onLogout={() => {
           void logout().then(() => setMe({ user: null, allowed: false }))
         }}
+        onOpenMemories={() => setMemoriesOpen(true)}
       />
     )
   }
@@ -330,6 +333,7 @@ export function App() {
           setSettingsOpen(false)
         }}
         onOpenSettings={() => setSettingsOpen((current) => !current)}
+        onReset={() => setResetConfirm(true)}
       />
     )
   }
@@ -424,6 +428,8 @@ export function App() {
             toast.success({ title: "Project created" })
           }}
         />
+
+        <MemoriesDialog open={memoriesOpen} onOpenChange={setMemoriesOpen} />
 
         <Dialog
           open={Boolean(deleteTarget)}

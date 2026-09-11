@@ -37,7 +37,7 @@ async def test_skye_project_is_created_once_and_cannot_be_deleted(
 
     assert first.id == second.id
     assert first.kind == "skye"
-    assert first.name == "Skye"
+    assert first.name == "Inbox"
     with pytest.raises(PermissionError):
         await projects.delete(42, first.id)
 
@@ -49,7 +49,7 @@ async def test_projects_are_isolated_by_user(database: Database, tmp_path: Path)
 
     assert await database.web_project(2, alice.id) is None
     listed = await projects.list(2)
-    assert [item.name for item in listed] == ["Skye"]
+    assert [item.name for item in listed] == ["Inbox"]
 
 
 async def test_concurrent_first_turns_share_one_local_conversation(

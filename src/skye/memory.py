@@ -6,6 +6,16 @@ from .db import Database
 from .models import Memory, MemoryCategory, Scope
 
 
+def memory_payload(memory: Memory) -> dict[str, object]:
+    return {
+        "id": memory.id,
+        "category": memory.category,
+        "content": memory.content,
+        "created_at": memory.created_at,
+        "updated_at": memory.updated_at,
+    }
+
+
 class MemoryService:
     def __init__(self, database: Database) -> None:
         self.database = database

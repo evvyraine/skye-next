@@ -3,6 +3,7 @@ import {
   AdjustmentsHorizontalIcon,
   ArrowDownIcon,
   ArrowLeftIcon,
+  ArrowPathIcon,
   MicrophoneIcon,
   PaperAirplaneIcon,
   PaperClipIcon,
@@ -49,6 +50,7 @@ export function ChatView({
   onMessages,
   onBack,
   onOpenSettings,
+  onReset,
 }: {
   project: Project
   messages: ChatMessage[]
@@ -56,6 +58,7 @@ export function ChatView({
   onMessages: (messages: ChatMessage[], files: ChatFile[]) => void
   onBack: () => void
   onOpenSettings: () => void
+  onReset: () => void
 }) {
   const [draft, setDraft] = useState("")
   const [attachments, setAttachments] = useState<PendingAttachment[]>([])
@@ -286,6 +289,19 @@ export function ChatView({
             aria-hidden="true"
           />
         </button>
+        {project.kind === "skye" ? (
+          <Button
+            variant="ghost"
+            color="neutral"
+            size="icon-only"
+            icon="only"
+            iconOnly={<ArrowPathIcon />}
+            radius={999}
+            className="ml-auto h-10 w-10"
+            onClick={onReset}
+            aria-label="Reset this chat"
+          />
+        ) : null}
       </header>
 
       <div

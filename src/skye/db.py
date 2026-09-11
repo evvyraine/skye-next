@@ -526,6 +526,7 @@ class Database:
         await self._ensure_column("web_messages", "tool_output", "TEXT")
         await self._normalize_group_message_threads()
         await self._migrate_composio_sessions()
+        await self._migrate_web_projects()
         await self.connection.commit()
 
     async def close(self) -> None:
@@ -549,6 +550,29 @@ class Database:
         cursor = await self.conn.execute(f"PRAGMA table_info({table})")
         if column not in {row[1] for row in await cursor.fetchall()}:
             await self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+    async def _migrate_web_projects(self) -> None:
+        """Bring the main web project in line with the Inbox rename and the
+        slimmed-down color palette. Only the defaults written by older builds
+        are rewritten; anything the user customized is left alone."""
+        await self.conn.execute(
+            "UPDATE web_projects SET name = 'Inbox' WHERE kind = 'skye' AND name = 'Skye'"
+        )
+        await self.conn.execute(
+            """UPDATE web_projects
+               SET icon = 'chat-bubble-left-right'
+               WHERE kind = 'skye' AND icon = 'cloud'"""
+        )
+        await self.conn.execute(
+            """UPDATE web_projects SET color = CASE color
+                   WHEN 'slate' THEN 'blue'
+                   WHEN 'stone' THEN 'amber'
+                   WHEN 'neutral' THEN 'zinc'
+                   WHEN 'indigo' THEN 'violet'
+                   WHEN 'pink' THEN 'red'
+                   ELSE color END
+               WHERE color IN ('slate', 'stone', 'neutral', 'indigo', 'pink')"""
+        )
 
     async def _migrate_composio_sessions(self) -> None:
         cursor = await self.conn.execute("SELECT COUNT(*) FROM composio_session_cache")
@@ -2356,7 +2380,8 @@ class Database:
     async def list_web_projects(self, user_id: int) -> list[WebProject]:
         cursor = await self.conn.execute(
             """SELECT * FROM web_projects WHERE user_id = ?
-               ORDER BY pinned DESC,
+               ORDER BY CASE kind WHEN 'skye' THEN 0 ELSE 1 END,
+                        pinned DESC,
                         COALESCE(last_message_at, created_at) DESC,
                         created_at DESC""",
             (user_id,),

@@ -44,6 +44,21 @@ export type User = {
   username: string | null
 }
 
+export type MemoryCategory =
+  | "preference"
+  | "personal"
+  | "project"
+  | "instruction"
+  | "other"
+
+export type Memory = {
+  id: number
+  category: MemoryCategory
+  content: string
+  created_at: string
+  updated_at: string
+}
+
 export type Me = {
   user: User | null
   allowed: boolean

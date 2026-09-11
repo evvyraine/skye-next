@@ -42,18 +42,13 @@ PROJECT_ICONS: tuple[str, ...] = (
 )
 PROJECT_COLORS: tuple[str, ...] = (
     "zinc",
-    "slate",
-    "stone",
-    "neutral",
     "red",
     "orange",
     "amber",
     "green",
     "teal",
     "blue",
-    "indigo",
     "violet",
-    "pink",
 )
 MAX_PROJECTS = 50
 SESSION_DAYS = 30
@@ -86,9 +81,9 @@ class ProjectService:
                 id=new_id(),
                 user_id=user_id,
                 kind="skye",
-                name="Skye",
+                name="Inbox",
                 instructions="",
-                icon="cloud",
+                icon="chat-bubble-left-right",
                 color="zinc",
                 pinned=True,
                 openai_conversation_id=None,
@@ -152,8 +147,8 @@ class ProjectService:
         pinned: bool | None = None,
     ) -> WebProject:
         project = await self.require(user_id, project_id)
-        if project.kind == "skye" and name is not None and name.strip() != "Skye":
-            name = "Skye"
+        if project.kind == "skye" and name is not None and name.strip() != "Inbox":
+            name = "Inbox"
         updated = await self.database.update_web_project(
             user_id,
             project_id,

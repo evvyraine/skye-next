@@ -25,7 +25,8 @@ from .billing import BillingService
 from .config import Settings
 from .db import Database
 from .growth import GrowthService
-from .models import Automation, RequestContext, WebFile, WebSession
+from .memory import memory_payload
+from .models import Automation, RequestContext, Scope, WebFile, WebSession
 from .projects import (
     PROJECT_COLORS,
     PROJECT_ICONS,
@@ -95,6 +96,9 @@ class WebApp:
         add("GET", "/api/files/{id}", self.get_file)
         add("GET", "/api/files/{id}/thumbnail", self.get_thumbnail)
         add("GET", "/api/meta", self.meta)
+        add("GET", "/api/memories", self.list_memories)
+        add("DELETE", "/api/memories", self.clear_memories)
+        add("DELETE", "/api/memories/{id}", self.delete_memory)
         add("POST", "/automations/{id}/hook", self.automation_hook)
 
     @web.middleware
@@ -126,6 +130,27 @@ class WebApp:
 
     async def meta(self, request: web.Request) -> web.Response:
         return web.json_response({"icons": list(PROJECT_ICONS), "colors": list(PROJECT_COLORS)})
+
+    async def list_memories(self, request: web.Request) -> web.Response:
+        session = await self._require_user(request)
+        memories = await self.database.memories(Scope("user", session.user_id), limit=200)
+        return web.json_response({"memories": [memory_payload(item) for item in memories]})
+
+    async def delete_memory(self, request: web.Request) -> web.Response:
+        session = await self._require_user(request)
+        try:
+            memory_id = int(request.match_info["id"])
+        except ValueError as error:
+            raise web.HTTPBadRequest(text="Unknown memory.") from error
+        removed = await self.database.forget_memory(Scope("user", session.user_id), memory_id)
+        if not removed:
+            raise web.HTTPNotFound(text="Memory not found.")
+        return web.json_response({"deleted": True})
+
+    async def clear_memories(self, request: web.Request) -> web.Response:
+        session = await self._require_user(request)
+        deleted = await self.database.clear_memories(Scope("user", session.user_id))
+        return web.json_response({"deleted": deleted})
 
     async def login_start(self, request: web.Request) -> web.StreamResponse:
         try:

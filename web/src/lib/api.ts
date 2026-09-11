@@ -1,4 +1,4 @@
-import type { ChatFile, ChatMessage, Me, Project, User } from "@/lib/types"
+import type { ChatFile, ChatMessage, Me, Memory, Project, User } from "@/lib/types"
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, { credentials: "include", ...init })
@@ -92,6 +92,22 @@ export async function listMessages(
 
 export async function getMeta(): Promise<{ icons: string[]; colors: string[] }> {
   return request("/api/meta")
+}
+
+export async function listMemories(): Promise<Memory[]> {
+  const payload = await request<{ memories: Memory[] }>("/api/memories")
+  return payload.memories
+}
+
+export async function deleteMemory(id: number): Promise<void> {
+  await request(`/api/memories/${id}`, { method: "DELETE" })
+}
+
+export async function clearMemories(): Promise<number> {
+  const payload = await request<{ deleted: number }>("/api/memories", {
+    method: "DELETE",
+  })
+  return payload.deleted
 }
 
 export async function search(query: string): Promise<{

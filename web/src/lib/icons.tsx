@@ -1,5 +1,4 @@
 import type { ComponentType, SVGProps } from "react"
-import type { ShapeType } from "sunkit-ui"
 import {
   AcademicCapIcon,
   BeakerIcon,
@@ -46,44 +45,51 @@ export const PROJECT_ICONS: Record<
 }
 
 /**
- * A pastel sticker surface per backend color key
- * (`src/skye/projects.py::PROJECT_COLORS`).
+ * A tint per backend color key (`src/skye/projects.py::PROJECT_COLORS`).
+ * Eight hues, chosen to sit in a single row on desktop.
  */
 export const PROJECT_PASTELS: Record<string, string> = {
-  zinc: "#DAD7E6",
-  slate: "#C7D2E4",
-  stone: "#E0D8CA",
-  neutral: "#E8E4DC",
-  red: "#F7C6C9",
-  orange: "#FBD6B0",
-  amber: "#F6E79C",
-  green: "#BEEAC6",
-  teal: "#B4E8DA",
-  blue: "#B8D8FE",
-  indigo: "#C6C9FA",
-  violet: "#D4C5F9",
-  pink: "#F6C9E4",
-}
-
-/** The geometric sticker shape each icon gets, for a playful, non-rectangular feel. */
-export const PROJECT_SHAPES: Record<string, ShapeType> = {
-  cloud: "hexagon-flat",
-  "chat-bubble-left-right": "circle",
-  "code-bracket": "parallelogram",
-  "cog-6-tooth": "octagon",
-  briefcase: "shield",
-  "academic-cap": "pentagon",
-  heart: "heart",
-  sparkles: "star6",
-  "globe-alt": "circle",
-  "paint-brush": "diamond",
-  beaker: "triangle-down",
-  "musical-note": "star5",
-  camera: "hexagon",
-  folder: "square",
-  "light-bulb": "star4",
-  star: "star5",
+  zinc: "#C9C5D8",
+  red: "#F0A7AC",
+  orange: "#F4C08A",
+  amber: "#EAD37A",
+  green: "#9FDCAB",
+  teal: "#8FD8C8",
+  blue: "#9CC6F2",
+  violet: "#BFA9F0",
 }
 
 export const ICON_ORDER = Object.keys(PROJECT_ICONS)
 export const COLOR_ORDER = Object.keys(PROJECT_PASTELS)
+
+/** Human-readable names for assistive tech and menu copy. */
+export const ICON_LABELS: Record<string, string> = {
+  cloud: "Cloud",
+  "chat-bubble-left-right": "Chat",
+  "code-bracket": "Code",
+  "cog-6-tooth": "Settings",
+  briefcase: "Briefcase",
+  "academic-cap": "Academic",
+  heart: "Heart",
+  sparkles: "Sparkles",
+  "globe-alt": "Globe",
+  "paint-brush": "Paint",
+  beaker: "Beaker",
+  "musical-note": "Music",
+  camera: "Camera",
+  folder: "Folder",
+  "light-bulb": "Idea",
+  star: "Star",
+}
+
+export const COLOR_LABELS: Record<string, string> = {
+  zinc: "Granite",
+  red: "Coral",
+  orange: "Tangerine",
+  amber: "Honey",
+  green: "Meadow",
+  teal: "Lagoon",
+  blue: "Sky",
+  violet: "Lavender",
+}
+

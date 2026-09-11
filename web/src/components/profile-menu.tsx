@@ -1,10 +1,11 @@
 import {
   ArrowRightOnRectangleIcon,
+  CircleStackIcon,
   Cog6ToothIcon,
   EllipsisHorizontalIcon,
   QuestionMarkCircleIcon,
 } from "@heroicons/react/24/outline"
-import type { ReactNode } from "react"
+import { useState, type ReactNode } from "react"
 import {
   Avatar,
   Button,
@@ -29,9 +30,11 @@ function openHelp() {
 export function ProfileMenu({
   user,
   onLogout,
+  onOpenMemories,
 }: {
   user: User | null
   onLogout: () => void
+  onOpenMemories: () => void
 }) {
   return (
     <DropdownMenu
@@ -88,6 +91,12 @@ export function ProfileMenu({
       </div>
       <Separator className="my-1" />
       <DropdownMenu.Item
+        icon={<CircleStackIcon className="size-4" aria-hidden="true" />}
+        onSelect={onOpenMemories}
+      >
+        Memories
+      </DropdownMenu.Item>
+      <DropdownMenu.Item
         icon={<Cog6ToothIcon className="size-4" aria-hidden="true" />}
         onSelect={comingSoon}
       >
@@ -114,12 +123,17 @@ export function ProfileMenu({
 export function ProfileTrigger({
   user,
   onLogout,
+  onOpenMemories,
 }: {
   user: User | null
   onLogout: () => void
+  onOpenMemories: () => void
 }) {
+  const [open, setOpen] = useState(false)
   return (
     <Sheet
+      open={open}
+      onOpenChange={setOpen}
       side="bottom"
       size="sm"
       title={user?.name || "Skye user"}
@@ -146,16 +160,37 @@ export function ProfileTrigger({
       }
     >
       <div className="flex flex-col gap-1.5">
-        <SheetAction icon={<Cog6ToothIcon />} label="Settings" onClick={comingSoon} />
+        <SheetAction
+          icon={<CircleStackIcon />}
+          label="Memories"
+          onClick={() => {
+            setOpen(false)
+            onOpenMemories()
+          }}
+        />
+        <SheetAction
+          icon={<Cog6ToothIcon />}
+          label="Settings"
+          onClick={() => {
+            setOpen(false)
+            comingSoon()
+          }}
+        />
         <SheetAction
           icon={<QuestionMarkCircleIcon />}
           label="Help Center"
-          onClick={openHelp}
+          onClick={() => {
+            setOpen(false)
+            openHelp()
+          }}
         />
         <SheetAction
           icon={<ArrowRightOnRectangleIcon />}
           label="Log out"
-          onClick={onLogout}
+          onClick={() => {
+            setOpen(false)
+            onLogout()
+          }}
           tone="rose"
         />
       </div>

@@ -3,7 +3,13 @@ import { SparklesIcon } from "@heroicons/react/24/solid"
 import { Button, Dialog, Input, Sheet, toast } from "sunkit-ui"
 import { ProjectIcon } from "@/components/project-icon"
 import { useIsMobile } from "@/hooks/use-mobile"
-import { COLOR_ORDER, ICON_ORDER, PROJECT_PASTELS } from "@/lib/icons"
+import {
+  COLOR_LABELS,
+  COLOR_ORDER,
+  ICON_LABELS,
+  ICON_ORDER,
+  PROJECT_PASTELS,
+} from "@/lib/icons"
 import { cn } from "@/lib/utils"
 
 export function CreateProjectDialog({
@@ -76,21 +82,24 @@ export function CreateProjectDialog({
             Color
           </p>
           <div
-            className="flex flex-wrap gap-2"
+            className="flex flex-wrap gap-1.5"
             role="group"
             aria-label="Project color"
           >
             {COLOR_ORDER.map((item) => {
               const active = color === item
+              const label = COLOR_LABELS[item] ?? item
               return (
                 <button
                   key={item}
                   type="button"
-                  aria-label={item}
+                  aria-label={label}
                   aria-pressed={active}
+                  title={label}
                   className={cn(
                     "size-8 cursor-pointer rounded-full border border-black/10 outline-none transition-transform hover:scale-110 focus-visible:ring-2 focus-visible:ring-[var(--sk-accent)]/60",
-                    active && "ring-2 ring-[var(--sk-accent)] ring-offset-2 ring-offset-[var(--sk-bg-solid)]"
+                    active &&
+                      "ring-2 ring-[var(--sk-accent)] ring-offset-2 ring-offset-[var(--sk-bg-solid)]"
                   )}
                   style={{ background: PROJECT_PASTELS[item] }}
                   onClick={() => setColor(item)}
@@ -105,25 +114,27 @@ export function CreateProjectDialog({
             Icon
           </p>
           <div
-            className="flex flex-wrap gap-1.5"
+            className="flex flex-wrap gap-1"
             role="group"
             aria-label="Project icon"
           >
             {ICON_ORDER.map((item) => {
               const active = icon === item
+              const label = ICON_LABELS[item] ?? item
               return (
                 <button
                   key={item}
                   type="button"
-                  aria-label={item}
+                  aria-label={label}
                   aria-pressed={active}
+                  title={label}
                   className={cn(
-                    "cursor-pointer rounded-2xl p-0.5 outline-none transition-transform hover:scale-105 focus-visible:ring-2 focus-visible:ring-[var(--sk-accent)]/60",
-                    active && "bg-[var(--sk-bg-solid)] shadow-sm ring-2 ring-[var(--sk-accent)]"
+                    "flex size-11 cursor-pointer items-center justify-center rounded-2xl outline-none transition-colors hover:bg-[var(--sk-surface-filled)] focus-visible:ring-2 focus-visible:ring-[var(--sk-accent)]/60",
+                    active && "bg-[var(--sk-bg-solid)] ring-2 ring-[var(--sk-accent)]"
                   )}
                   onClick={() => setIcon(item)}
                 >
-                  <ProjectIcon icon={item} color={color} size="sm" />
+                  <ProjectIcon icon={item} color={color} size="md" />
                 </button>
               )
             })}

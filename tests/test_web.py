@@ -159,7 +159,7 @@ async def test_owner_can_create_pin_and_cannot_delete_skye(
         await signed_in(client, projects)
         listed = await client.get("/api/projects")
         payload = await listed.json()
-        assert payload["projects"][0]["name"] == "Skye"
+        assert payload["projects"][0]["name"] == "Inbox"
         skye_id = payload["projects"][0]["id"]
         created = await client.post(
             "/api/projects",
@@ -173,6 +173,39 @@ async def test_owner_can_create_pin_and_cannot_delete_skye(
         assert denied.status == 403
         deleted = await client.delete(f"/api/projects/{project['id']}")
         assert deleted.status == 200
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_memories_are_listed_and_deleted_for_the_signed_in_user(
+    database: Database, tmp_path: Path
+) -> None:
+    client, projects, _runtime = await app_client(database, tmp_path)
+    try:
+        await signed_in(client, projects)
+        mine = await database.remember(Scope("user", 1), "Prefers dark mode", "preference")
+        await database.remember(Scope("user", 1), "Lives in Berlin", "personal")
+        await database.remember(Scope("user", 2), "Another person's note", "other")
+
+        listed = await client.get("/api/memories")
+        assert listed.status == 200
+        payload = await listed.json()
+        contents = {item["content"] for item in payload["memories"]}
+        assert contents == {"Prefers dark mode", "Lives in Berlin"}
+
+        removed = await client.delete(f"/api/memories/{mine.id}")
+        assert removed.status == 200
+        assert await database.forget_memory(Scope("user", 2), mine.id) is False
+
+        missing = await client.delete("/api/memories/999999")
+        assert missing.status == 404
+
+        cleared = await client.delete("/api/memories")
+        assert cleared.status == 200
+        assert (await cleared.json())["deleted"] == 1
+        assert await database.memories(Scope("user", 1)) == []
+        assert await database.memories(Scope("user", 2)) != []
     finally:
         await client.close()
 

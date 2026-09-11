@@ -10,6 +10,20 @@ const now = () => new Date().toISOString()
 let loggedIn = true
 let projects = [
   {
+    id: "inbox",
+    kind: "skye",
+    name: "Inbox",
+    instructions: "",
+    icon: "chat-bubble-left-right",
+    color: "zinc",
+    pinned: true,
+    last_message_preview: "Ask me anything",
+    last_message_at: now(),
+    created_at: now(),
+    updated_at: now(),
+    deletable: false,
+  },
+  {
     id: "general",
     kind: "custom",
     name: "General questions",
@@ -55,6 +69,16 @@ let projects = [
 
 const messages = new Map([
   [
+    "inbox",
+    [
+      message(
+        "inbox",
+        "assistant",
+        "Hi! This is your **Inbox** — the main Skye conversation. Reset it any time from the button up top."
+      ),
+    ],
+  ],
+  [
     "general",
     [
       message(
@@ -83,6 +107,37 @@ const messages = new Map([
   ["work", []],
 ])
 const uploadedFiles = new Map()
+
+let memories = [
+  {
+    id: 1,
+    category: "preference",
+    content: "Prefers dark mode and short, direct answers.",
+    created_at: now(),
+    updated_at: now(),
+  },
+  {
+    id: 2,
+    category: "personal",
+    content: "Lives in Berlin and works in product design.",
+    created_at: now(),
+    updated_at: now(),
+  },
+  {
+    id: 3,
+    category: "instruction",
+    content: "Always reply in Russian unless asked otherwise.",
+    created_at: now(),
+    updated_at: now(),
+  },
+  {
+    id: 4,
+    category: "project",
+    content: "The Skye web chat is being rebuilt on sunkit-ui.",
+    created_at: now(),
+    updated_at: now(),
+  },
+]
 
 function message(projectId, role, text, extra = {}) {
   return {
@@ -188,10 +243,35 @@ const server = createServer(async (request, response) => {
       json(response, 200, {
         projects: [...projects].sort(
           (a, b) =>
+            Number(b.kind === "skye") - Number(a.kind === "skye") ||
             Number(b.pinned) - Number(a.pinned) ||
             (b.last_message_at ?? "").localeCompare(a.last_message_at ?? "")
         ),
       })
+      return
+    }
+
+    if (method === "GET" && url.pathname === "/api/memories") {
+      json(response, 200, { memories })
+      return
+    }
+
+    if (method === "DELETE" && url.pathname === "/api/memories") {
+      json(response, 200, { deleted: memories.length })
+      memories = []
+      return
+    }
+
+    const memoryRoute = url.pathname.match(/^\/api\/memories\/(\d+)$/)
+    if (method === "DELETE" && memoryRoute) {
+      const id = Number(memoryRoute[1])
+      const before = memories.length
+      memories = memories.filter((memory) => memory.id !== id)
+      if (memories.length === before) {
+        text(response, 404, "Memory not found.")
+        return
+      }
+      empty(response)
       return
     }
 

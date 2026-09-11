@@ -84,6 +84,7 @@ src/
 │   ├── project-list.tsx    # search, rows, brand header
 │   ├── create-project.tsx  # dialog (desktop) / sheet (mobile)
 │   ├── settings-panel.tsx  # name, instructions, appearance
+│   ├── memories-dialog.tsx # memories: search, group, delete
 │   ├── attachment-card.tsx # attachment deck + preview
 │   ├── profile-menu.tsx    # profile dropdown / mobile sheet
 │   ├── theme-toggle.tsx    # light / dark / system
@@ -94,6 +95,6 @@ src/
 │   └── use-stick-to-bottom.ts
 └── lib/
     ├── api.ts              # fetch wrappers + SSE stream parsing
-    ├── icons.tsx           # project icons, pastels, shapes
+    ├── icons.tsx           # project icons, pastels, labels
     └── types.ts
 ```
