@@ -397,9 +397,10 @@ def _stream(client: Client, project_id: str, text: str, uploads: list[Upload]) -
         files_area = st.container()
         text_area = st.empty()
         thought: Any = None
-        tool_slots: dict[str, Any] = {}
+        tool_seen: set[str] = set()
         tool_output: dict[str, Any] = {}
         chunks: list[str] = []
+        user_echoed = False
         try:
             for event in client.stream_reply(project_id, text, uploads):
                 data = event.data
@@ -410,26 +411,31 @@ def _stream(client: Client, project_id: str, text: str, uploads: list[Upload]) -
                                 ":shimmer[Thinking]", type="compact", state="running"
                             )
                     tool_id = str(data.get("id") or data.get("name") or "tool")
-                    if tool_id not in tool_slots:
+                    if tool_id not in tool_seen:
                         with thought:
-                            container = st.status(
-                                str(data.get("label") or "Step"), type="step", state="running"
+                            container = st.expander(
+                                str(data.get("label") or "Step"),
+                                icon=ui.tool_icon(data.get("name")),
                             )
-                            tool_slots[tool_id] = container
+                            tool_seen.add(tool_id)
                             with container:
                                 if data.get("args"):
                                     st.code(str(data["args"]), language="json")
                                 tool_output[tool_id] = st.empty()
-                    if data.get("status") == "done":
-                        tool_slots[tool_id].update(
-                            label=str(data.get("label") or "Step"), state="complete"
-                        )
-                        if data.get("output"):
-                            tool_output[tool_id].caption(str(data["output"]))
+                    if (
+                        data.get("status") == "done"
+                        and data.get("output")
+                        and tool_id in tool_output
+                    ):
+                        tool_output[tool_id].caption(str(data["output"]))
                 elif event.kind == "assistant":
                     chunks.append(str(data.get("text") or ""))
                     text_area.markdown("\n\n".join(part for part in chunks if part))
+                elif event.kind == "user":
+                    user_echoed = True
                 elif event.kind in {"file", "image"}:
+                    if not user_echoed:
+                        continue
                     file = ChatFile.from_payload(data)
                     with files_area:
                         ui.render_file(file, client)

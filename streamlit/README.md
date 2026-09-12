@@ -52,9 +52,9 @@ forwarded to `streamlit run`:
   it picks up the active theme through `--st-*` variables, renders each
   project's Material Symbols icon and pastel color, supports search, and
   emits select/new/pin/edit/delete events back to Python.
-- `st.chat_message` history, `st.status(type="step")` tool timelines, a
-  `st.status(type="compact")` "Thought" wrapper, generated images, and document
-  attachments.
+- `st.chat_message` history, tool steps as `st.expander`s with a per-tool
+  Material Symbol, a `st.status(type="compact")` "Thought" wrapper, generated
+  images, and document attachments.
 - `st.chat_input(accept_file="multiple", accept_audio=True, submit_mode="stop")`
   for attachments, dictation, and an in-flight stop affordance.
 - `@st.dialog` for create / edit / delete project, with the backend's exact

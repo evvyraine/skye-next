@@ -118,6 +118,36 @@ MATERIAL_ICONS: dict[str, str] = {
     "star": "star",
 }
 
+# Mirrors web/src/lib/tools.tsx toolPresentation: a called tool maps to a
+# Material Symbol and falls back by name shape before the generic wrench.
+TOOL_ICONS: dict[str, str] = {
+    "shell": "terminal",
+    "shell_call": "terminal",
+    "local_shell_call": "terminal",
+    "shell_exec": "terminal",
+    "python": "code",
+    "read_file": "description",
+    "write_file": "code",
+    "web_search": "search",
+    "web_search_call": "search",
+    "web_fetch": "public",
+    "generate_image": "image",
+    "image_generation": "image",
+    "image_generation_call": "image",
+    "edit_image": "image",
+    "remember": "database",
+    "recall": "database",
+    "forget": "database",
+    "mcp_call": "link",
+    "list_automations": "schedule",
+    "create_scheduled_automation": "schedule",
+    "create_webhook_automation": "link",
+    "update_automation": "schedule",
+    "show_webhook_automation": "link",
+    "delete_automation": "schedule",
+    "youtube_get_transcript": "play_circle",
+}
+
 ASSISTANT_AVATAR = ":material/auto_awesome:"
 USER_AVATAR = ":material/person:"
 
@@ -232,6 +262,25 @@ def material_name(icon_key: str) -> str:
     return MATERIAL_ICONS.get(icon_key, "folder")
 
 
+def tool_material(tool_name: str | None) -> str:
+    """Material Symbol for a tool call, resolved like the React client."""
+    key = (tool_name or "").strip().lower()
+    known = TOOL_ICONS.get(key)
+    if known:
+        return known
+    if key.startswith("agent_"):
+        return "smart_toy"
+    if "search" in key:
+        return "search"
+    if "image" in key:
+        return "image"
+    return "build"
+
+
+def tool_icon(tool_name: str | None) -> str:
+    return f":material/{tool_material(tool_name)}:"
+
+
 def format_bytes(value: int) -> str:
     if value < 1024:
         return f"{value} B"
@@ -307,7 +356,7 @@ def _assistant_message(
 
 def _tool_step(tool: Message) -> None:
     label = tool.text or tool.tool_name or "Step"
-    with st.status(label, type="step", state="complete"):
+    with st.expander(label, icon=tool_icon(tool.tool_name)):
         if tool.tool_args:
             st.code(tool.tool_args, language="json")
         if tool.tool_output:
