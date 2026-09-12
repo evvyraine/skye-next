@@ -188,174 +188,179 @@ export function LogsView({
 
   return (
     <div className="flex min-h-0 flex-col gap-3">
-      <div className="sticky top-[105px] z-10 -mx-4 flex flex-col gap-2.5 border-b border-[var(--sk-border-subtle)] bg-[var(--app-bg)] px-4 pt-1 pb-3 md:top-[61px] md:-mx-6 md:px-6">
-        <div className="flex flex-wrap items-center gap-2">
-          <div className="min-w-[180px] flex-1">
-            <Input
-              value={filters.q}
-              onChange={(event) =>
-                setFilters((f) => ({ ...f, q: event.target.value }))
-              }
-              placeholder="Search events, context, errors"
-              aria-label="Search logs"
+      <div className="sticky top-[105px] z-10 -mx-4 bg-[var(--app-bg)] px-4 pt-2 pb-3 md:top-[61px] md:-mx-6 md:px-6">
+        <div className="flex flex-col gap-2.5 rounded-3xl border border-[var(--sk-border-subtle)] bg-[var(--sk-surface)] p-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="min-w-[180px] flex-1">
+              <Input
+                value={filters.q}
+                onChange={(event) =>
+                  setFilters((f) => ({ ...f, q: event.target.value }))
+                }
+                placeholder="Search events, context, errors"
+                aria-label="Search logs"
+                variant="filled"
+                radius={14}
+                leftAdornment={
+                  <MagnifyingGlassIcon
+                    className="size-4 text-[var(--sk-text-muted)]"
+                    aria-hidden="true"
+                  />
+                }
+                rightAdornment={
+                  filters.q ? (
+                    <button
+                      type="button"
+                      aria-label="Clear search"
+                      onClick={() => setFilters((f) => ({ ...f, q: "" }))}
+                      className="cursor-pointer text-[var(--sk-text-muted)]"
+                    >
+                      <XMarkIcon className="size-4" />
+                    </button>
+                  ) : undefined
+                }
+              />
+            </div>
+            <Select
+              options={[
+                { value: "", label: "Any level" },
+                { value: "debug", label: "Debug" },
+                { value: "info", label: "Info" },
+                { value: "warning", label: "Warning" },
+                { value: "error", label: "Error" },
+                { value: "critical", label: "Critical" },
+              ]}
+              value={filters.level}
+              onChange={(value) => setFilters((f) => ({ ...f, level: value }))}
               variant="filled"
-              radius={999}
-              leftAdornment={
-                <MagnifyingGlassIcon
-                  className="size-4 text-[var(--sk-text-muted)]"
-                  aria-hidden="true"
-                />
+              radius={14}
+              aria-label="Filter by level"
+              containerClassName="w-[130px]"
+            />
+            <Select
+              options={eventOptions}
+              value={filters.event}
+              onChange={(value) => setFilters((f) => ({ ...f, event: value }))}
+              variant="filled"
+              radius={14}
+              searchable
+              aria-label="Filter by event"
+              containerClassName="w-[190px]"
+            />
+            <Select
+              options={[
+                { value: "", label: "All sources" },
+                { value: "telegram", label: "Telegram" },
+                { value: "web", label: "Web" },
+              ]}
+              value={filters.transport}
+              onChange={(value) =>
+                setFilters((f) => ({ ...f, transport: value }))
               }
-              rightAdornment={
-                filters.q ? (
-                  <button
-                    type="button"
-                    aria-label="Clear search"
-                    onClick={() => setFilters((f) => ({ ...f, q: "" }))}
-                    className="cursor-pointer text-[var(--sk-text-muted)]"
-                  >
-                    <XMarkIcon className="size-4" />
-                  </button>
-                ) : undefined
+              variant="filled"
+              radius={14}
+              aria-label="Filter by source"
+              containerClassName="w-[140px]"
+            />
+            <Input
+              value={filters.chatId}
+              onChange={(event) =>
+                setFilters((f) => ({ ...f, chatId: event.target.value }))
               }
+              placeholder="Chat id"
+              aria-label="Filter by chat id"
+              inputMode="numeric"
+              variant="filled"
+              radius={14}
+              containerClassName="w-[100px]"
+            />
+            <Input
+              value={filters.userId}
+              onChange={(event) =>
+                setFilters((f) => ({ ...f, userId: event.target.value }))
+              }
+              placeholder="User id"
+              aria-label="Filter by user id"
+              inputMode="numeric"
+              variant="filled"
+              radius={14}
+              containerClassName="w-[100px]"
+            />
+            <Select
+              options={[
+                { value: "", label: "Any time" },
+                ...RANGES.map((value) => ({ value, label: `Last ${value}` })),
+              ]}
+              value={filters.range}
+              onChange={(value) => setFilters((f) => ({ ...f, range: value }))}
+              variant="filled"
+              radius={14}
+              aria-label="Filter by time"
+              containerClassName="w-[130px]"
             />
           </div>
-          <Select
-            options={[
-              { value: "", label: "Any level" },
-              { value: "debug", label: "Debug" },
-              { value: "info", label: "Info" },
-              { value: "warning", label: "Warning" },
-              { value: "error", label: "Error" },
-              { value: "critical", label: "Critical" },
-            ]}
-            value={filters.level}
-            onChange={(value) => setFilters((f) => ({ ...f, level: value }))}
-            variant="filled"
-            radius={999}
-            aria-label="Filter by level"
-            containerClassName="w-[130px]"
-          />
-          <Select
-            options={eventOptions}
-            value={filters.event}
-            onChange={(value) => setFilters((f) => ({ ...f, event: value }))}
-            variant="filled"
-            radius={999}
-            searchable
-            aria-label="Filter by event"
-            containerClassName="w-[190px]"
-          />
-          <Select
-            options={[
-              { value: "", label: "All sources" },
-              { value: "telegram", label: "Telegram" },
-              { value: "web", label: "Web" },
-            ]}
-            value={filters.transport}
-            onChange={(value) =>
-              setFilters((f) => ({ ...f, transport: value }))
-            }
-            variant="filled"
-            radius={999}
-            aria-label="Filter by source"
-            containerClassName="w-[140px]"
-          />
-          <Input
-            value={filters.chatId}
-            onChange={(event) =>
-              setFilters((f) => ({ ...f, chatId: event.target.value }))
-            }
-            placeholder="Chat id"
-            aria-label="Filter by chat id"
-            inputMode="numeric"
-            variant="filled"
-            radius={999}
-            containerClassName="w-[100px]"
-          />
-          <Input
-            value={filters.userId}
-            onChange={(event) =>
-              setFilters((f) => ({ ...f, userId: event.target.value }))
-            }
-            placeholder="User id"
-            aria-label="Filter by user id"
-            inputMode="numeric"
-            variant="filled"
-            radius={999}
-            containerClassName="w-[100px]"
-          />
-          <Select
-            options={[
-              { value: "", label: "Any time" },
-              ...RANGES.map((value) => ({ value, label: `Last ${value}` })),
-            ]}
-            value={filters.range}
-            onChange={(value) => setFilters((f) => ({ ...f, range: value }))}
-            variant="filled"
-            radius={999}
-            aria-label="Filter by time"
-            containerClassName="w-[130px]"
-          />
-        </div>
-        <div className="flex items-center justify-between gap-2">
-          <div className="flex min-w-0 items-center gap-2">
-            <p className="text-[12px] text-[var(--sk-text-desc)]" role="status">
-              {loading
-                ? "Loading…"
-                : `${rows.length} ${rows.length === 1 ? "entry" : "entries"}`}
-              {filtered ? " · filtered" : ""}
-            </p>
-            {runId ? (
-              <Badge tone="lavender" variant="soft" size="sm">
-                run {runId.slice(0, 8)}
-                <button
-                  type="button"
-                  aria-label="Clear run filter"
-                  onClick={() => onRunIdChange("")}
-                  className="ml-1 cursor-pointer"
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex min-w-0 items-center gap-2">
+              <p
+                className="text-[12px] text-[var(--sk-text-desc)]"
+                role="status"
+              >
+                {loading
+                  ? "Loading…"
+                  : `${rows.length} ${rows.length === 1 ? "entry" : "entries"}`}
+                {filtered ? " · filtered" : ""}
+              </p>
+              {runId ? (
+                <Badge tone="lavender" variant="soft" size="sm">
+                  run {runId.slice(0, 8)}
+                  <button
+                    type="button"
+                    aria-label="Clear run filter"
+                    onClick={() => onRunIdChange("")}
+                    className="ml-1 cursor-pointer"
+                  >
+                    <XMarkIcon className="size-3" />
+                  </button>
+                </Badge>
+              ) : null}
+            </div>
+            <div className="flex items-center gap-1">
+              {filtered ? (
+                <Button
+                  variant="ghost"
+                  color="neutral"
+                  size="sm"
+                  radius={999}
+                  icon="left"
+                  iconLeft={<XMarkIcon />}
+                  onClick={clear}
                 >
-                  <XMarkIcon className="size-3" />
-                </button>
-              </Badge>
-            ) : null}
-          </div>
-          <div className="flex items-center gap-1">
-            {filtered ? (
+                  Clear
+                </Button>
+              ) : null}
               <Button
-                variant="ghost"
-                color="neutral"
+                variant={live ? "solid" : "ghost"}
+                color="lavender"
                 size="sm"
                 radius={999}
                 icon="left"
-                iconLeft={<XMarkIcon />}
-                onClick={clear}
+                iconLeft={<BoltIcon />}
+                aria-pressed={live}
+                onClick={() => setLive((value) => !value)}
               >
-                Clear
+                Live
               </Button>
-            ) : null}
-            <Button
-              variant={live ? "solid" : "ghost"}
-              color="lavender"
-              size="sm"
-              radius={999}
-              icon="left"
-              iconLeft={<BoltIcon />}
-              aria-pressed={live}
-              onClick={() => setLive((value) => !value)}
-            >
-              Live
-            </Button>
-            <Button
-              variant="ghost"
-              color="neutral"
-              size="icon-only"
-              icon="only"
-              iconOnly={<ArrowPathIcon />}
-              radius={999}
-              aria-label="Reload logs"
-              onClick={() => void load("reset")}
-            />
+              <Button
+                variant="ghost"
+                color="neutral"
+                size="icon-only"
+                icon="only"
+                iconOnly={<ArrowPathIcon />}
+                radius={999}
+                aria-label="Reload logs"
+                onClick={() => void load("reset")}
+              />
+            </div>
           </div>
         </div>
       </div>

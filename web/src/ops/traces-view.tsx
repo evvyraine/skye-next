@@ -1,7 +1,16 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react"
 import {
   ArrowPathIcon,
+  CheckIcon,
   ChevronDownIcon,
+  ClipboardIcon,
   MagnifyingGlassIcon,
   XMarkIcon,
 } from "@heroicons/react/24/outline"
@@ -169,147 +178,152 @@ export function TracesView({
 
   return (
     <div className="flex min-h-0 flex-col gap-3">
-      <div className="sticky top-[105px] z-10 -mx-4 flex flex-col gap-2.5 border-b border-[var(--sk-border-subtle)] bg-[var(--app-bg)] px-4 pt-1 pb-3 md:top-[61px] md:-mx-6 md:px-6">
-        <div className="flex flex-wrap items-center gap-2">
-          <div className="min-w-[180px] flex-1">
-            <Input
-              value={filters.q}
-              onChange={(event) =>
-                setFilters((f) => ({ ...f, q: event.target.value }))
-              }
-              placeholder="Search URL, model, error"
-              aria-label="Search requests"
+      <div className="sticky top-[105px] z-10 -mx-4 bg-[var(--app-bg)] px-4 pt-2 pb-3 md:top-[61px] md:-mx-6 md:px-6">
+        <div className="flex flex-col gap-2.5 rounded-3xl border border-[var(--sk-border-subtle)] bg-[var(--sk-surface)] p-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="min-w-[180px] flex-1">
+              <Input
+                value={filters.q}
+                onChange={(event) =>
+                  setFilters((f) => ({ ...f, q: event.target.value }))
+                }
+                placeholder="Search URL, model, error"
+                aria-label="Search requests"
+                variant="filled"
+                radius={14}
+                leftAdornment={
+                  <MagnifyingGlassIcon
+                    className="size-4 text-[var(--sk-text-muted)]"
+                    aria-hidden="true"
+                  />
+                }
+              />
+            </div>
+            <Select
+              options={[
+                { value: "", label: "Any status" },
+                { value: "ok", label: "Succeeded" },
+                { value: "error", label: "Failed" },
+              ]}
+              value={filters.status}
+              onChange={(value) => setFilters((f) => ({ ...f, status: value }))}
               variant="filled"
-              radius={999}
-              leftAdornment={
-                <MagnifyingGlassIcon
-                  className="size-4 text-[var(--sk-text-muted)]"
-                  aria-hidden="true"
-                />
+              radius={14}
+              aria-label="Filter by status"
+              containerClassName="w-[135px]"
+            />
+            <Select
+              options={modelOptions}
+              value={filters.model}
+              onChange={(value) => setFilters((f) => ({ ...f, model: value }))}
+              variant="filled"
+              radius={14}
+              searchable
+              aria-label="Filter by model"
+              containerClassName="w-[180px]"
+            />
+            <Select
+              options={[
+                { value: "", label: "All sources" },
+                { value: "telegram", label: "Telegram" },
+                { value: "web", label: "Web" },
+              ]}
+              value={filters.transport}
+              onChange={(value) =>
+                setFilters((f) => ({ ...f, transport: value }))
               }
+              variant="filled"
+              radius={14}
+              aria-label="Filter by source"
+              containerClassName="w-[140px]"
+            />
+            <Input
+              value={filters.chatId}
+              onChange={(event) =>
+                setFilters((f) => ({ ...f, chatId: event.target.value }))
+              }
+              placeholder="Chat id"
+              aria-label="Filter by chat id"
+              inputMode="numeric"
+              variant="filled"
+              radius={14}
+              containerClassName="w-[100px]"
+            />
+            <Input
+              value={filters.userId}
+              onChange={(event) =>
+                setFilters((f) => ({ ...f, userId: event.target.value }))
+              }
+              placeholder="User id"
+              aria-label="Filter by user id"
+              inputMode="numeric"
+              variant="filled"
+              radius={14}
+              containerClassName="w-[100px]"
+            />
+            <Select
+              options={[
+                { value: "", label: "Any time" },
+                ...RANGES.map((value) => ({ value, label: `Last ${value}` })),
+              ]}
+              value={filters.range}
+              onChange={(value) => setFilters((f) => ({ ...f, range: value }))}
+              variant="filled"
+              radius={14}
+              aria-label="Filter by time"
+              containerClassName="w-[130px]"
             />
           </div>
-          <Select
-            options={[
-              { value: "", label: "Any status" },
-              { value: "ok", label: "Succeeded" },
-              { value: "error", label: "Failed" },
-            ]}
-            value={filters.status}
-            onChange={(value) => setFilters((f) => ({ ...f, status: value }))}
-            variant="filled"
-            radius={999}
-            aria-label="Filter by status"
-            containerClassName="w-[135px]"
-          />
-          <Select
-            options={modelOptions}
-            value={filters.model}
-            onChange={(value) => setFilters((f) => ({ ...f, model: value }))}
-            variant="filled"
-            radius={999}
-            searchable
-            aria-label="Filter by model"
-            containerClassName="w-[180px]"
-          />
-          <Select
-            options={[
-              { value: "", label: "All sources" },
-              { value: "telegram", label: "Telegram" },
-              { value: "web", label: "Web" },
-            ]}
-            value={filters.transport}
-            onChange={(value) =>
-              setFilters((f) => ({ ...f, transport: value }))
-            }
-            variant="filled"
-            radius={999}
-            aria-label="Filter by source"
-            containerClassName="w-[140px]"
-          />
-          <Input
-            value={filters.chatId}
-            onChange={(event) =>
-              setFilters((f) => ({ ...f, chatId: event.target.value }))
-            }
-            placeholder="Chat id"
-            aria-label="Filter by chat id"
-            inputMode="numeric"
-            variant="filled"
-            radius={999}
-            containerClassName="w-[100px]"
-          />
-          <Input
-            value={filters.userId}
-            onChange={(event) =>
-              setFilters((f) => ({ ...f, userId: event.target.value }))
-            }
-            placeholder="User id"
-            aria-label="Filter by user id"
-            inputMode="numeric"
-            variant="filled"
-            radius={999}
-            containerClassName="w-[100px]"
-          />
-          <Select
-            options={[
-              { value: "", label: "Any time" },
-              ...RANGES.map((value) => ({ value, label: `Last ${value}` })),
-            ]}
-            value={filters.range}
-            onChange={(value) => setFilters((f) => ({ ...f, range: value }))}
-            variant="filled"
-            radius={999}
-            aria-label="Filter by time"
-            containerClassName="w-[130px]"
-          />
-        </div>
-        <div className="flex items-center justify-between gap-2">
-          <div className="flex min-w-0 items-center gap-2">
-            <p className="text-[12px] text-[var(--sk-text-desc)]" role="status">
-              {loading
-                ? "Loading…"
-                : `${rows.length} ${rows.length === 1 ? "request" : "requests"}`}
-              {filtered ? " · filtered" : ""}
-            </p>
-            {runId ? (
-              <Badge tone="lavender" variant="soft" size="sm">
-                run {runId.slice(0, 8)}
-                <button
-                  type="button"
-                  aria-label="Clear run filter"
-                  onClick={() => onRunIdChange("")}
-                  className="ml-1 cursor-pointer"
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex min-w-0 items-center gap-2">
+              <p
+                className="text-[12px] text-[var(--sk-text-desc)]"
+                role="status"
+              >
+                {loading
+                  ? "Loading…"
+                  : `${rows.length} ${rows.length === 1 ? "request" : "requests"}`}
+                {filtered ? " · filtered" : ""}
+              </p>
+              {runId ? (
+                <Badge tone="lavender" variant="soft" size="sm">
+                  run {runId.slice(0, 8)}
+                  <button
+                    type="button"
+                    aria-label="Clear run filter"
+                    onClick={() => onRunIdChange("")}
+                    className="ml-1 cursor-pointer"
+                  >
+                    <XMarkIcon className="size-3" />
+                  </button>
+                </Badge>
+              ) : null}
+            </div>
+            <div className="flex items-center gap-1">
+              {filtered ? (
+                <Button
+                  variant="ghost"
+                  color="neutral"
+                  size="sm"
+                  radius={999}
+                  icon="left"
+                  iconLeft={<XMarkIcon />}
+                  onClick={clear}
                 >
-                  <XMarkIcon className="size-3" />
-                </button>
-              </Badge>
-            ) : null}
-          </div>
-          <div className="flex items-center gap-1">
-            {filtered ? (
+                  Clear
+                </Button>
+              ) : null}
               <Button
                 variant="ghost"
                 color="neutral"
-                size="sm"
+                size="icon-only"
+                icon="only"
+                iconOnly={<ArrowPathIcon />}
                 radius={999}
-                icon="left"
-                iconLeft={<XMarkIcon />}
-                onClick={clear}
-              >
-                Clear
-              </Button>
-            ) : null}
-            <Button
-              variant="ghost"
-              color="neutral"
-              size="icon-only"
-              icon="only"
-              iconOnly={<ArrowPathIcon />}
-              radius={999}
-              aria-label="Reload requests"
-              onClick={() => void load("reset")}
-            />
+                aria-label="Reload requests"
+                onClick={() => void load("reset")}
+              />
+            </div>
           </div>
         </div>
       </div>
@@ -570,26 +584,35 @@ function TraceDetail({
               ) : null}
             </Tabs.Content>
 
-            <Tabs.Content value="request" className="flex flex-col gap-4">
-              <BodyHeader
+            <Tabs.Content value="request" className="flex flex-col gap-3">
+              <BodyView
                 label="Request"
                 contentType={trace.request_content_type}
                 bytes={trace.request_bytes}
+                text={trace.request_text}
+                data={trace.request_body}
+                onMedia={openNamed}
               />
-              <JsonView data={trace.request_body} onMedia={openNamed} />
               <Headers
                 headers={trace.request_headers}
                 label="Request headers"
               />
             </Tabs.Content>
 
-            <Tabs.Content value="response" className="flex flex-col gap-4">
-              <BodyHeader
+            <Tabs.Content value="response" className="flex flex-col gap-3">
+              <BodyView
                 label="Response"
                 contentType={trace.response_content_type}
                 bytes={trace.response_bytes}
+                text={trace.response_text}
+                hint={
+                  trace.stream && trace.response_text
+                    ? "Assembled from streamed deltas. Raw events stay under JSON."
+                    : undefined
+                }
+                data={trace.response_body}
+                onMedia={openNamed}
               />
-              <JsonView data={trace.response_body} onMedia={openNamed} />
               <Headers
                 headers={trace.response_headers}
                 label="Response headers"
@@ -642,6 +665,140 @@ function TraceDetail({
         </div>
       )}
     </Sheet>
+  )
+}
+
+function BodyView({
+  label,
+  contentType,
+  bytes,
+  text,
+  hint,
+  data,
+  onMedia,
+}: {
+  label: string
+  contentType: string | null
+  bytes: number
+  text: string | null
+  hint?: string
+  data: unknown
+  onMedia: (name: string) => void
+}) {
+  const [mode, setMode] = useState<"text" | "json">(text ? "text" : "json")
+  const [copied, setCopied] = useState(false)
+
+  async function copy() {
+    if (!text) return
+    try {
+      await navigator.clipboard.writeText(text)
+      setCopied(true)
+      window.setTimeout(() => setCopied(false), 1500)
+    } catch {
+      setCopied(false)
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <BodyHeader label={label} contentType={contentType} bytes={bytes} />
+        <div
+          className="flex items-center gap-0.5 rounded-full border border-[var(--sk-border-subtle)] bg-[var(--sk-surface-filled)] p-0.5"
+          role="group"
+          aria-label={`${label} format`}
+        >
+          <SegmentedButton
+            active={mode === "text"}
+            onClick={() => setMode("text")}
+          >
+            Text
+          </SegmentedButton>
+          <SegmentedButton
+            active={mode === "json"}
+            onClick={() => setMode("json")}
+          >
+            JSON
+          </SegmentedButton>
+        </div>
+      </div>
+
+      {mode === "text" ? (
+        text ? (
+          <>
+            <div className="flex items-center justify-between gap-2">
+              {hint ? (
+                <p className="text-[11.5px] text-[var(--sk-text-desc)]">
+                  {hint}
+                </p>
+              ) : (
+                <span />
+              )}
+              <Button
+                variant="ghost"
+                color="neutral"
+                size="sm"
+                radius={999}
+                icon="left"
+                iconLeft={copied ? <CheckIcon /> : <ClipboardIcon />}
+                onClick={() => void copy()}
+              >
+                {copied ? "Copied" : "Copy"}
+              </Button>
+            </div>
+            <TextBlock text={text} />
+          </>
+        ) : (
+          <p className="rounded-2xl border border-dashed border-[var(--sk-border-subtle)] px-4 py-6 text-center text-[13px] text-[var(--sk-text-desc)]">
+            No text representation for this body.{" "}
+            <button
+              type="button"
+              onClick={() => setMode("json")}
+              className="cursor-pointer text-[var(--sk-accent)] hover:underline"
+            >
+              Open the JSON view
+            </button>
+            .
+          </p>
+        )
+      ) : (
+        <JsonView data={data} onMedia={onMedia} />
+      )}
+    </div>
+  )
+}
+
+function TextBlock({ text }: { text: string }) {
+  return (
+    <pre className="sk-scrollbar max-h-[55vh] overflow-auto rounded-2xl border border-[var(--sk-border-subtle)] bg-[var(--sk-surface-filled)] p-3 font-mono text-[12px] leading-[1.7] break-words whitespace-pre-wrap">
+      {text}
+    </pre>
+  )
+}
+
+function SegmentedButton({
+  active,
+  onClick,
+  children,
+}: {
+  active: boolean
+  onClick: () => void
+  children: ReactNode
+}) {
+  return (
+    <button
+      type="button"
+      aria-pressed={active}
+      onClick={onClick}
+      className={cn(
+        "h-7 cursor-pointer rounded-full px-3 text-[12px] font-medium transition-colors outline-none focus-visible:ring-2 focus-visible:ring-[var(--sk-accent)]/50",
+        active
+          ? "bg-[var(--sk-surface)] text-[var(--sk-text)]"
+          : "text-[var(--sk-text-desc)] hover:text-[var(--sk-text)]"
+      )}
+    >
+      {children}
+    </button>
   )
 }
 

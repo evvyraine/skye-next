@@ -13,6 +13,10 @@ from skye.ops import OpsStore
 from skye.ops_capture import (
     CapturingTransport,
     OpsContext,
+    _MediaSink,
+    _parse_sse,
+    _render_request_text,
+    _render_response_text,
     bind_context,
     clear_context,
     new_run_id,
@@ -243,3 +247,68 @@ async def test_media_path_traversal_is_rejected(tmp_path: Path) -> None:
 
 def test_run_ids_are_unique() -> None:
     assert len({new_run_id(), new_run_id()}) == 2
+
+
+def test_request_text_renders_a_transcript() -> None:
+    text = _render_request_text(
+        {
+            "model": "gpt-x",
+            "stream": True,
+            "messages": [
+                {"role": "system", "content": "You are Skye."},
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": "Describe this."},
+                        {
+                            "type": "input_image",
+                            "image_url": {
+                                "__media__": "request-1.png",
+                                "mime": "image/png",
+                                "bytes": 42,
+                            },
+                        },
+                    ],
+                },
+            ],
+            "tools": [{"type": "function", "function": {"name": "send_message"}}],
+        }
+    )
+    assert text is not None
+    assert "model: gpt-x" in text
+    assert "stream: true" in text
+    assert "tools (1): send_message" in text
+    assert "[system]\nYou are Skye." in text
+    assert "Describe this." in text
+    assert "[image: request-1.png (image/png, 42 B)]" in text
+
+
+def test_streamed_response_is_assembled_to_final_text() -> None:
+    body = (
+        b'data: {"choices":[{"delta":{"content":"Hel"}}]}\n\n'
+        b'data: {"choices":[{"delta":{"content":"lo"}}]}\n\n'
+        b'data: {"choices":[{"delta":{"tool_calls":[{"index":0,'
+        b'"function":{"name":"send_message","arguments":"{\\"text\\":"}}]}}]}\n\n'
+        b'data: {"usage":{"total_tokens":9}}\n\n'
+        b"data: [DONE]\n\n"
+    )
+    parsed = _parse_sse(body, _MediaSink())
+    assert parsed["text"] == "Hello"
+    assert parsed["tool_calls"][0]["name"] == "send_message"
+    assert parsed["usage"] == {"total_tokens": 9}
+    assert parsed["count"] == 4
+    rendered = _render_response_text(parsed)
+    assert rendered is not None
+    assert rendered.startswith("Hello")
+    assert "[tool calls]" in rendered
+
+
+def test_non_stream_response_text_prefers_the_message() -> None:
+    rendered = _render_response_text(
+        {"choices": [{"message": {"role": "assistant", "content": "Done."}}]}
+    )
+    assert rendered == "Done."
+    media_only = _render_response_text(
+        {"data": [{"b64_json": {"__media__": "x.png", "mime": "image/png", "bytes": 3}}]}
+    )
+    assert media_only is not None

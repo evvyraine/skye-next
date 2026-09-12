@@ -71,6 +71,8 @@ CREATE TABLE IF NOT EXISTS ops_traces (
     response_headers TEXT,
     request_body TEXT,
     response_body TEXT,
+    request_text TEXT,
+    response_text TEXT,
     error TEXT,
     tokens INTEGER,
     media TEXT NOT NULL DEFAULT '[]'
@@ -146,6 +148,8 @@ class TraceRecord:
     response_body: Any
     error: str | None
     tokens: int | None
+    request_text: str | None = None
+    response_text: str | None = None
     media: list[CapturedMedia] = field(default_factory=list)
 
 
@@ -216,10 +220,20 @@ class OpsStore:
 
     async def open(self) -> None:
         await self.database.execute_script(OPS_SCHEMA)
+        await self._ensure_trace_text_columns()
         if self.capture_media:
             self.media_path.mkdir(parents=True, exist_ok=True)
         self._worker = asyncio.create_task(self._run(), name="ops-store")
         await self.prune()
+
+    async def _ensure_trace_text_columns(self) -> None:
+        rows = await self.database.fetch_all("PRAGMA table_info(ops_traces)")
+        existing = {str(row["name"]) for row in rows}
+        for name in ("request_text", "response_text"):
+            if name not in existing:
+                await self.database.execute_write(
+                    f"ALTER TABLE ops_traces ADD COLUMN {name} TEXT"
+                )
 
     async def close(self) -> None:
         self._stop.set()
@@ -310,10 +324,10 @@ class OpsStore:
                (id, ts, run_id, run_key, transport, label, chat_id, user_id, thread_id,
                 method, url, host, status, ok, duration_ms, model, stream, request_bytes,
                 response_bytes, request_content_type, response_content_type,
-                request_headers, response_headers, request_body, response_body, error,
-                tokens, media)
+                request_headers, response_headers, request_body, response_body,
+                request_text, response_text, error, tokens, media)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                       ?, ?, ?, ?, ?, ?, ?, ?)""",
+                       ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 trace.id,
                 trace.ts,
@@ -340,6 +354,8 @@ class OpsStore:
                 json.dumps(trace.response_headers, ensure_ascii=False),
                 _body_text(trace.request_body, self.max_body_bytes),
                 _body_text(trace.response_body, self.max_body_bytes),
+                _text_value(trace.request_text, self.max_body_bytes),
+                _text_value(trace.response_text, self.max_body_bytes),
                 trace.error,
                 trace.tokens,
                 json.dumps(media_meta, ensure_ascii=False),
@@ -674,6 +690,14 @@ def _body_text(value: Any, cap: int) -> str | None:
     if len(text) > cap:
         return text[:cap] + "\n… truncated"
     return text
+
+
+def _text_value(value: str | None, cap: int) -> str | None:
+    if value is None:
+        return None
+    if len(value) > cap:
+        return value[:cap] + "\n… truncated"
+    return value
 
 
 def _none_str(value: Any) -> str | None:

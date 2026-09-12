@@ -316,12 +316,16 @@ const opsTracesSeed = [
     response_body: {
       __stream__: true,
       count: 3,
+      text: "On it. Here it is.",
       events: [
         { event: "delta", data: { choices: [{ delta: { content: "On it." } }] } },
         { event: "delta", data: { choices: [{ delta: { content: " Here it is." } }] } },
         { event: "done", data: { usage: { total_tokens: 1420 } } },
       ],
     },
+    request_text:
+      'model: gpt-5.6-luna\nstream: true\ntools (1): send_message\n\n[system]\nYou are Skye.\n\n[user]\nEdit this photo and describe it.\n[image: request-1.svg (image/svg+xml, 512 B)]',
+    response_text: "On it. Here it is.",
     error: null,
     tokens: 1420,
     media: [
@@ -361,6 +365,10 @@ const opsTracesSeed = [
     response_body: {
       data: [{ b64_json: { __media__: "response-1.svg", mime: "image/svg+xml", bytes: 640 } }],
     },
+    request_text:
+      'model: gpt-image-2\n\n{\n  "prompt": "a calm violet horizon"\n}',
+    response_text:
+      "[generated media]\nresponse-1.svg (image/svg+xml, 640 B)",
     error: null,
     tokens: null,
     media: [
@@ -394,6 +402,8 @@ const opsTracesSeed = [
     response_headers: { "content-type": "application/json" },
     request_body: { model: "gpt-5.6-luna", messages: [{ role: "user", content: "hello" }] },
     response_body: { error: { message: "Rate limit reached. Try again in 12s.", code: "rate_limit" } },
+    request_text: "model: gpt-5.6-luna\nstream: false\n\n[user]\nhello",
+    response_text: "Rate limit reached. Try again in 12s.",
     error: "Rate limit reached. Try again in 12s.",
     tokens: null,
     media: [],

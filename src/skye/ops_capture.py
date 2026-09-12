@@ -156,6 +156,8 @@ class CapturingTransport(httpx.AsyncBaseTransport):
         )
         model = _find_model(request_payload) or _find_model(response_payload)
         tokens = _find_tokens(response_payload)
+        request_text = _render_request_text(request_payload)
+        response_text = _render_response_text(response_payload)
         status = response.status_code if response is not None else 0
         message = None
         if error is not None:
@@ -190,6 +192,8 @@ class CapturingTransport(httpx.AsyncBaseTransport):
             response_body=response_payload,
             error=message,
             tokens=tokens,
+            request_text=request_text,
+            response_text=response_text,
             media=sink.media[:40],
         )
         store.record_trace(trace)
@@ -275,6 +279,10 @@ def _decode_body(
 
 def _parse_sse(body: bytes, sink: _MediaSink) -> Any:
     events: list[dict[str, Any]] = []
+    text_parts: list[str] = []
+    reasoning_parts: list[str] = []
+    tool_calls: dict[int, dict[str, Any]] = {}
+    usage: dict[str, Any] | None = None
     for block in body.decode("utf-8", "replace").split("\n\n"):
         block = block.strip()
         if not block or block.startswith(":"):
@@ -293,8 +301,293 @@ def _parse_sse(body: bytes, sink: _MediaSink) -> Any:
             parsed = json.loads(data)
         except json.JSONDecodeError:
             parsed = data
+        _accumulate_stream(parsed, text_parts, reasoning_parts, tool_calls)
+        if isinstance(parsed, dict) and isinstance(parsed.get("usage"), dict):
+            usage = parsed["usage"]
         events.append({"event": name, "data": _scrub(parsed, sink, "response")})
-    return {"__stream__": True, "events": events[:400], "count": len(events)}
+    result: dict[str, Any] = {
+        "__stream__": True,
+        "events": events[:400],
+        "count": len(events),
+        "text": "".join(text_parts),
+    }
+    if reasoning_parts:
+        result["reasoning"] = "".join(reasoning_parts)
+    if tool_calls:
+        result["tool_calls"] = [tool_calls[key] for key in sorted(tool_calls)]
+    if usage is not None:
+        result["usage"] = usage
+    return result
+
+
+def _accumulate_stream(
+    parsed: Any,
+    text: list[str],
+    reasoning: list[str],
+    tools: dict[int, dict[str, Any]],
+) -> None:
+    """Fold streamed chunks into the final text, reasoning, and tool calls."""
+    if not isinstance(parsed, dict):
+        return
+    choices = parsed.get("choices")
+    if isinstance(choices, list):
+        for choice in choices:
+            if not isinstance(choice, dict):
+                continue
+            delta = choice.get("delta")
+            if isinstance(delta, dict):
+                _append_text(text, delta.get("content"))
+                _append_text(reasoning, delta.get("reasoning_content"))
+                _append_text(reasoning, delta.get("reasoning"))
+                _accumulate_tool_calls(tools, delta.get("tool_calls"))
+            message = choice.get("message")
+            if isinstance(message, dict):
+                _append_text(text, message.get("content"))
+                _accumulate_tool_calls(tools, message.get("tool_calls"))
+            _append_text(text, choice.get("text"))
+    event_type = parsed.get("type")
+    if (isinstance(event_type, str) and "output_text" in event_type) or event_type is None:
+        _append_text(text, parsed.get("delta"))
+    if event_type == "response.completed" and isinstance(parsed.get("response"), dict):
+        _append_response_output(text, parsed["response"])
+
+
+def _append_text(parts: list[str], value: Any) -> None:
+    if isinstance(value, str):
+        parts.append(value)
+    elif isinstance(value, list):
+        for item in value:
+            if isinstance(item, dict) and isinstance(item.get("text"), str):
+                parts.append(item["text"])
+            elif isinstance(item, str):
+                parts.append(item)
+
+
+def _append_response_output(parts: list[str], response: dict[str, Any]) -> None:
+    output = response.get("output")
+    if not isinstance(output, list):
+        return
+    for item in output:
+        if not isinstance(item, dict):
+            continue
+        _append_text(parts, item.get("content"))
+        _append_text(parts, item.get("text"))
+
+
+def _accumulate_tool_calls(
+    store: dict[int, dict[str, Any]], calls: Any
+) -> None:
+    if not isinstance(calls, list):
+        return
+    for position, call in enumerate(calls):
+        if not isinstance(call, dict):
+            continue
+        index = call.get("index")
+        key = index if isinstance(index, int) else position
+        entry = store.setdefault(
+            key, {"index": key, "id": None, "name": None, "arguments": ""}
+        )
+        if isinstance(call.get("id"), str):
+            entry["id"] = call["id"]
+        function = call.get("function")
+        if isinstance(function, dict):
+            if isinstance(function.get("name"), str):
+                entry["name"] = function["name"]
+            arguments = function.get("arguments")
+            if isinstance(arguments, str):
+                entry["arguments"] += arguments
+
+
+def _render_request_text(payload: Any) -> str | None:
+    if not isinstance(payload, dict):
+        return None if payload is None else _pretty(payload)
+    head: list[str] = []
+    model = payload.get("model")
+    if isinstance(model, str) and model:
+        head.append(f"model: {model}")
+    if "stream" in payload:
+        head.append(f"stream: {'true' if payload.get('stream') else 'false'}")
+    for key in ("temperature", "max_tokens", "max_completion_tokens", "reasoning_effort"):
+        value = payload.get(key)
+        if isinstance(value, str | int | float) and value != "":
+            head.append(f"{key}: {value}")
+    tools = payload.get("tools")
+    if isinstance(tools, list) and tools:
+        names = [name for name in (_tool_name(item) for item in tools) if name]
+        label = ", ".join(names) if names else str(len(tools))
+        head.append(f"tools ({len(tools)}): {label}")
+    messages = payload.get("messages")
+    if not isinstance(messages, list):
+        messages = payload.get("input")
+    blocks: list[str] = []
+    if isinstance(messages, list):
+        blocks = [_render_message(item) for item in messages]
+    if not blocks:
+        return _pretty(payload)
+    body = "\n\n".join(block for block in blocks if block)
+    prefix = "\n".join(head)
+    return f"{prefix}\n\n{body}".strip() if prefix else body
+
+
+def _render_response_text(payload: Any) -> str | None:
+    if not isinstance(payload, dict):
+        return None if payload is None else _pretty(payload)
+    if payload.get("__stream__"):
+        pieces: list[str] = []
+        text = payload.get("text")
+        if isinstance(text, str) and text.strip():
+            pieces.append(text)
+        reasoning = payload.get("reasoning")
+        if isinstance(reasoning, str) and reasoning.strip():
+            pieces.append(f"[reasoning]\n{reasoning}")
+        calls = payload.get("tool_calls")
+        if isinstance(calls, list) and calls:
+            rendered = "\n".join(_render_tool_call(call) for call in calls)
+            pieces.append(f"[tool calls]\n{rendered}")
+        if pieces:
+            return "\n\n".join(pieces)
+        return f"(streamed {payload.get('count', 0)} events, no text content)"
+    choices = payload.get("choices")
+    if isinstance(choices, list) and choices:
+        output: list[str] = []
+        for choice in choices:
+            if not isinstance(choice, dict):
+                continue
+            message = choice.get("message")
+            if isinstance(message, dict):
+                content = _request_content_text(message.get("content"))
+                if content:
+                    output.append(content)
+                for call in message.get("tool_calls") or []:
+                    output.append(_render_tool_call(call))
+            elif isinstance(choice.get("text"), str):
+                output.append(choice["text"])
+        if output:
+            return "\n".join(output)
+    error = payload.get("error")
+    if isinstance(error, dict):
+        error_message = error.get("message")
+        if isinstance(error_message, str):
+            return error_message
+    top_text = payload.get("text")
+    if isinstance(top_text, str):
+        return top_text
+    data = payload.get("data")
+    if isinstance(data, list) and data:
+        labels = [
+            _media_label(item)
+            for item in data
+            if isinstance(item, dict) and "__media__" in item
+        ]
+        if labels:
+            return "[generated media]\n" + "\n".join(labels)
+    if isinstance(payload.get("__media__"), str):
+        return f"[media: {_media_label(payload)}]"
+    return _pretty(payload)
+
+
+def _render_message(item: Any) -> str:
+    if not isinstance(item, dict):
+        return _pretty(item)
+    role = item.get("role") or item.get("type") or "item"
+    lines = [f"[{role}]"]
+    content = _request_content_text(item.get("content"))
+    if content:
+        lines.append(content)
+    for call in item.get("tool_calls") or []:
+        lines.append(_render_tool_call(call))
+    tool_call_id = item.get("tool_call_id")
+    if isinstance(tool_call_id, str) and tool_call_id:
+        lines.append(f"tool_call_id: {tool_call_id}")
+    if len(lines) == 1:
+        lines.append(_pretty({key: item[key] for key in item if key != "role"}))
+    return "\n".join(lines)
+
+
+def _request_content_text(content: Any) -> str:
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = [rendered for rendered in (_part_text(part) for part in content) if rendered]
+        return "\n".join(parts)
+    return _pretty(content)
+
+
+def _part_text(part: Any) -> str:
+    if isinstance(part, str):
+        return part
+    if not isinstance(part, dict):
+        return _pretty(part)
+    if "__media__" in part:
+        return f"[media: {_media_label(part)}]"
+    kind = part.get("type")
+    if kind in {"text", "input_text", "output_text"}:
+        value = part.get("text")
+        return value if isinstance(value, str) else _pretty(part)
+    if kind in {"input_image", "image_url"} or "image_url" in part:
+        return f"[image: {_media_label(_extract_media(part.get('image_url')))}]"
+    if kind in {"input_file", "file"} or "file_data" in part:
+        return f"[file: {_media_label(_extract_media(part.get('file_data')))}]"
+    if kind == "input_audio" or "input_audio" in part:
+        return f"[audio: {_media_label(_extract_media(part.get('input_audio') or part))}]"
+    return _pretty(part)
+
+
+def _extract_media(value: Any) -> Any:
+    if isinstance(value, dict) and "__media__" in value:
+        return value
+    if isinstance(value, str):
+        return {"__media__": value, "mime": "unknown", "bytes": None}
+    return {}
+
+
+def _media_label(marker: Any) -> str:
+    if isinstance(marker, dict) and "__media__" in marker:
+        name = str(marker.get("__media__"))
+        mime = str(marker.get("mime") or "file")
+        size = marker.get("bytes")
+        if isinstance(size, int):
+            return f"{name} ({mime}, {size} B)"
+        return f"{name} ({mime})"
+    if isinstance(marker, str):
+        return marker
+    return "stored"
+
+
+def _render_tool_call(call: Any) -> str:
+    if isinstance(call, dict):
+        function = call.get("function")
+        source = function if isinstance(function, dict) else call
+        name = source.get("name") if isinstance(source, dict) else None
+        arguments = source.get("arguments") if isinstance(source, dict) else None
+        return f"[tool call] {name or 'unknown'}({arguments or ''})"
+    return f"[tool call] {call}"
+
+
+def _tool_name(item: Any) -> str | None:
+    if not isinstance(item, dict):
+        return None
+    function = item.get("function")
+    if isinstance(function, dict):
+        function_name = function.get("name")
+        if isinstance(function_name, str):
+            return function_name
+    name = item.get("name")
+    if isinstance(name, str):
+        return name
+    kind = item.get("type")
+    if isinstance(kind, str):
+        return kind
+    return None
+
+
+def _pretty(value: Any) -> str:
+    try:
+        return json.dumps(value, ensure_ascii=False, indent=2, default=str)
+    except (TypeError, ValueError):
+        return str(value)
 
 
 def _scrub(value: Any, sink: _MediaSink, where: str) -> Any:

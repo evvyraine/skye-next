@@ -215,50 +215,52 @@ export function ConfigView() {
 
   return (
     <div className="flex min-h-0 flex-col gap-3 pb-24">
-      <div className="sticky top-[105px] z-10 -mx-4 flex flex-col gap-2.5 border-b border-[var(--sk-border-subtle)] bg-[var(--app-bg)] px-4 pt-1 pb-3 md:top-[61px] md:-mx-6 md:px-6">
-        <div className="flex flex-wrap items-center gap-2">
-          <div className="min-w-[180px] flex-1">
-            <Input
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              placeholder="Search settings"
-              aria-label="Search settings"
-              variant="filled"
-              radius={999}
-              leftAdornment={
-                <MagnifyingGlassIcon
-                  className="size-4 text-[var(--sk-text-muted)]"
-                  aria-hidden="true"
-                />
-              }
+      <div className="sticky top-[105px] z-10 -mx-4 bg-[var(--app-bg)] px-4 pt-2 pb-3 md:top-[61px] md:-mx-6 md:px-6">
+        <div className="flex flex-col gap-2.5 rounded-3xl border border-[var(--sk-border-subtle)] bg-[var(--sk-surface)] p-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="min-w-[180px] flex-1">
+              <Input
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder="Search settings"
+                aria-label="Search settings"
+                variant="filled"
+                radius={14}
+                leftAdornment={
+                  <MagnifyingGlassIcon
+                    className="size-4 text-[var(--sk-text-muted)]"
+                    aria-hidden="true"
+                  />
+                }
+              />
+            </div>
+            <Toggle
+              checked={showAdvanced}
+              onCheckedChange={setShowAdvanced}
+              label="Advanced"
+              size="sm"
             />
           </div>
-          <Toggle
-            checked={showAdvanced}
-            onCheckedChange={setShowAdvanced}
-            label="Advanced"
-            size="sm"
-          />
-        </div>
-        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11.5px] text-[var(--sk-text-desc)]">
-          <span className="font-mono">{payload.env_file}</span>
-          {payload.overrides.length > 0 ? (
-            <Badge tone="lavender" variant="soft" size="sm">
-              {payload.overrides.length} panel{" "}
-              {payload.overrides.length === 1 ? "override" : "overrides"}
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11.5px] text-[var(--sk-text-desc)]">
+            <span className="font-mono">{payload.env_file}</span>
+            {payload.overrides.length > 0 ? (
+              <Badge tone="lavender" variant="soft" size="sm">
+                {payload.overrides.length} panel{" "}
+                {payload.overrides.length === 1 ? "override" : "overrides"}
+              </Badge>
+            ) : (
+              <Badge tone="neutral" variant="outline" size="sm">
+                no overrides
+              </Badge>
+            )}
+            <Badge
+              tone={payload.capture.enabled ? "mint" : "neutral"}
+              variant="soft"
+              size="sm"
+            >
+              {payload.capture.enabled ? "capture on" : "capture off"}
             </Badge>
-          ) : (
-            <Badge tone="neutral" variant="outline" size="sm">
-              no overrides
-            </Badge>
-          )}
-          <Badge
-            tone={payload.capture.enabled ? "mint" : "neutral"}
-            variant="soft"
-            size="sm"
-          >
-            {payload.capture.enabled ? "capture on" : "capture off"}
-          </Badge>
+          </div>
         </div>
       </div>
 

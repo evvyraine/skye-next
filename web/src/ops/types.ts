@@ -61,6 +61,8 @@ export type TraceDetail = TraceSummary & {
   response_headers: Record<string, string>
   request_body: unknown
   response_body: unknown
+  request_text: string | null
+  response_text: string | null
   error: string | null
   media: MediaItem[]
   logs: { id: number; ts: string; level: string; event: string }[]
