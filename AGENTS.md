@@ -19,6 +19,7 @@ Skye's voice is calm, short, warm, and grounded. She is female. Identity and ton
 ## Core decisions
 
 - **No Mini App.** Telegram settings stay inline-keyboard messages edited in place. Callback data is a short action plus an opaque id — never JSON, never trusted client state. The web app at `chat.skye-bot.com` is a second transport for private project chats, not a Mini App and not an admin panel.
+- **The operator panel is not a product surface.** `/ops` is a read-mostly console for owned instances: structured logs, captured model traffic, and environment overrides. It is served only to `SKYE_OWNER_IDS`, is separate from project chat, and never appears in product navigation. Captured payloads can contain prompts, memories, and file bodies; capture is a deliberate, bounded setting with retention, and captured media lives on the data volume.
 - **Automations are in-process.** Scheduled cron and webhook triggers run a normal Skye turn in the bound Telegram chat or forum topic, with that chat's tools and conversation. The scheduler is an asyncio loop in the bot process. Webhooks are `POST /automations/{id}/hook` on the web app, authenticated by a stored Authorization header. Skye creates them with function tools; `/settings` lists and deletes one at a time. Anyone who can edit settings can manage them.
 - **Connectors are per user.** Hosted apps connect through Composio; custom HTTPS MCP is stored locally. A group run receives a connector only after the owner explicitly shares that one item with that group. The owner or a group admin can revoke the share. Connector tools attach through a local MCP bridge, never as provider-hosted tools.
 - **One provider-agnostic runtime.** All model traffic goes through Chat Completions against any OpenAI-compatible base URL. Images (`generate_image`/`edit_image` over the Images API), web (`web_search`/`web_fetch` over Exa), code (`shell_exec`, `python`, `read_file`, and `write_file` in a persistent per-scope Docker sandbox), and skills (`read_skill` from local SQLite bundles) are our own function tools. No hosted/provider-server tools, no per-provider adapters.
@@ -48,7 +49,7 @@ Skye's voice is calm, short, warm, and grounded. She is female. Identity and ton
 
 ## Do not add
 
-- A Mini App or an admin web panel
+- A Mini App, or a user-facing admin panel (the owner-only `/ops` console is the operator exception)
 - A second payment provider, or product tiers outside Telegram Stars
 - Token numbers in user-facing copy
 - Host-side code execution (code runs only in the own Docker sandbox)

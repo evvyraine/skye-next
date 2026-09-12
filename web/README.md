@@ -63,6 +63,27 @@ npm install sunkit-ui@alpha
 Pin the exact published version (e.g. `0.2.0-alpha.7`); prerelease ranges are
 easy to misread.
 
+## Operator panel
+
+`/ops` is an owner-only console served from the same SPA. It stays out of the
+product navigation and is reached directly by URL. The API lives under
+`/api/admin/*` and answers only to `SKYE_OWNER_IDS`.
+
+- **Logs**: every structured event, filterable by level, event, source, chat,
+  user, and time range. Open an entry for the full context tree and any
+  exception.
+- **Requests**: captured model traffic with the full request and response
+  structure, inline images, file downloads, token counts, and linked log lines.
+  Cross-filter by run in either direction.
+- **Config**: the environment schema as typed fields in collapsible groups, with
+  inline validation, advanced fields behind a toggle, and stored overrides that
+  win over the process environment on the next start. Observability toggles
+  apply live; everything else offers a restart.
+
+Capture and retention are controlled by `SKYE_OPS_*` environment variables. Full
+requests and responses can contain prompts, memories, and file bodies, so point
+`SKYE_OPS_MEDIA_PATH` at the data volume and keep retention short.
+
 ## Scripts
 
 ```bash

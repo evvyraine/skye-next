@@ -4,7 +4,7 @@ import asyncio
 import json
 import re
 import time
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Iterable, Mapping, Sequence
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -491,6 +491,12 @@ ON automations(scope_kind, scope_id, thread_id, created_at);
 
 CREATE INDEX IF NOT EXISTS automations_due
 ON automations(kind, enabled, next_run_at);
+
+CREATE TABLE IF NOT EXISTS ops_config_overrides (
+    env TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 """
 
 
@@ -546,6 +552,70 @@ class Database:
             cursor = await self.conn.execute(sql, parameters)
             await self.conn.commit()
             return cursor
+
+    # -- Operator surfaces (observability, config overrides). These share the
+    # process write lock so the ops worker can never commit a run's transaction.
+
+    async def execute_write(
+        self, sql: str, parameters: Sequence[object] = ()
+    ) -> aiosqlite.Cursor:
+        return await self._write(sql, parameters)
+
+    async def execute_many(self, sql: str, rows: Iterable[Any]) -> None:
+        async with self._write_lock:
+            await self.conn.executemany(sql, rows)
+            await self.conn.commit()
+
+    async def execute_script(self, script: str) -> None:
+        async with self._write_lock:
+            await self.conn.executescript(script)
+            await self.conn.commit()
+
+    async def fetch_all(
+        self, sql: str, parameters: Sequence[object] = ()
+    ) -> list[aiosqlite.Row]:
+        cursor = await self.conn.execute(sql, parameters)
+        return list(await cursor.fetchall())
+
+    async def fetch_one(
+        self, sql: str, parameters: Sequence[object] = ()
+    ) -> aiosqlite.Row | None:
+        cursor = await self.conn.execute(sql, parameters)
+        return await cursor.fetchone()
+
+    async def config_overrides(self) -> dict[str, Any]:
+        """Panel-managed settings overrides, keyed by environment variable."""
+        rows = await self.fetch_all(
+            "SELECT env, value FROM ops_config_overrides ORDER BY env"
+        )
+        result: dict[str, Any] = {}
+        for row in rows:
+            raw = str(row["value"])
+            try:
+                result[str(row["env"])] = json.loads(raw)
+            except json.JSONDecodeError:
+                result[str(row["env"])] = raw
+        return result
+
+    async def set_config_overrides(
+        self, updates: Mapping[str, Any], removals: Sequence[str]
+    ) -> None:
+        if updates:
+            now = datetime.now(UTC).isoformat(timespec="milliseconds")
+            await self.execute_many(
+                """INSERT INTO ops_config_overrides (env, value, updated_at)
+                   VALUES (?, ?, ?)
+                   ON CONFLICT(env) DO UPDATE SET
+                       value = excluded.value, updated_at = excluded.updated_at""",
+                [
+                    (env, json.dumps(value, ensure_ascii=False), now)
+                    for env, value in updates.items()
+                ],
+            )
+        for env in removals:
+            await self.execute_write(
+                "DELETE FROM ops_config_overrides WHERE env = ?", (env,)
+            )
 
     async def _ensure_column(self, table: str, column: str, definition: str) -> None:
         cursor = await self.conn.execute(f"PRAGMA table_info({table})")

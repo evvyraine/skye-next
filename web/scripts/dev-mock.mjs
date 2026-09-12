@@ -171,6 +171,338 @@ let memories = [
   },
 ]
 
+const opsMediaSvg = Buffer.from(
+  '<svg xmlns="http://www.w3.org/2000/svg" width="320" height="240"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#d4c5f9"/><stop offset="1" stop-color="#9cc6f2"/></linearGradient></defs><rect width="320" height="240" fill="url(#g)"/><circle cx="110" cy="96" r="34" fill="#ffffff" opacity="0.85"/><path d="M0 240 L130 130 L210 200 L320 120 L320 240 Z" fill="#7c6cdc" opacity="0.75"/></svg>'
+)
+
+let opsConfigOverrides = { SKYE_MAX_TURNS: 24 }
+
+const opsLogsSeed = [
+  {
+    id: 6,
+    ts: new Date(Date.now() - 40_000).toISOString(),
+    level: "error",
+    event: "web_run_failed",
+    logger: null,
+    chat_id: 42,
+    user_id: 7,
+    thread_id: 0,
+    run_key: "web:inbox",
+    run_id: "run-b",
+    transport: "web",
+    exception:
+      "Traceback (most recent call last):\n  File \"runtime.py\", line 505, in send_message\n    raise RuntimeError(\"provider refused\")\nRuntimeError: provider refused",
+    context: { project_id: "inbox", error: "RateLimitError", attempt: 2 },
+  },
+  {
+    id: 5,
+    ts: new Date(Date.now() - 90_000).toISOString(),
+    level: "warning",
+    event: "chat_context_trimmed",
+    logger: null,
+    chat_id: 42,
+    user_id: 7,
+    thread_id: 0,
+    run_key: "web:inbox",
+    run_id: "run-b",
+    transport: "web",
+    exception: null,
+    context: { original_tokens: 91240, admitted_tokens: 78010, dropped_items: 12 },
+  },
+  {
+    id: 4,
+    ts: new Date(Date.now() - 220_000).toISOString(),
+    level: "info",
+    event: "openai_run_started",
+    logger: null,
+    chat_id: 9001,
+    user_id: 12,
+    thread_id: 3,
+    run_key: "tg:9001:3",
+    run_id: "run-a",
+    transport: "telegram",
+    exception: null,
+    context: { queued: false, queue_wait_seconds: 0.02, active_runs: 2, max_concurrent_runs: 8 },
+  },
+  {
+    id: 3,
+    ts: new Date(Date.now() - 260_000).toISOString(),
+    level: "info",
+    event: "image_generate_route",
+    logger: null,
+    chat_id: 9001,
+    user_id: 12,
+    thread_id: 3,
+    run_key: "tg:9001:3",
+    run_id: "run-a",
+    transport: "telegram",
+    exception: null,
+    context: { model: "gpt-image-2", prompt_chars: 84 },
+  },
+  {
+    id: 2,
+    ts: new Date(Date.now() - 3_600_000).toISOString(),
+    level: "debug",
+    event: "sandbox_scope_touched",
+    logger: null,
+    chat_id: 9001,
+    user_id: 12,
+    thread_id: 0,
+    run_key: "tg:9001:0",
+    run_id: null,
+    transport: "telegram",
+    exception: null,
+    context: { scope: "chat-9001" },
+  },
+  {
+    id: 1,
+    ts: new Date(Date.now() - 5_400_000).toISOString(),
+    level: "info",
+    event: "web_listen",
+    logger: null,
+    chat_id: null,
+    user_id: null,
+    thread_id: null,
+    run_key: null,
+    run_id: null,
+    transport: "system",
+    exception: null,
+    context: { host: "0.0.0.0", port: 8080, origin: "https://chat.skye-bot.com" },
+  },
+]
+
+const opsTracesSeed = [
+  {
+    id: "trace-a",
+    seq: 4,
+    ts: new Date(Date.now() - 30_000).toISOString(),
+    run_id: "run-b",
+    run_key: "web:inbox",
+    transport: "web",
+    label: "Web project inbox",
+    chat_id: 42,
+    user_id: 7,
+    method: "POST",
+    url: "https://api.example.com/v1/chat/completions",
+    host: "api.example.com",
+    status: 200,
+    ok: true,
+    duration_ms: 8420,
+    model: "gpt-5.6-luna",
+    stream: true,
+    request_bytes: 48210,
+    response_bytes: 9214,
+    request_content_type: "application/json",
+    response_content_type: "text/event-stream",
+    request_headers: { authorization: "***", "content-type": "application/json" },
+    response_headers: { "content-type": "text/event-stream" },
+    request_body: {
+      model: "gpt-5.6-luna",
+      messages: [
+        { role: "system", content: "You are Skye." },
+        {
+          role: "user",
+          content: [
+            { type: "input_text", text: "Edit this photo and describe it." },
+            {
+              type: "input_image",
+              image_url: { __media__: "request-1.svg", mime: "image/svg+xml", bytes: 512 },
+            },
+          ],
+        },
+      ],
+      tools: [{ type: "function", function: { name: "send_message" } }],
+    },
+    response_body: {
+      __stream__: true,
+      count: 3,
+      events: [
+        { event: "delta", data: { choices: [{ delta: { content: "On it." } }] } },
+        { event: "delta", data: { choices: [{ delta: { content: " Here it is." } }] } },
+        { event: "done", data: { usage: { total_tokens: 1420 } } },
+      ],
+    },
+    error: null,
+    tokens: 1420,
+    media: [
+      { name: "request-1.svg", mime: "image/svg+xml", kind: "image", size: 512, where: "request", detail: "input image" },
+      { name: "response-1.svg", mime: "image/svg+xml", kind: "image", size: 640, where: "response", detail: "output image" },
+    ],
+    logs: [
+      { id: 5, ts: new Date(Date.now() - 90_000).toISOString(), level: "warning", event: "chat_context_trimmed" },
+      { id: 6, ts: new Date(Date.now() - 40_000).toISOString(), level: "error", event: "web_run_failed" },
+    ],
+  },
+  {
+    id: "trace-b",
+    seq: 3,
+    ts: new Date(Date.now() - 210_000).toISOString(),
+    run_id: "run-a",
+    run_key: "tg:9001:3",
+    transport: "telegram",
+    label: "Chat 9001",
+    chat_id: 9001,
+    user_id: 12,
+    method: "POST",
+    url: "https://api.example.com/v1/images/generations",
+    host: "api.example.com",
+    status: 200,
+    ok: true,
+    duration_ms: 15230,
+    model: "gpt-image-2",
+    stream: false,
+    request_bytes: 320,
+    response_bytes: 148230,
+    request_content_type: "application/json",
+    response_content_type: "application/json",
+    request_headers: { authorization: "***" },
+    response_headers: { "content-type": "application/json" },
+    request_body: { model: "gpt-image-2", prompt: "a calm violet horizon" },
+    response_body: {
+      data: [{ b64_json: { __media__: "response-1.svg", mime: "image/svg+xml", bytes: 640 } }],
+    },
+    error: null,
+    tokens: null,
+    media: [
+      { name: "response-1.svg", mime: "image/svg+xml", kind: "image", size: 640, where: "response", detail: "output image" },
+    ],
+    logs: [],
+  },
+  {
+    id: "trace-c",
+    seq: 2,
+    ts: new Date(Date.now() - 600_000).toISOString(),
+    run_id: "run-a",
+    run_key: "tg:9001:3",
+    transport: "telegram",
+    label: "Chat 9001",
+    chat_id: 9001,
+    user_id: 12,
+    method: "POST",
+    url: "https://api.example.com/v1/chat/completions",
+    host: "api.example.com",
+    status: 429,
+    ok: false,
+    duration_ms: 640,
+    model: "gpt-5.6-luna",
+    stream: false,
+    request_bytes: 9120,
+    response_bytes: 210,
+    request_content_type: "application/json",
+    response_content_type: "application/json",
+    request_headers: { authorization: "***" },
+    response_headers: { "content-type": "application/json" },
+    request_body: { model: "gpt-5.6-luna", messages: [{ role: "user", content: "hello" }] },
+    response_body: { error: { message: "Rate limit reached. Try again in 12s.", code: "rate_limit" } },
+    error: "Rate limit reached. Try again in 12s.",
+    tokens: null,
+    media: [],
+    logs: [],
+  },
+]
+
+const opsConfigSeed = [
+  ["skye_provider_api_key", "secret", "Provider key", "Model provider", false],
+  ["skye_provider_base_url", "url", "Provider base URL", "Model provider", false],
+  ["skye_default_model", "text", "Default model", "Model provider", false],
+  ["skye_default_reasoning", "select", "Reasoning effort", "Model provider", false, ["none", "low", "medium", "high"]],
+  ["skye_image_model", "text", "Image model", "Model provider", false],
+  ["skye_exa_api_key", "secret", "Exa key", "Model provider", true],
+  ["telegram_bot_token", "secret", "Bot token", "Telegram", false],
+  ["skye_owner_ids", "list", "Owner user ids", "Telegram", false],
+  ["skye_max_turns", "int", "Max turns per run", "Runtime", false, null, 2, 100],
+  ["skye_run_timeout_seconds", "int", "Run timeout", "Runtime", false, null, 10, 1800],
+  ["skye_max_concurrent_runs", "int", "Max concurrent runs", "Runtime", false, null, 1, 64],
+  ["skye_ops_enabled", "bool", "Panel enabled", "Observability", false],
+  ["skye_ops_capture_payloads", "bool", "Capture model payloads", "Observability", false],
+  ["skye_ops_capture_media", "bool", "Capture images and files", "Observability", false],
+  ["skye_ops_log_retention_days", "int", "Log retention (days)", "Observability", false, null, 1, 365],
+  ["skye_ops_max_body_bytes", "int", "Stored body cap", "Observability", true, null, 10000, null],
+  ["skye_database_path", "path", "Database path", "Advanced", false, null, null, null, true],
+  ["skye_proxy_url", "url", "HTTP proxy URL", "Advanced", true],
+]
+
+function opsField([key, kind, label, group, advanced, choices, minimum, maximum, readOnly]) {
+  const overridden = key in opsConfigOverrides
+  const secret = kind === "secret"
+  const values = {
+    skye_provider_api_key: "sk-live-abcdef",
+    skye_provider_base_url: "https://api.openai.com/v1",
+    skye_default_model: "gpt-5.6-luna",
+    skye_default_reasoning: "medium",
+    skye_image_model: "gpt-image-2",
+    skye_exa_api_key: "exa-key",
+    telegram_bot_token: "123:token",
+    skye_owner_ids: [1, 42],
+    skye_max_turns: 24,
+    skye_run_timeout_seconds: 300,
+    skye_max_concurrent_runs: 8,
+    skye_ops_enabled: true,
+    skye_ops_capture_payloads: true,
+    skye_ops_capture_media: true,
+    skye_ops_log_retention_days: 14,
+    skye_ops_max_body_bytes: 2000000,
+    skye_database_path: "/data/skye.db",
+    skye_proxy_url: null,
+  }
+  const raw = overridden ? opsConfigOverrides[key] : values[key]
+  const displayed =
+    raw === null || raw === undefined
+      ? ""
+      : Array.isArray(raw)
+        ? raw.join(", ")
+        : String(raw)
+  return {
+    key,
+    env: key.toUpperCase(),
+    label,
+    description: "Environment setting. A restart applies the change.",
+    group,
+    kind,
+    secret,
+    read_only: Boolean(readOnly),
+    advanced: Boolean(advanced),
+    choices: choices ?? [],
+    minimum: minimum ?? null,
+    maximum: maximum ?? null,
+    default: null,
+    value: secret ? null : displayed,
+    is_set: raw !== null && raw !== undefined && raw !== "",
+    override: overridden,
+    source: overridden ? "override" : "environment",
+  }
+}
+
+function traceSummary(trace) {
+  return {
+    seq: trace.seq,
+    id: trace.id,
+    ts: trace.ts,
+    run_id: trace.run_id,
+    run_key: trace.run_key,
+    transport: trace.transport,
+    label: trace.label,
+    chat_id: trace.chat_id,
+    user_id: trace.user_id,
+    method: trace.method,
+    url: trace.url,
+    host: trace.host,
+    status: trace.status,
+    ok: trace.ok,
+    duration_ms: trace.duration_ms,
+    model: trace.model,
+    stream: trace.stream,
+    request_bytes: trace.request_bytes,
+    response_bytes: trace.response_bytes,
+    response_content_type: trace.response_content_type,
+    has_error: Boolean(trace.error),
+    media_count: trace.media.length,
+    media_preview: trace.media.filter((item) => item.mime.startsWith("image/")).slice(0, 3),
+    tokens: trace.tokens,
+  }
+}
+
+
 function message(projectId, role, text, extra = {}) {
   return {
     id: randomUUID(),
@@ -524,6 +856,210 @@ const server = createServer(async (request, response) => {
           `event: done\ndata: ${JSON.stringify(assistantMessage)}\n\n`
         )
         response.end()
+        return
+      }
+    }
+
+    if (url.pathname.startsWith("/api/admin/")) {
+      if (!loggedIn) {
+        text(response, 401, "Sign in with Telegram.")
+        return
+      }
+      if (method === "GET" && url.pathname === "/api/admin/overview") {
+        json(response, 200, {
+          logs: opsLogsSeed.length,
+          errors: opsLogsSeed.filter((item) => ["error", "critical"].includes(item.level)).length,
+          traces: opsTracesSeed.length,
+          failed_traces: opsTracesSeed.filter((item) => !item.ok).length,
+          traces_24h: opsTracesSeed.filter((item) => Date.now() - new Date(item.ts).getTime() < 86_400_000).length,
+          overrides: Object.keys(opsConfigOverrides).length,
+          media_bytes: 115_238,
+          dropped_logs: 0,
+          dropped_traces: 0,
+          last_error: {
+            ts: opsLogsSeed[0].ts,
+            event: opsLogsSeed[0].event,
+            exception: opsLogsSeed[0].exception,
+          },
+          capture: { enabled: true, media: true },
+          me: 1,
+        })
+        return
+      }
+      if (method === "GET" && url.pathname === "/api/admin/logs/events") {
+        const counts = new Map()
+        for (const entry of opsLogsSeed) {
+          counts.set(entry.event, (counts.get(entry.event) ?? 0) + 1)
+        }
+        json(response, 200, {
+          events: [...counts.entries()]
+            .map(([event, count]) => ({ event, count }))
+            .sort((a, b) => b.count - a.count),
+        })
+        return
+      }
+      if (method === "GET" && url.pathname === "/api/admin/logs") {
+        const level = url.searchParams.get("level")
+        const event = url.searchParams.get("event")
+        const q = (url.searchParams.get("q") ?? "").toLowerCase()
+        const chatId = url.searchParams.get("chat_id")
+        const userId = url.searchParams.get("user_id")
+        const runId = url.searchParams.get("run_id")
+        let rows = opsLogsSeed
+        if (level) {
+          rows = rows.filter((item) =>
+            level === "warning"
+              ? ["warning", "warn"].includes(item.level)
+              : item.level === level
+          )
+        }
+        if (event) rows = rows.filter((item) => item.event === event)
+        if (chatId) rows = rows.filter((item) => String(item.chat_id) === chatId)
+        if (userId) rows = rows.filter((item) => String(item.user_id) === userId)
+        if (runId) rows = rows.filter((item) => item.run_id === runId)
+        if (q) {
+          rows = rows.filter((item) =>
+            `${item.event} ${JSON.stringify(item.context)} ${item.exception ?? ""}`
+              .toLowerCase()
+              .includes(q)
+          )
+        }
+        json(response, 200, {
+          logs: rows.map(({ context: _context, exception, ...item }) => ({
+            ...item,
+            preview: JSON.stringify(_context).slice(0, 200),
+            has_exception: exception ? 1 : 0,
+          })),
+        })
+        return
+      }
+      const logRoute = url.pathname.match(/^\/api\/admin\/logs\/(\d+)$/)
+      if (method === "GET" && logRoute) {
+        const entry = opsLogsSeed.find((item) => item.id === Number(logRoute[1]))
+        if (!entry) {
+          text(response, 404, "Log entry not found.")
+          return
+        }
+        json(response, 200, { log: entry })
+        return
+      }
+      if (method === "GET" && url.pathname === "/api/admin/traces") {
+        const status = url.searchParams.get("status")
+        const runId = url.searchParams.get("run_id")
+        const q = (url.searchParams.get("q") ?? "").toLowerCase()
+        let rows = opsTracesSeed
+        if (status === "ok") rows = rows.filter((item) => item.ok)
+        if (status === "error") rows = rows.filter((item) => !item.ok)
+        if (runId) rows = rows.filter((item) => item.run_id === runId)
+        if (q) {
+          rows = rows.filter((item) =>
+            `${item.url} ${item.model} ${item.label} ${item.error ?? ""}`.toLowerCase().includes(q)
+          )
+        }
+        json(response, 200, {
+          traces: rows.map(traceSummary),
+          models: [...new Set(opsTracesSeed.map((item) => item.model).filter(Boolean))],
+        })
+        return
+      }
+      const traceMedia = url.pathname.match(
+        /^\/api\/admin\/traces\/([^/]+)\/media\/([^/]+)$/
+      )
+      if (method === "GET" && traceMedia) {
+        response.writeHead(200, {
+          "Content-Type": "image/svg+xml",
+          "Cache-Control": "private, max-age=600",
+          "Content-Disposition": `inline; filename="${traceMedia[2]}"`,
+        })
+        response.end(opsMediaSvg)
+        return
+      }
+      const traceRoute = url.pathname.match(/^\/api\/admin\/traces\/([^/]+)$/)
+      if (method === "GET" && traceRoute) {
+        const trace = opsTracesSeed.find((item) => item.id === traceRoute[1])
+        if (!trace) {
+          text(response, 404, "Request not found.")
+          return
+        }
+        json(response, 200, { trace })
+        return
+      }
+      if (method === "GET" && url.pathname === "/api/admin/config") {
+        json(response, 200, {
+          fields: opsConfigSeed.map(opsField),
+          groups: [
+            "Model provider",
+            "Telegram",
+            "Runtime",
+            "Observability",
+            "Advanced",
+          ],
+          overrides: Object.keys(opsConfigOverrides),
+          env_file: ".env",
+          env_file_exists: true,
+          capture: { enabled: true, media: true },
+        })
+        return
+      }
+      if (method === "POST" && url.pathname === "/api/admin/config/validate") {
+        const body = await jsonBody(request)
+        const errors = {}
+        for (const [key, value] of Object.entries(body.values ?? {})) {
+          const definition = opsConfigSeed.find((item) => item[0] === key)
+          if (!definition) continue
+          const minimum = definition[6]
+          const maximum = definition[7]
+          const numeric = Number(value)
+          if (
+            (minimum !== null && minimum !== undefined && numeric < minimum) ||
+            (maximum !== null && maximum !== undefined && numeric > maximum)
+          ) {
+            errors[key] = `Range ${minimum} to ${maximum}.`
+          }
+        }
+        json(response, Object.keys(errors).length ? 400 : 200, {
+          ok: Object.keys(errors).length === 0,
+          errors,
+          normalized: body.values ?? {},
+        })
+        return
+      }
+      if (method === "POST" && url.pathname === "/api/admin/config/apply") {
+        const body = await jsonBody(request)
+        const changed = []
+        for (const [key, value] of Object.entries(body.values ?? {})) {
+          const definition = opsConfigSeed.find((item) => item[0] === key)
+          if (!definition) continue
+          if (value === "" || value === null) {
+            delete opsConfigOverrides[key]
+          } else {
+            opsConfigOverrides[key] = definition[1] === "int" ? Number(value) : value
+          }
+          changed.push(key.toUpperCase())
+        }
+        json(response, 200, {
+          ok: true,
+          changed,
+          reverted: [],
+          restart_required: changed.some(
+            (key) => !key.startsWith("SKYE_OPS_")
+          ),
+        })
+        return
+      }
+      if (method === "POST" && url.pathname === "/api/admin/config/revert") {
+        const body = await jsonBody(request)
+        if (body.env) delete opsConfigOverrides[body.env]
+        else opsConfigOverrides = {}
+        json(response, 200, { ok: true })
+        return
+      }
+      if (method === "POST" && url.pathname === "/api/admin/maintenance") {
+        json(response, 200, { ok: true, logs: 0, traces: 0 })
+        return
+      }
+      if (method === "POST" && url.pathname === "/api/admin/restart") {
+        json(response, 200, { ok: true })
         return
       }
     }

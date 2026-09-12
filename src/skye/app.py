@@ -20,6 +20,7 @@ from aiogram.types import (
 )
 from openai import AsyncOpenAI
 from pydantic import ValidationError
+from structlog.types import Processor
 
 from .access import AccessService, ChatAdministrator
 from .attachments import AttachmentService
@@ -36,6 +37,11 @@ from .group_context import GroupContextService
 from .images import ImageService
 from .media_groups import MediaGroupService
 from .memory import MemoryService
+from .ops import OpsStore
+from .ops_capture import CapturingTransport
+from .ops_config import describe_fields
+from .ops_logging import OpsLogProcessor
+from .ops_web import OpsPanel
 from .projects import ProjectService
 from .runtime import OPENAI_MAX_RETRIES, AgentRuntime
 from .sandbox import SandboxService
@@ -48,15 +54,16 @@ from .youtube import YoutubeTranscriptService
 log = structlog.get_logger()
 
 
-def configure_logging() -> None:
+def configure_logging(processor: Processor | None = None) -> None:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
-    structlog.configure(
-        processors=[
-            structlog.processors.add_log_level,
-            structlog.processors.TimeStamper(fmt="iso", utc=True),
-            structlog.processors.JSONRenderer(),
-        ]
-    )
+    processors: list[Processor] = [
+        structlog.processors.add_log_level,
+        structlog.processors.TimeStamper(fmt="iso", utc=True),
+    ]
+    if processor is not None:
+        processors.append(processor)
+    processors.append(structlog.processors.JSONRenderer())
+    structlog.configure(processors=processors)
 
 
 def load_base_prompt(path: Path) -> str:
@@ -67,23 +74,36 @@ def load_base_prompt(path: Path) -> str:
 
 async def run() -> None:
     configure_logging()
-    config = load_settings()
+    base = load_settings()
     database = Database(
-        config.skye_database_path,
-        config.skye_default_model,
-        config.skye_default_reasoning,
+        base.skye_database_path,
+        base.skye_default_model,
+        base.skye_default_reasoning,
     )
     await database.open()
+    config = await _effective_settings(database, base)
+    store = OpsStore(
+        database,
+        media_path=config.skye_ops_media_path,
+        capture_payloads=config.skye_ops_capture_payloads,
+        capture_media=config.skye_ops_capture_media,
+        max_body_bytes=config.skye_ops_max_body_bytes,
+        log_retention_days=config.skye_ops_log_retention_days,
+        log_max_rows=config.skye_ops_log_max_rows,
+        trace_retention_days=config.skye_ops_trace_retention_days,
+        trace_max_rows=config.skye_ops_trace_max_rows,
+    )
+    await store.open()
+    configure_logging(OpsLogProcessor(store))
 
     proxy_url = config.skye_proxy_url
-    http_client: httpx.AsyncClient | None = (
-        httpx.AsyncClient(
-            proxy=proxy_url,
-            timeout=httpx.Timeout(600, connect=10),
-            follow_redirects=True,
-        )
-        if proxy_url
-        else None
+    http_client = httpx.AsyncClient(
+        transport=CapturingTransport(
+            httpx.AsyncHTTPTransport(proxy=proxy_url) if proxy_url else httpx.AsyncHTTPTransport(),
+            store,
+        ),
+        timeout=httpx.Timeout(600, connect=10),
+        follow_redirects=True,
     )
     client = AsyncOpenAI(
         api_key=config.provider_api_key,
@@ -211,6 +231,7 @@ async def run() -> None:
     )
     telegram_projects = TelegramProjectService(database)
     auth = TelegramAuth(config, database, projects)
+    ops = OpsPanel(config, database, store, auth) if config.skye_ops_enabled else None
     telegram = TelegramApp(
         config,
         bot,
@@ -239,6 +260,7 @@ async def run() -> None:
         audio_client,
         automations,
         telegram.enqueue_automation,
+        ops,
     )
     dispatcher.update.outer_middleware(UpdateMiddleware(database, groups, media_groups))
     dispatcher.include_router(telegram.router)
@@ -265,6 +287,7 @@ async def run() -> None:
         janitor = (
             asyncio.create_task(sandbox.run_janitor()) if sandbox is not None else None
         )
+        maintenance = asyncio.create_task(_store_maintenance(store))
         stop = asyncio.Event()
         loop = asyncio.get_running_loop()
         for sig in (signal.SIGINT, signal.SIGTERM):
@@ -284,12 +307,15 @@ async def run() -> None:
         finally:
             polling.cancel()
             scheduler.cancel()
+            maintenance.cancel()
             if janitor is not None:
                 janitor.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await polling
             with contextlib.suppress(asyncio.CancelledError):
                 await scheduler
+            with contextlib.suppress(asyncio.CancelledError):
+                await maintenance
             if janitor is not None:
                 with contextlib.suppress(asyncio.CancelledError):
                     await janitor
@@ -303,17 +329,53 @@ async def run() -> None:
             await audio_client.close()
         await bot.session.close()
         await database.close()
+        await store.close()
 
 
 def main() -> None:
     asyncio.run(run())
 
 
-def load_settings() -> Settings:
+def load_settings(overrides: dict[str, object] | None = None) -> Settings:
     try:
+        if overrides:
+            return Settings(**overrides)  # type: ignore[arg-type]
         return Settings()  # type: ignore[call-arg]
     except ValidationError as error:
         fields = ", ".join(".".join(map(str, item["loc"])) for item in error.errors())
         raise SystemExit(
             f"Invalid configuration: {fields}. Check .env against .env.example."
         ) from None
+
+
+async def _effective_settings(database: Database, base: Settings) -> Settings:
+    """Layer panel-managed overrides on top of the process environment.
+
+    A stored override wins over both the shell and `.env`, which is what makes
+    the panel effective inside a container where compose injects the original
+    environment. An invalid override is ignored rather than blocking startup.
+    """
+    overrides = await database.config_overrides()
+    if not overrides:
+        return base
+    env_to_key = {spec.env: spec.key for spec in describe_fields()}
+    kwargs: dict[str, object] = {
+        env_to_key[env]: value for env, value in overrides.items() if env in env_to_key
+    }
+    if not kwargs:
+        return base
+    try:
+        return Settings(**kwargs)  # type: ignore[arg-type]
+    except ValidationError as error:
+        fields = ", ".join(".".join(map(str, item["loc"])) for item in error.errors())
+        structlog.get_logger().warning("ops_overrides_ignored", fields=fields)
+        return base
+
+
+async def _store_maintenance(store: OpsStore) -> None:
+    while True:
+        await asyncio.sleep(3600)
+        try:
+            await store.prune()
+        except Exception:
+            structlog.get_logger().warning("ops_prune_failed")

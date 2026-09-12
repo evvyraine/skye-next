@@ -59,6 +59,7 @@ from .exa import ExaService
 from .images import ImageService, TurnImages, turn_sources
 from .memory import MemoryService
 from .models import AgentCapability, ChatSettings, InstalledAgent, RequestContext, Skill
+from .ops_capture import OpsContext, bind_context, clear_context, new_run_id
 from .sandbox import SandboxService, ScopeSandbox, turn_files
 from .sessions import DatabaseSession, without_inline_payloads
 from .skills import SkillService
@@ -800,7 +801,20 @@ class AgentRuntime:
             speech_response_format="pcm",
         )
         _ = on_text
+        tpt = "web" if key.startswith("web:") else "telegram"
+        label = f"Web project {key[4:]}" if tpt == "web" else f"Chat {context.chat_id}"
         async with self._locks[key]:
+            ops_token = bind_context(
+                OpsContext(
+                    run_id=new_run_id(),
+                    run_key=key,
+                    transport=tpt,
+                    label=label,
+                    chat_id=context.chat_id,
+                    user_id=context.user_id,
+                    thread_id=context.thread_id,
+                )
+            )
             active = _ActiveRun()
             self._active[key] = active
             turn_sandbox: ScopeSandbox | None = None
@@ -898,6 +912,7 @@ class AgentRuntime:
                             delivery.sent,
                         )
             finally:
+                clear_context(ops_token)
                 self._active.pop(key, None)
                 if turn_sandbox is not None:
                     turn_sandbox.mark_used()

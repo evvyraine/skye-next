@@ -123,6 +123,18 @@ class Settings(BaseSettings):
     skye_sandbox_allowed_domains: SandboxDomains = Field(default=SANDBOX_DOMAINS, min_length=1)
     skye_proxy_url: str | None = None
     skye_tracing: bool = False
+    # Operator panel. Owner-only; the API answers 404 for everyone else when
+    # disabled. Payload capture is on by default because that is the point of
+    # the panel, but it stores prompts, memories and file bodies verbatim.
+    skye_ops_enabled: bool = True
+    skye_ops_capture_payloads: bool = True
+    skye_ops_capture_media: bool = True
+    skye_ops_media_path: Path = Path("data/ops/media")
+    skye_ops_log_retention_days: int = Field(default=14, ge=1, le=365)
+    skye_ops_log_max_rows: int = Field(default=20_000, ge=100)
+    skye_ops_trace_retention_days: int = Field(default=14, ge=1, le=365)
+    skye_ops_trace_max_rows: int = Field(default=2_000, ge=10)
+    skye_ops_max_body_bytes: int = Field(default=2_000_000, ge=10_000)
     skye_web_origin: str | None = None
     skye_web_host: str = "127.0.0.1"
     skye_web_port: int = Field(default=8080, ge=1, le=65535)

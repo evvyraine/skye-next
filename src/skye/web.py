@@ -27,6 +27,7 @@ from .db import Database
 from .growth import GrowthService
 from .memory import memory_payload
 from .models import Automation, RequestContext, Scope, WebFile, WebSession
+from .ops_web import OpsPanel
 from .projects import (
     PROJECT_COLORS,
     PROJECT_ICONS,
@@ -55,6 +56,7 @@ class WebApp:
         client: AsyncOpenAI,
         automations: AutomationService | None = None,
         fire_automation: Callable[[Automation, str], None] | None = None,
+        ops: OpsPanel | None = None,
     ) -> None:
         self.config = config
         self.database = database
@@ -65,6 +67,7 @@ class WebApp:
         self.client = client
         self.automations = automations
         self.fire_automation = fire_automation
+        self.ops = ops
         self.billing = BillingService(database, config.telegram_bot_token)
         self.growth = GrowthService(database)
         self.quota = QuotaService(database, self.billing, access)
@@ -100,6 +103,8 @@ class WebApp:
         add("DELETE", "/api/memories", self.clear_memories)
         add("DELETE", "/api/memories/{id}", self.delete_memory)
         add("POST", "/automations/{id}/hook", self.automation_hook)
+        if self.ops is not None:
+            self.ops.add_routes(self.app)
 
     @web.middleware
     async def _headers(self, request: web.Request, handler: Handler) -> web.StreamResponse:
