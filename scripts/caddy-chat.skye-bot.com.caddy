@@ -25,6 +25,14 @@ chat.skye-bot.com {
 		}
 	}
 
+	# Streamlit beta (variant A thin client). server.baseUrlPath=beta, so the
+	# prefix must be forwarded as-is (no handle_path stripping).
+	handle /beta* {
+		reverse_proxy 127.0.0.1:18781 {
+			flush_interval -1
+		}
+	}
+
 	root * __SKYE_WWW_ROOT__/chat.skye-bot.com/current
 
 	@assets path /assets/*

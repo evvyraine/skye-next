@@ -34,6 +34,39 @@ services:
     security_opt:
       - no-new-privileges:true
 
+  # Streamlit beta frontend, mounted at chat.skye-bot.com/beta.
+  # A thin client over the API above; it holds no data and can be restarted
+  # freely. See streamlit/README.md.
+  skye-beta:
+    build:
+      context: .
+      dockerfile: streamlit/Dockerfile
+    image: skye-next-beta:prod
+    container_name: skye-next-beta
+    environment:
+      # Server-side API calls stay on the compose network; the browser only
+      # ever talks to Caddy.
+      SKYE_API_URL: http://skye:8080
+      # The login button must hit the public /auth path, never the internal one.
+      SKYE_AUTH_URL: /auth/telegram
+      # Keep in sync with --server.baseUrlPath below.
+      SKYE_BASE_PATH: /beta
+    command:
+      - streamlit
+      - run
+      - app.py
+      - --server.port=8501
+      - --server.address=0.0.0.0
+      - --server.baseUrlPath=beta
+    ports:
+      - "127.0.0.1:18781:8501"
+    depends_on:
+      - skye
+    init: true
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+
 volumes:
   skye-data:
   skye-sandbox-work:

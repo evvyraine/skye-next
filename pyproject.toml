@@ -41,6 +41,8 @@ testpaths = ["tests"]
 [tool.ruff]
 line-length = 100
 target-version = "py314"
+# The Streamlit demo spike is not part of the shipped package; see streamlit/README.md.
+extend-exclude = ["streamlit"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]

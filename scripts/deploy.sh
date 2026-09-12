@@ -80,5 +80,13 @@ if ! docker inspect -f '{{.State.Running}}' skye-next | grep -qx true; then
   exit 1
 fi
 
+# The Streamlit beta is mounted at /beta. It is stateless, so a failure here
+# never affects the main app, but fail the deploy loudly rather than silently.
+if ! docker inspect -f '{{.State.Running}}' skye-next-beta | grep -qx true; then
+  docker compose logs --tail 80 skye-beta
+  echo "skye-next-beta is not running" >&2
+  exit 1
+fi
+
 docker compose ps
 echo "deployed ${RELEASE}"
