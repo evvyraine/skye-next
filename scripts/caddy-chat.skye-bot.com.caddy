@@ -26,7 +26,12 @@ chat.skye-bot.com {
 	}
 
 	# Streamlit beta (variant A thin client). server.baseUrlPath=beta, so the
-	# prefix must be forwarded as-is (no handle_path stripping).
+	# prefix must be forwarded as-is (no handle_path stripping). The exact
+	# /beta -> /beta/ redirect keeps the scheme (Streamlit's own 307 would
+	# otherwise point at http:// behind the proxy).
+	@betaNoSlash path /beta
+	redir @betaNoSlash /beta/ 308
+
 	handle /beta* {
 		reverse_proxy 127.0.0.1:18781 {
 			flush_interval -1
