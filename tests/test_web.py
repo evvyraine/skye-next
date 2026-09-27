@@ -8,6 +8,7 @@ from aiohttp import FormData
 from aiohttp.test_utils import TestClient, TestServer
 
 from skye.access import AccessService
+from skye.audio import AudioService
 from skye.auth import COOKIE_NAME, TelegramAuth
 from skye.billing import PLANS, SUBSCRIPTION_PERIOD, BillingService
 from skye.config import Settings
@@ -82,6 +83,10 @@ async def app_client(
     projects = ProjectService(database, tmp_path / "web-files")
     auth = TelegramAuth(config, database, projects)
     runtime = FakeRuntime()
+    audio = AudioService.from_settings(
+        config,
+        client=cast(Any, client if client is not None else AsyncMock()),
+    )
     web_app = WebApp(
         config,
         database,
@@ -89,7 +94,7 @@ async def app_client(
         runtime,  # type: ignore[arg-type]
         projects,
         auth,
-        client if client is not None else cast(Any, AsyncMock()),
+        audio,
     )
     client = TestClient(TestServer(web_app.app))
     await client.start_server()
@@ -407,7 +412,7 @@ async def _client_with_runtime(
         runtime,  # type: ignore[arg-type]
         projects,
         auth,
-        cast(Any, AsyncMock()),
+        AudioService.from_settings(config, client=cast(Any, AsyncMock())),
     )
     http = TestClient(TestServer(web_app.app))
     await http.start_server()

@@ -12,8 +12,8 @@ from typing import Any
 
 from aiogram import Bot
 from aiogram.types import Animation, Audio, Document, Message, PhotoSize, Video, VideoNote, Voice
-from openai import AsyncOpenAI
 
+from .audio import AudioService
 from .config import Settings
 from .models import MediaGroupItem
 
@@ -108,10 +108,10 @@ MAX_DOCUMENT_CHARS = 100_000
 class AttachmentService:
     """Turn Telegram media into native OpenAI response inputs."""
 
-    def __init__(self, config: Settings, bot: Bot, client: AsyncOpenAI) -> None:
+    def __init__(self, config: Settings, bot: Bot, audio: AudioService) -> None:
         self.config = config
         self.bot = bot
-        self.client = client
+        self.audio = audio
 
     async def add(
         self,
@@ -217,9 +217,7 @@ class AttachmentService:
         )
         data = await self._download(audio, audio.file_size, kind)
         mime = getattr(audio, "mime_type", None) or "audio/ogg"
-        transcript = await transcribe_audio(
-            self.client, self.config.skye_transcription_model, filename, data
-        )
+        transcript = await self.audio.transcribe(filename, data, mime)
         content.extend(
             audio_model_parts(
                 label,
@@ -251,9 +249,7 @@ class AttachmentService:
         data = await self._download(document, getattr(document, "file_size", None), "document")
         extension = Path(filename).suffix.lower()
         if mime.startswith("audio/") or extension in AUDIO_EXTENSIONS:
-            transcript = await transcribe_audio(
-                self.client, self.config.skye_transcription_model, filename, data
-            )
+            transcript = await self.audio.transcribe(filename, data, mime)
             content.extend(
                 audio_model_parts(
                     label,
@@ -333,20 +329,6 @@ class AttachmentService:
 
 
 IMAGE_MIMES = {"image/jpeg", "image/jpg", "image/png", "image/gif", "image/webp"}
-
-
-async def transcribe_audio(client: AsyncOpenAI, model: str, filename: str, data: bytes) -> str:
-    # aiohttp hands multipart bodies back as ``bytearray``; httpx only treats
-    # ``bytes`` (or a file object) as an in-memory upload, so coerce first.
-    # Without this the request body fails to serialize and never reaches the
-    # provider.
-    payload = bytes(data)
-    result = await client.audio.transcriptions.create(
-        model=model,
-        file=(filename, payload),
-        response_format="json",
-    )
-    return str(result.text).strip()
 
 
 def data_url(mime: str, data: bytes) -> str:

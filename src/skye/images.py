@@ -4,12 +4,14 @@ import asyncio
 import base64
 import time
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Protocol
 
 import httpx
 import structlog
 from agents import FunctionTool, function_tool
 from openai import APIError, AsyncOpenAI
+
+from .fal import FalClient, FalError
 
 log = structlog.get_logger()
 MAX_SOURCE_IMAGES = 4
@@ -181,6 +183,65 @@ class ImageService:
         return image
 
 
+class ImageProvider(Protocol):
+    """The picture surface ``TurnImages`` depends on, compatible or fal."""
+
+    async def generate(self, prompt: str) -> bytes: ...
+
+    async def edit(self, prompt: str, sources: list[tuple[str, bytes]]) -> bytes: ...
+
+
+class FalImageService:
+    """Pictures on fal.ai: text-to-image and reference-guided edit.
+
+    Source pictures are uploaded to fal storage for the queued request and
+    expire shortly after, so a private photo is not kept around.
+    """
+
+    def __init__(
+        self,
+        fal: FalClient,
+        generate_model: str,
+        edit_model: str,
+        max_bytes: int,
+    ) -> None:
+        self.fal = fal
+        self.generate_model = generate_model
+        self.edit_model = edit_model
+        self.max_bytes = max_bytes
+
+    async def generate(self, prompt: str) -> bytes:
+        return await self._first(await self.fal.run(self.generate_model, {"prompt": prompt}))
+
+    async def edit(self, prompt: str, sources: list[tuple[str, bytes]]) -> bytes:
+        urls = [
+            await self.fal.upload(
+                data,
+                sniff_mime(data),
+                f"source-{index}.{sniff_extension(sniff_mime(data))}",
+            )
+            for index, (_, data) in enumerate(sources)
+        ]
+        return await self._first(
+            await self.fal.run(self.edit_model, {"prompt": prompt, "image_urls": urls})
+        )
+
+    async def _first(self, payload: dict[str, Any]) -> bytes:
+        images = payload.get("images")
+        if not isinstance(images, list) or not images:
+            raise FalError("The image provider returned no picture.")
+        first = images[0]
+        url = first.get("url") if isinstance(first, dict) else None
+        if not isinstance(url, str) or not url:
+            raise FalError("The image provider returned no picture.")
+        image = await _download(url)
+        if not image:
+            raise FalError("The image provider returned an empty picture.")
+        if len(image) > self.max_bytes:
+            raise ValueError("The generated picture is too large.")
+        return image
+
+
 def _edits_unsupported(error: APIError) -> bool:
     """Whether a failed edits call means the route itself is unavailable.
 
@@ -289,7 +350,7 @@ async def _part_image(part: dict[str, Any], client: AsyncOpenAI) -> bytes | None
 class TurnImages:
     """Per-turn image budget. Finished pictures are delivered by the runtime."""
 
-    service: ImageService
+    service: ImageProvider
     limit: int
     sources: list[tuple[str, bytes]] = field(default_factory=list)
     images: list[bytes] = field(default_factory=list)

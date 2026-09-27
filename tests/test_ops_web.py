@@ -8,6 +8,7 @@ import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
 from skye.access import AccessService
+from skye.audio import AudioService
 from skye.auth import COOKIE_NAME, TelegramAuth
 from skye.config import Settings
 from skye.db import Database
@@ -77,7 +78,7 @@ async def ops_client(
         FakeRuntime(),  # type: ignore[arg-type]
         projects,
         auth,
-        cast(Any, AsyncMock()),
+        AudioService.from_settings(config, client=cast(Any, AsyncMock())),
         None,
         None,
         panel,

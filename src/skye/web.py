@@ -7,14 +7,13 @@ from typing import Any
 
 import structlog
 from aiohttp import BodyPartReader, web
-from openai import AsyncOpenAI
 
 from .access import AccessService
 from .attachments import (
     is_audio_upload,
     openai_file_parts,
-    transcribe_audio,
 )
+from .audio import AudioService
 from .auth import COOKIE_NAME, OIDC_COOKIE, AuthError, TelegramAuth
 from .automations import (
     AutomationService,
@@ -53,7 +52,7 @@ class WebApp:
         runtime: AgentRuntime,
         projects: ProjectService,
         auth: TelegramAuth,
-        client: AsyncOpenAI,
+        audio: AudioService,
         automations: AutomationService | None = None,
         fire_automation: Callable[[Automation, str], None] | None = None,
         ops: OpsPanel | None = None,
@@ -64,7 +63,7 @@ class WebApp:
         self.runtime = runtime
         self.projects = projects
         self.auth = auth
-        self.client = client
+        self.audio = audio
         self.automations = automations
         self.fire_automation = fire_automation
         self.ops = ops
@@ -357,9 +356,7 @@ class WebApp:
             transcript: str | None = None
             kind: str = "document"
             if is_audio_upload(filename, mime):
-                transcript = await transcribe_audio(
-                    self.client, self.config.skye_transcription_model, filename, data
-                )
+                transcript = await self.audio.transcribe(filename, data, mime)
                 kind = "upload"
             elif mime.startswith("image/"):
                 kind = "image"
@@ -570,9 +567,7 @@ class WebApp:
             raise web.HTTPBadRequest(text="Send an audio file to transcribe.")
         if len(data) > self.config.skye_max_attachment_bytes:
             raise web.HTTPBadRequest(text="That recording is too large.")
-        text = await transcribe_audio(
-            self.client, self.config.skye_transcription_model, filename, data
-        )
+        text = await self.audio.transcribe(filename, data, mime)
         return web.json_response({"text": text})
 
     async def get_file(self, request: web.Request) -> web.StreamResponse:

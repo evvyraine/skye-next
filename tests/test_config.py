@@ -163,6 +163,31 @@ def test_native_media_is_off_by_default() -> None:
     assert settings(skye_native_media=True).skye_native_media is True
 
 
+def test_fal_media_is_selected_by_the_key_or_explicitly() -> None:
+    assert settings().fal_enabled is False
+    assert settings(skye_fal_key="fal-test").fal_enabled is True
+    assert settings(skye_fal_key="fal-test", skye_media_provider="compatible").fal_enabled is False
+    assert settings(skye_fal_key="fal-test", skye_media_provider="fal").fal_enabled is True
+
+
+def test_fal_provider_requires_a_key() -> None:
+    with pytest.raises(ValidationError):
+        settings(skye_media_provider="fal")
+
+
+def test_fal_media_defaults_are_the_requested_endpoints() -> None:
+    loaded = settings(skye_fal_key="fal-test")
+
+    assert loaded.fal_key == "fal-test"
+    assert loaded.skye_fal_image_model == "openai/gpt-image-2.5/flare/text-to-image"
+    assert loaded.skye_fal_image_edit_model == "openai/gpt-image-2.5/flare/edit"
+    assert loaded.skye_fal_speech_model == "google/gemini-3.8-flash-lite-tts"
+    assert (
+        loaded.skye_fal_transcription_model
+        == "fal-ai/elevenlabs/speech-to-text/scribe-v2"
+    )
+
+
 def test_sandbox_and_exa_defaults() -> None:
     loaded = settings()
 

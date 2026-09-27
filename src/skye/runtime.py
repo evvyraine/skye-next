@@ -13,9 +13,8 @@ from collections import defaultdict, deque
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field
-from typing import Any, Literal, cast
+from typing import Any, cast
 
-import av
 import structlog
 from agents import (
     Agent,
@@ -36,7 +35,6 @@ from openai import (
     APIError,
     APITimeoutError,
     AsyncOpenAI,
-    BadRequestError,
     RateLimitError,
 )
 from openai.types.responses.response_text_delta_event import ResponseTextDeltaEvent
@@ -49,6 +47,7 @@ from tenacity import (
 )
 
 from .artifacts import GeneratedFile, without_sandbox_links
+from .audio import AudioService
 from .automations import AutomationService
 from .citations import sanitize_citations, url_citations
 from .config import Settings
@@ -56,7 +55,7 @@ from .connectors import ConnectorService
 from .conversations import ConversationService
 from .custom_agents import AGENT_CAPABILITIES, AgentComposition, CustomAgentService
 from .exa import ExaService
-from .images import ImageService, TurnImages, turn_sources
+from .images import ImageProvider, TurnImages, turn_sources
 from .memory import MemoryService
 from .models import AgentCapability, ChatSettings, InstalledAgent, RequestContext, Skill
 from .ops_capture import OpsContext, bind_context, clear_context, new_run_id
@@ -74,7 +73,6 @@ EventCallback = Callable[["RunEvent"], Awaitable[None]]
 OPENAI_MAX_RETRIES = 0
 OPENAI_RUN_ATTEMPTS = 2
 SEND_MESSAGE_LIMIT = 8
-SPEECH_VOICE = "nova"
 SPEECH_INPUT_LIMIT = 4_096
 FALLBACK_EMPTY = "Something went wrong."
 SEND_MESSAGE_VOICE = (
@@ -166,11 +164,8 @@ class RunOutput:
 class TurnDelivery:
     on_reply: ReplyCallback | None = None
     on_voice: VoiceCallback | None = None
-    client: AsyncOpenAI | None = None
+    audio: AudioService | None = None
     max_audio_bytes: int = 25 * 1024 * 1024
-    speech_model: str = "gpt-4o-mini-tts"
-    speech_voice: str = SPEECH_VOICE
-    speech_response_format: Literal["opus", "pcm"] = "opus"
     sent: int = 0
     messages: list[str] = field(default_factory=list)
     files: list[GeneratedFile] = field(default_factory=list)
@@ -277,28 +272,13 @@ class TurnDelivery:
             return "Add voice delivery instructions."
         if self.sent >= self.limit:
             return "Send limit reached for this turn."
-        if self.client is None or self.on_voice is None:
+        if self.audio is None or self.on_voice is None:
             return "Voice delivery is unavailable."
         try:
-            response = await self.client.audio.speech.create(
-                model=self.speech_model,
-                voice=self.speech_voice,
-                input=spoken,
-                instructions=delivery_instructions,
-                response_format=self.speech_response_format,
-            )
-        except BadRequestError:
-            # Some TTS models (e.g. Gemini TTS via gateways) reject
-            # instructions; retry once with plain text delivery.
-            response = await self.client.audio.speech.create(
-                model=self.speech_model,
-                voice=self.speech_voice,
-                input=spoken,
-                response_format=self.speech_response_format,
-            )
-        audio = _unwrap_audio_payload(response.content)
-        if audio and self.speech_response_format == "pcm":
-            audio = _pcm_to_mp3(audio)
+            audio = await self.audio.speak(spoken, delivery_instructions)
+        except Exception as error:
+            log.warning("voice_generation_failed", error=type(error).__name__)
+            return "Couldn't generate that voice message. Try again."
         if not audio:
             return "No voice audio was generated."
         if len(audio) > self.max_audio_bytes:
@@ -308,44 +288,6 @@ class TurnDelivery:
         self.messages.append(text.strip())
         self.sent += 1
         return "sent"
-
-
-def _unwrap_audio_payload(audio: bytes) -> bytes:
-    """Decode gateway JSON audio envelopes: {"audio": "<base64>", ...}.
-
-    OpenAI returns raw audio bytes; some OpenAI-compatible gateways wrap the
-    audio in a JSON envelope instead. Anything that is not JSON, or JSON
-    without an audio field, passes through untouched.
-    """
-    stripped = audio.strip()
-    if not stripped.startswith(b"{"):
-        return audio
-    try:
-        payload = json.loads(stripped.decode("utf-8"))
-    except (ValueError, UnicodeDecodeError):
-        return audio
-    encoded = payload.get("audio") if isinstance(payload, dict) else None
-    if not isinstance(encoded, str) or not encoded:
-        return audio
-    try:
-        return base64.b64decode(encoded, validate=True)
-    except ValueError:
-        return audio
-
-
-def _pcm_to_mp3(audio: bytes) -> bytes:
-    output = io.BytesIO()
-    with av.open(output, mode="w", format="mp3") as container:
-        stream = container.add_stream("libmp3lame", rate=24_000)
-        stream.layout = "mono"
-        frame = av.AudioFrame(format="s16", layout="mono", samples=len(audio) // 2)
-        frame.sample_rate = 24_000
-        frame.planes[0].update(audio)
-        for packet in stream.encode(frame):
-            container.mux(packet)
-        for packet in stream.encode():
-            container.mux(packet)
-    return output.getvalue()
 
 
 def leftover_reply(output: RunOutput, *, awaiting_reply: bool) -> str | None:
@@ -741,10 +683,10 @@ class AgentRuntime:
         skills: SkillService | None = None,
         automations: AutomationService | None = None,
         youtube: YoutubeTranscriptService | None = None,
-        images: ImageService | None = None,
+        images: ImageProvider | None = None,
         exa: ExaService | None = None,
         sandbox: SandboxService | None = None,
-        audio_client: AsyncOpenAI | None = None,
+        audio: AudioService | None = None,
     ) -> None:
         self.config = config
         self.conversations = conversations
@@ -752,7 +694,7 @@ class AgentRuntime:
         self.custom_agents = custom_agents
         self.connectors = connectors
         self.client = client
-        self.audio_client = audio_client
+        self.audio = audio
         self.skills = skills
         self.automations = automations
         self.youtube = youtube
@@ -794,11 +736,8 @@ class AgentRuntime:
         delivery = TurnDelivery(
             on_reply=on_reply,
             on_voice=on_voice,
-            client=self.audio_client or self.client,
+            audio=self.audio,
             max_audio_bytes=self.config.skye_max_attachment_bytes,
-            speech_model=self.config.skye_speech_model,
-            speech_voice=self.config.skye_speech_voice,
-            speech_response_format="pcm",
         )
         _ = on_text
         tpt = "web" if key.startswith("web:") else "telegram"

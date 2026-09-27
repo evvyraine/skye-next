@@ -12,6 +12,7 @@ from agents import FunctionTool
 from openai import APIError, BadRequestError, RateLimitError
 
 from skye.artifacts import GeneratedFile
+from skye.audio import AudioService, _unwrap_audio_payload
 from skye.config import Settings
 from skye.custom_agents import AgentComposition
 from skye.exa import ExaService
@@ -37,7 +38,6 @@ from skye.runtime import (
     TokenRateLimiter,
     TurnDelivery,
     _tool_specs,
-    _unwrap_audio_payload,
     describe_activity_event,
     image_tool_call_limit,
     is_transient,
@@ -1521,7 +1521,19 @@ async def test_deliver_file_decodes_sandbox_output_safely() -> None:
     assert delivery.files == [GeneratedFile("audit.txt", b"saved")]
 
 
-async def test_send_voice_generates_nova_opus_with_model_instructions() -> None:
+def audio_service(
+    client: Any, *, voice: str = "nova", response_format: str = "pcm"
+) -> AudioService:
+    return AudioService(
+        transcription_model="gpt-transcribe",
+        speech_model="gpt-4o-mini-tts",
+        speech_voice=voice,
+        client=cast(Any, client),
+        speech_response_format=cast(Any, response_format),
+    )
+
+
+async def test_send_voice_generates_audio_with_model_instructions() -> None:
     delivered: list[tuple[bytes, int | None]] = []
     create = AsyncMock(return_value=SimpleNamespace(content=b"opus-audio"))
     client = SimpleNamespace(audio=SimpleNamespace(speech=SimpleNamespace(create=create)))
@@ -1529,7 +1541,9 @@ async def test_send_voice_generates_nova_opus_with_model_instructions() -> None:
     async def on_voice(audio: bytes, reply_to: int | None = None) -> None:
         delivered.append((audio, reply_to))
 
-    delivery = TurnDelivery(on_voice=on_voice, client=cast(Any, client))
+    delivery = TurnDelivery(
+        on_voice=on_voice, audio=audio_service(client, response_format="opus")
+    )
     tool = delivery.voice_tool()
     payload = '{"text":"Good morning.","instructions":"Warm, calm, and unhurried.","reply_to":123}'
 
@@ -1550,7 +1564,7 @@ async def test_send_voice_generates_nova_opus_with_model_instructions() -> None:
     assert "reply_to" in schema["properties"]
 
 
-async def test_send_voice_converts_openrouter_pcm_to_mp3() -> None:
+async def test_send_voice_converts_compatible_pcm_to_mp3() -> None:
     delivered: list[bytes] = []
     pcm = b"\x00\x00" * 2_400
     create = AsyncMock(return_value=SimpleNamespace(content=pcm))
@@ -1559,13 +1573,16 @@ async def test_send_voice_converts_openrouter_pcm_to_mp3() -> None:
     async def on_voice(audio: bytes, _reply_to: int | None = None) -> None:
         delivered.append(audio)
 
-    delivery = TurnDelivery(
-        on_voice=on_voice,
-        client=cast(Any, client),
-        speech_response_format="pcm",
-    )
+    delivery = TurnDelivery(on_voice=on_voice, audio=audio_service(client))
 
     assert await delivery.send_voice("Hello", "Calm") == "sent"
+    create.assert_awaited_once_with(
+        model="gpt-4o-mini-tts",
+        voice="nova",
+        input="Hello",
+        instructions="Calm",
+        response_format="pcm",
+    )
     assert delivered and delivered[0].startswith(b"ID3")
     assert delivered[0] != pcm
 
@@ -1590,7 +1607,7 @@ async def test_send_voice_uses_configured_voice() -> None:
         return
 
     delivery = TurnDelivery(
-        on_voice=on_voice, client=cast(Any, client), speech_voice="Aoede"
+        on_voice=on_voice, audio=audio_service(client, voice="Aoede", response_format="opus")
     )
 
     assert await delivery.send_voice("Hello", "Calm") == "sent"
@@ -1617,7 +1634,9 @@ async def test_send_voice_retries_without_instructions_when_rejected() -> None:
     async def on_voice(_audio: bytes, _reply_to: int | None = None) -> None:
         return
 
-    delivery = TurnDelivery(on_voice=on_voice, client=cast(Any, client))
+    delivery = TurnDelivery(
+        on_voice=on_voice, audio=audio_service(client, response_format="opus")
+    )
 
     assert await delivery.send_voice("Hello", "Calm") == "sent"
     assert create.await_count == 2
@@ -1636,7 +1655,7 @@ async def test_send_voice_validates_before_generating_audio() -> None:
     async def on_voice(_audio: bytes, _reply_to: int | None = None) -> None:
         return
 
-    delivery = TurnDelivery(on_voice=on_voice, client=cast(Any, client))
+    delivery = TurnDelivery(on_voice=on_voice, audio=audio_service(client))
 
     assert await delivery.send_voice(" ", "Calm") == "Nothing sent."
     assert await delivery.send_voice("Hello", " ") == "Add voice delivery instructions."
@@ -1644,10 +1663,10 @@ async def test_send_voice_validates_before_generating_audio() -> None:
     create.assert_not_awaited()
 
 
-async def test_run_routes_voice_generation_to_audio_client() -> None:
-    audio = cast(Any, SimpleNamespace(name="audio-client"))
+async def test_run_routes_voice_generation_to_the_audio_service() -> None:
+    audio = cast(Any, SimpleNamespace(name="audio-service"))
     runtime = runtime_for_run()
-    runtime.audio_client = audio
+    runtime.audio = audio
     seen: dict[str, Any] = {}
     real_delivery = TurnDelivery
 
@@ -1667,10 +1686,10 @@ async def test_run_routes_voice_generation_to_audio_client() -> None:
             AsyncMock(),
         )
 
-    assert seen["client"] is audio
+    assert seen["audio"] is audio
 
 
-async def test_run_falls_back_to_chat_client_for_voice() -> None:
+async def test_run_without_audio_service_disables_voice() -> None:
     runtime = runtime_for_run()
     seen: dict[str, Any] = {}
     real_delivery = TurnDelivery
@@ -1691,7 +1710,7 @@ async def test_run_falls_back_to_chat_client_for_voice() -> None:
             AsyncMock(),
         )
 
-    assert seen["client"] is None
+    assert seen["audio"] is None
 
 
 async def test_run_keeps_inner_monologue_off_the_reply_callback() -> None:

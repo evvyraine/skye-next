@@ -9,7 +9,8 @@ import pytest
 from aiogram.types import Chat, Document, Message, PhotoSize, Video, VideoNote, Voice
 from openai import AsyncOpenAI
 
-from skye.attachments import AttachmentService, data_url, transcribe_audio
+from skye.attachments import AttachmentService, data_url
+from skye.audio import AudioService, transcribe_audio
 from skye.config import Settings
 
 
@@ -56,6 +57,10 @@ def settings(limit: int = 1024, *, native: bool = False) -> Settings:
     )
 
 
+def audio(client: Any) -> AudioService:
+    return AudioService.from_settings(settings(), client=cast(AsyncOpenAI, client))
+
+
 def photo(**overrides: Any) -> PhotoSize:
     payload: dict[str, Any] = {
         "file_id": "photo",
@@ -83,7 +88,7 @@ async def test_transcribes_direct_voice() -> None:
     transcriptions = Transcriptions()
     client = SimpleNamespace(audio=SimpleNamespace(transcriptions=transcriptions))
     service = AttachmentService(
-        settings(), cast(Any, FakeBot({"voice": b"audio"})), cast(AsyncOpenAI, client)
+        settings(), cast(Any, FakeBot({"voice": b"audio"})), audio(client)
     )
     content: list[dict[str, Any]] = []
 
@@ -126,7 +131,7 @@ async def test_replied_voice_can_include_native_audio() -> None:
     transcriptions = Transcriptions()
     client = SimpleNamespace(audio=SimpleNamespace(transcriptions=transcriptions))
     service = AttachmentService(
-        settings(native=True), cast(Any, FakeBot({"voice": b"audio"})), cast(AsyncOpenAI, client)
+        settings(native=True), cast(Any, FakeBot({"voice": b"audio"})), audio(client)
     )
     content: list[dict[str, Any]] = []
 
@@ -157,7 +162,7 @@ async def test_transcribes_video_note(reply: bool) -> None:
     service = AttachmentService(
         settings(),
         cast(Any, FakeBot({"video-note": b"video-audio"})),
-        cast(AsyncOpenAI, client),
+        audio(client),
     )
     content: list[dict[str, Any]] = []
     target = (
@@ -191,7 +196,7 @@ async def test_transcribes_video_note(reply: bool) -> None:
 async def test_video_becomes_text_placeholder(reply: bool) -> None:
     bot = FakeBot({})
     client = SimpleNamespace()
-    service = AttachmentService(settings(), cast(Any, bot), cast(AsyncOpenAI, client))
+    service = AttachmentService(settings(), cast(Any, bot), audio(client))
     content: list[dict[str, Any]] = []
     clip = video()
     target = (
@@ -217,7 +222,7 @@ async def test_video_placeholder_skips_download_even_when_over_size_limit() -> N
     service = AttachmentService(
         settings(10),
         cast(Any, bot),
-        cast(AsyncOpenAI, SimpleNamespace()),
+        audio(SimpleNamespace()),
     )
     content: list[dict[str, Any]] = []
 
@@ -243,7 +248,7 @@ async def test_video_sent_as_document_becomes_placeholder_without_upload() -> No
         file_size=20,
     )
     bot = FakeBot({})
-    service = AttachmentService(settings(), cast(Any, bot), cast(AsyncOpenAI, SimpleNamespace()))
+    service = AttachmentService(settings(), cast(Any, bot), audio(SimpleNamespace()))
     content: list[dict[str, Any]] = []
 
     file_ids = await service.add(message(document=document), content)
@@ -271,7 +276,7 @@ async def test_adds_replied_pdf_as_visual_file_input() -> None:
     service = AttachmentService(
         settings(),
         cast(Any, FakeBot({"pdf": b"%PDF"})),
-        cast(AsyncOpenAI, SimpleNamespace()),
+        audio(SimpleNamespace()),
     )
     content: list[dict[str, Any]] = []
 
@@ -296,7 +301,7 @@ async def test_rejects_attachment_larger_than_limit() -> None:
         file_size=11,
     )
     service = AttachmentService(
-        settings(10), cast(Any, FakeBot({"large": b""})), cast(AsyncOpenAI, SimpleNamespace())
+        settings(10), cast(Any, FakeBot({"large": b""})), audio(SimpleNamespace())
     )
 
     with pytest.raises(ValueError, match="document is too large"):
@@ -314,7 +319,7 @@ async def test_photo_uses_image_data_url(reply: bool) -> None:
     service = AttachmentService(
         settings(),
         cast(Any, FakeBot({"photo": b"jpeg-bytes"})),
-        cast(AsyncOpenAI, SimpleNamespace()),
+        audio(SimpleNamespace()),
     )
     content: list[dict[str, Any]] = []
 
@@ -345,7 +350,7 @@ async def test_pdf_uses_file_data(reply: bool) -> None:
     service = AttachmentService(
         settings(),
         cast(Any, FakeBot({"pdf": b"%PDF"})),
-        cast(AsyncOpenAI, SimpleNamespace()),
+        audio(SimpleNamespace()),
     )
     content: list[dict[str, Any]] = []
 
@@ -377,7 +382,7 @@ async def test_text_document_is_extracted_as_text(reply: bool) -> None:
     service = AttachmentService(
         settings(),
         cast(Any, FakeBot({"notes": b"hello"})),
-        cast(AsyncOpenAI, SimpleNamespace()),
+        audio(SimpleNamespace()),
     )
     content: list[dict[str, Any]] = []
 
@@ -402,7 +407,7 @@ async def test_binary_document_is_a_placeholder_by_default() -> None:
     service = AttachmentService(
         settings(),
         cast(Any, FakeBot({"archive": b"PK\x03\x04binary"})),
-        cast(AsyncOpenAI, SimpleNamespace()),
+        audio(SimpleNamespace()),
     )
     content: list[dict[str, Any]] = []
 
@@ -431,7 +436,7 @@ async def test_binary_document_can_be_sent_natively() -> None:
     service = AttachmentService(
         settings(native=True),
         cast(Any, FakeBot({"archive": b"PK\x03\x04binary"})),
-        cast(AsyncOpenAI, SimpleNamespace()),
+        audio(SimpleNamespace()),
     )
     content: list[dict[str, Any]] = []
 
@@ -456,10 +461,7 @@ async def test_voice_includes_native_audio_when_enabled(reply: bool) -> None:
     service = AttachmentService(
         settings(native=True),
         cast(Any, FakeBot({"voice": b"audio"})),
-        cast(
-            AsyncOpenAI,
-            SimpleNamespace(audio=SimpleNamespace(transcriptions=transcriptions)),
-        ),
+        audio(SimpleNamespace(audio=SimpleNamespace(transcriptions=transcriptions))),
     )
     content: list[dict[str, Any]] = []
 
@@ -489,10 +491,7 @@ async def test_video_note_stays_transcript_only() -> None:
     service = AttachmentService(
         settings(),
         cast(Any, FakeBot({"video-note": b"video-audio"})),
-        cast(
-            AsyncOpenAI,
-            SimpleNamespace(audio=SimpleNamespace(transcriptions=transcriptions)),
-        ),
+        audio(SimpleNamespace(audio=SimpleNamespace(transcriptions=transcriptions))),
     )
     content: list[dict[str, Any]] = []
 

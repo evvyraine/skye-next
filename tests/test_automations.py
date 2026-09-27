@@ -9,6 +9,7 @@ from aiogram.types import Chat, Message, User
 from aiohttp.test_utils import TestClient, TestServer
 
 from skye.access import AccessService
+from skye.audio import AudioService
 from skye.auth import TelegramAuth
 from skye.automations import (
     AutomationError,
@@ -501,7 +502,7 @@ async def _web_client(
         FakeRuntime(),  # type: ignore[arg-type]
         projects,
         auth,
-        cast(Any, AsyncMock()),
+        AudioService.from_settings(config, client=cast(Any, AsyncMock())),
         automations,
         fire,
     )

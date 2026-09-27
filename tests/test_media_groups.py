@@ -9,6 +9,7 @@ from aiogram.types import Chat, Message, PhotoSize, User
 from openai import AsyncOpenAI
 
 from skye.attachments import AttachmentService
+from skye.audio import AudioService
 from skye.config import Settings
 from skye.db import Database
 from skye.media_groups import MediaGroupService
@@ -21,6 +22,10 @@ def settings() -> Settings:
         skye_media_group_settle_seconds=0.1,
         skye_transcription_model="gpt-transcribe",
     )
+
+
+def audio(client: Any) -> AudioService:
+    return AudioService.from_settings(settings(), client=cast(AsyncOpenAI, client))
 
 
 def photo(message_id: int, group_id: str) -> Message:
@@ -111,7 +116,7 @@ async def test_album_photos_become_multiple_vision_inputs() -> None:
     service = AttachmentService(
         settings(),
         cast(Any, DownloadBot({"file-1": b"one", "file-2": b"two", "file-3": b"three"})),
-        cast(AsyncOpenAI, SimpleNamespace()),
+        audio(SimpleNamespace()),
     )
     content: list[dict[str, Any]] = []
 
@@ -128,7 +133,7 @@ async def test_album_photos_use_image_data_urls() -> None:
     service = AttachmentService(
         settings(),
         cast(Any, DownloadBot({"file-1": b"one", "file-2": b"two"})),
-        cast(AsyncOpenAI, SimpleNamespace()),
+        audio(SimpleNamespace()),
     )
     content: list[dict[str, Any]] = []
 
@@ -147,7 +152,7 @@ async def test_album_documents_become_multiple_file_inputs() -> None:
     service = AttachmentService(
         settings(),
         cast(Any, DownloadBot({"file-1": b"one", "file-2": b"two"})),
-        cast(AsyncOpenAI, SimpleNamespace()),
+        audio(SimpleNamespace()),
     )
     content: list[dict[str, Any]] = []
 
@@ -163,7 +168,7 @@ async def test_album_documents_use_inline_file_data() -> None:
     service = AttachmentService(
         settings(),
         cast(Any, DownloadBot({"file-1": b"one", "file-2": b"two"})),
-        cast(AsyncOpenAI, SimpleNamespace()),
+        audio(SimpleNamespace()),
     )
     content: list[dict[str, Any]] = []
 
@@ -184,7 +189,7 @@ async def test_album_videos_become_text_placeholders() -> None:
     service = AttachmentService(
         settings(),
         cast(Any, bot),
-        cast(AsyncOpenAI, SimpleNamespace()),
+        audio(SimpleNamespace()),
     )
     content: list[dict[str, Any]] = []
     album = [
